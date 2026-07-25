@@ -76,6 +76,90 @@ class ChannelSync:
         with open(self.meta_file, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 
+    def va_metadata(
+        self,
+        progress: Optional[Callable] = None,
+        fetcher: Optional[Callable] = None,
+        chi_thieu: bool = True,
+    ) -> dict:
+        """
+        Bổ sung upload_date / duration còn thiếu trong clips_meta.json.
+        KHÔNG tải lại video, chỉ lấy metadata.
+        fetcher: hàm (video_id) -> dict, None thì dùng yt_dlp. Cho phép test offline.
+        Trả về {"tong": n, "da_va": n, "bo_qua": n, "loi": [...]}.
+        """
+        meta = self.load_meta()
+        if not meta:
+            return {"tong": 0, "da_va": 0, "bo_qua": 0, "loi": []}
+
+        if fetcher is None:
+            def fetcher(video_id: str) -> dict:
+                import yt_dlp
+
+                opts = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                }
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(
+                        f"https://youtu.be/{video_id}",
+                        download=False,
+                    )
+                return {
+                    "upload_date": info.get("upload_date"),
+                    "duration": info.get("duration"),
+                }
+
+        def con_thieu(thong_tin: dict) -> bool:
+            ngay = thong_tin.get("upload_date")
+            duration = thong_tin.get("duration")
+            try:
+                duration_hop_le = float(duration) > 0
+            except (TypeError, ValueError):
+                duration_hop_le = False
+            return not ngay or ngay == "00000000" or not duration_hop_le
+
+        can_va = [
+            (ten_file, thong_tin)
+            for ten_file, thong_tin in meta.items()
+            if not chi_thieu or con_thieu(thong_tin)
+        ]
+        tong = len(meta)
+        bo_qua = tong - len(can_va)
+        da_va = 0
+        loi = []
+        tong_can_va = len(can_va)
+
+        for i, (ten_file, thong_tin) in enumerate(can_va, start=1):
+            video_id = thong_tin.get("id") or ""
+            try:
+                if not video_id:
+                    raise RuntimeError("Thiếu ID video.")
+                moi = fetcher(video_id)
+                upload_date = moi.get("upload_date")
+                duration = moi.get("duration")
+                if upload_date and upload_date != "00000000":
+                    thong_tin["upload_date"] = str(upload_date)
+                if duration:
+                    thong_tin["duration"] = duration
+                self.save_meta(meta)
+                da_va += 1
+            except Exception as e:  # noqa: BLE001
+                loi.append(f"{ten_file}: {e}")
+            if progress:
+                progress(
+                    i / tong_can_va,
+                    f"[{i}/{tong_can_va}] Đã xử lý metadata: {ten_file}",
+                )
+
+        return {
+            "tong": tong,
+            "da_va": da_va,
+            "bo_qua": bo_qua,
+            "loi": loi,
+        }
+
     def done_ids(self) -> set:
         """Đọc file archive để biết video nào đã tải."""
         ids = set()

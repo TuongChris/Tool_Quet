@@ -14,6 +14,17 @@ class _EngineGia:
         self.config = SimpleNamespace(ncores=1)
 
 
+class _ChannelSyncGia:
+    ket_qua = {"tong": 2, "da_va": 1, "bo_qua": 1, "loi": []}
+    kho = ""
+
+    def __init__(self, kho):
+        type(self).kho = kho
+
+    def va_metadata(self, progress=None):
+        return self.ket_qua
+
+
 def test_cli_watch_khong_co_danh_sach_in_huong_dan(
     monkeypatch,
     capsys,
@@ -119,3 +130,21 @@ def test_cli_watch_dang_doc_tat_bao_cao_ngang(monkeypatch):
     cli.main()
 
     assert dang_ngang == [False]
+
+
+def test_cli_vameta_goi_dung_thu_muc_va_in_tom_tat(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "sys.argv",
+        ["cli.py", "vameta", "--kho", "D:/KhoClipGoc"],
+    )
+    monkeypatch.setattr(cli, "ChannelSync", _ChannelSyncGia)
+    monkeypatch.setattr(
+        cli,
+        "Engine",
+        lambda: pytest.fail("Lệnh vameta không cần tạo Engine"),
+    )
+
+    cli.main()
+
+    assert _ChannelSyncGia.kho == "D:/KhoClipGoc"
+    assert "đã vá 1/2 mục metadata" in capsys.readouterr().out

@@ -35,7 +35,15 @@ def main():
     ap = argparse.ArgumentParser(description="TimClip Pro — bản dòng lệnh")
     ap.add_argument(
         "lenh",
-        choices=["kenh", "taodb", "themclip", "youtube", "file", "watch"],
+        choices=[
+            "kenh",
+            "taodb",
+            "themclip",
+            "youtube",
+            "file",
+            "watch",
+            "vameta",
+        ],
     )
     ap.add_argument("muc", nargs="*", help="Thư mục / link / đường dẫn file")
     ap.add_argument(
@@ -46,7 +54,10 @@ def main():
         ),
     )
     ap.add_argument("--ncores", type=int, default=1)
-    ap.add_argument("--kho", help="Thư mục kho clip gốc (dùng với lệnh 'kenh')")
+    ap.add_argument(
+        "--kho",
+        help="Thư mục kho clip gốc (dùng với lệnh kenh/vameta)",
+    )
     ap.add_argument("--limit", type=int, help="Chỉ lấy N video mới nhất")
     ap.add_argument("--sheet", default="", help="Link Google Sheet cho lệnh watch")
     ap.add_argument(
@@ -61,6 +72,18 @@ def main():
         help="Xuất báo cáo watch theo dạng dọc cũ",
     )
     a = ap.parse_args()
+
+    if a.lenh == "vameta":
+        if not a.kho:
+            ap.error("Lệnh vameta cần --kho trỏ tới thư mục kho clip gốc.")
+        ket_qua = ChannelSync(a.kho).va_metadata(in_tien_do)
+        print(
+            f"\nXONG: đã vá {ket_qua['da_va']}/{ket_qua['tong']} mục metadata, "
+            f"bỏ qua {ket_qua['bo_qua']} mục đã đủ."
+        )
+        if ket_qua["loi"]:
+            print("Lỗi:", *ket_qua["loi"], sep="\n  - ")
+        return
 
     eng = Engine()
     eng.config.ncores = a.ncores
