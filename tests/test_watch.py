@@ -2,16 +2,21 @@
 """Test logic thuần cho watchlist và URL YouTube."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from engine import ScanResult
 from watch import (
+    BaoCao,
     MucTheoDoi,
     UngVien,
     WatchList,
+    chay_giam_sat,
     doc_watchlist,
     ghi_watchlist,
     id_da_quet,
+    lay_ung_vien,
     lay_id_youtube,
     loc_can_quet,
 )
@@ -180,3 +185,346 @@ def test_loc_can_quet_khong_cat_khi_gioi_han_khong_ap_dung(gioi_han):
 
 def test_loc_can_quet_danh_sach_rong():
     assert loc_can_quet([], {"a"}, gioi_han=3) == []
+
+
+def test_lay_ung_vien_watchlist_rong():
+    assert lay_ung_vien(WatchList(), lister=lambda url, limit: []) == ([], [])
+
+
+def test_lay_ung_vien_bo_qua_muc_dang_tat():
+    wl = WatchList(muc=[
+        MucTheoDoi("link", "https://youtu.be/dQw4w9WgXcQ", bat=False),
+        MucTheoDoi("kenh", "https://youtube.com/@tat", bat=False),
+    ])
+
+    assert lay_ung_vien(wl, lister=lambda url, limit: []) == ([], [])
+
+
+def test_lay_ung_vien_link_don_va_bao_link_khong_hop_le():
+    wl = WatchList(muc=[
+        MucTheoDoi("link", "https://youtu.be/dQw4w9WgXcQ"),
+        MucTheoDoi("link", "https://example.com/khong-phai-youtube"),
+    ])
+
+    ung_vien, loi = lay_ung_vien(wl, lister=lambda url, limit: [])
+
+    assert ung_vien == [UngVien(
+        video_id="dQw4w9WgXcQ",
+        url="https://youtu.be/dQw4w9WgXcQ",
+        nguon="https://youtu.be/dQw4w9WgXcQ",
+    )]
+    assert len(loi) == 1
+    assert "https://example.com/khong-phai-youtube" in loi[0]
+
+
+def test_kenh_loi_khong_lam_dut_cac_muc_con_lai():
+    def lister_gia(url, limit=None):
+        if "hong" in url:
+            raise RuntimeError("không kết nối được")
+        return [SimpleNamespace(id="x1", title="T", url="u")]
+
+    wl = WatchList(muc=[
+        MucTheoDoi("kenh", "https://youtube.com/@hong"),
+        MucTheoDoi("kenh", "https://youtube.com/@tot"),
+    ])
+
+    ung_vien, loi = lay_ung_vien(wl, lister=lister_gia)
+
+    assert len(ung_vien) == 1
+    assert ung_vien[0].video_id == "x1"
+    assert len(loi) == 1
+    assert "https://youtube.com/@hong" in loi[0]
+    assert "không kết nối được" in loi[0]
+
+
+def test_lay_ung_vien_kenh_rong_khong_bao_loi():
+    wl = WatchList(muc=[MucTheoDoi("kenh", "https://youtube.com/@rong")])
+
+    assert lay_ung_vien(wl, lister=lambda url, limit: []) == ([], [])
+
+
+def test_lay_ung_vien_video_thieu_title_dung_chuoi_rong():
+    wl = WatchList(muc=[MucTheoDoi("kenh", "https://youtube.com/@kenh")])
+    video_thieu_title = SimpleNamespace(id="x1", url="https://youtu.be/x12345")
+
+    ung_vien, loi = lay_ung_vien(
+        wl,
+        lister=lambda url, limit: [video_thieu_title],
+    )
+
+    assert loi == []
+    assert ung_vien[0].tieu_de == ""
+
+
+def test_lay_ung_vien_dung_lister_mac_dinh_va_truyen_gioi_han(monkeypatch):
+    loi_goi = []
+
+    def lister_gia(url, limit=None):
+        loi_goi.append((url, limit))
+        return [SimpleNamespace(id="x1", title="Tiêu đề", url="u1")]
+
+    monkeypatch.setattr("watch.ChannelSync.list_channel", lister_gia)
+    wl = WatchList(muc=[MucTheoDoi("kenh", "https://youtube.com/@kenh")])
+
+    ung_vien, loi = lay_ung_vien(wl, gioi_han_kenh=7)
+
+    assert loi_goi == [("https://youtube.com/@kenh", 7)]
+    assert ung_vien == [UngVien("x1", "u1", "Tiêu đề", wl.muc[0].url)]
+    assert loi == []
+
+
+def test_bao_cao_tom_tat_bang_tieng_viet_va_nhieu_dong():
+    bao_cao = BaoCao(
+        tong_ung_vien=3,
+        quet_moi=2,
+        loi=["Nguồn hỏng"],
+    )
+
+    tom_tat = bao_cao.tom_tat()
+
+    assert "Tổng ứng viên: 3" in tom_tat
+    assert "Quét mới: 2" in tom_tat
+    assert "Nguồn hỏng" in tom_tat
+    assert "\n" in tom_tat
+
+
+def test_khong_co_ung_vien_thi_khong_tao_csv(engine, monkeypatch):
+    monkeypatch.setattr(
+        engine,
+        "export_csv",
+        lambda ket: pytest.fail("Không được tạo CSV"),
+    )
+
+    bao_cao = chay_giam_sat(engine, WatchList(), lister=lambda url, limit: [])
+
+    assert bao_cao.quet_moi == 0
+    assert bao_cao.csv_path == ""
+
+
+def test_tat_ca_da_quet_thi_khong_quet_va_khong_tao_csv(engine, monkeypatch):
+    video = SimpleNamespace(id="x1", title="T", url="u1")
+    wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
+    monkeypatch.setattr(
+        engine,
+        "list_jobs",
+        lambda limit: [{"source_id": "x1", "status": "ok"}],
+    )
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: pytest.fail("Không được quét lại"),
+    )
+    monkeypatch.setattr(
+        engine,
+        "export_csv",
+        lambda ket: pytest.fail("Không được tạo CSV"),
+    )
+
+    bao_cao = chay_giam_sat(
+        engine,
+        wl,
+        lister=lambda url, limit: [video],
+    )
+
+    assert bao_cao.da_quet_truoc == 1
+    assert bao_cao.quet_moi == 0
+    assert bao_cao.csv_path == ""
+
+
+def test_mot_video_loi_khong_lam_dut_luot_quet(engine, monkeypatch, tmp_path):
+    videos = [
+        SimpleNamespace(id=f"x{i}", title=f"Video {i}", url=f"u{i}")
+        for i in range(1, 4)
+    ]
+    da_goi = []
+
+    def scan_gia(url, progress=None):
+        da_goi.append(url)
+        if url == "u2":
+            raise RuntimeError("mất kết nối")
+        return ScanResult(source_name=url, source_ref=url)
+
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(engine, "scan_youtube", scan_gia)
+    monkeypatch.setattr(
+        engine,
+        "export_csv",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+    wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
+
+    bao_cao = chay_giam_sat(
+        engine,
+        wl,
+        lister=lambda url, limit: videos,
+    )
+
+    assert da_goi == ["u1", "u2", "u3"]
+    assert bao_cao.quet_moi == 3
+    assert len(bao_cao.loi) >= 1
+    assert "mất kết nối" in bao_cao.loi[0]
+
+
+def test_chay_giam_sat_dem_bang_chung_va_bao_scanresult_loi(
+    engine,
+    monkeypatch,
+    tmp_path,
+):
+    videos = [
+        SimpleNamespace(id="x1", title="Một", url="u1"),
+        SimpleNamespace(id="x2", title="Hai", url="u2"),
+    ]
+    ket_qua = [
+        ScanResult(source_name="Một", matches=[object(), object()]),
+        ScanResult(source_name="Hai", status="error", note="video hỏng"),
+    ]
+
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: ket_qua.pop(0),
+    )
+    monkeypatch.setattr(
+        engine,
+        "export_csv",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+    wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
+
+    bao_cao = chay_giam_sat(
+        engine,
+        wl,
+        lister=lambda url, limit: videos,
+    )
+
+    assert bao_cao.nguon_co_vi_pham == 1
+    assert bao_cao.tong_bang_chung == 2
+    assert bao_cao.csv_path == str(tmp_path / "ket-qua.csv")
+    assert any("Hai: video hỏng" in dong for dong in bao_cao.loi)
+
+
+def test_chay_giam_sat_quy_doi_tien_do_tong(engine, monkeypatch, tmp_path):
+    videos = [
+        SimpleNamespace(id="x1", title="Một", url="u1"),
+        SimpleNamespace(id="x2", title="Hai", url="u2"),
+    ]
+    tien_do = []
+
+    def scan_gia(url, progress=None):
+        progress(0.5, "Đang quét")
+        return ScanResult(source_name=url)
+
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(engine, "scan_youtube", scan_gia)
+    monkeypatch.setattr(
+        engine,
+        "export_csv",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+    wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
+
+    chay_giam_sat(
+        engine,
+        wl,
+        progress=lambda pct, msg: tien_do.append((pct, msg)),
+        lister=lambda url, limit: videos,
+    )
+
+    assert tien_do == [
+        (0.25, "[1/2] Đang quét"),
+        (0.75, "[2/2] Đang quét"),
+    ]
+
+
+def test_kho_khong_ton_tai_van_tiep_tuc_quet(engine, monkeypatch, tmp_path):
+    video = SimpleNamespace(id="x1", title="Một", url="u1")
+    monkeypatch.setattr(
+        engine,
+        "use_kho",
+        lambda ten: (_ for _ in ()).throw(RuntimeError("không tồn tại")),
+    )
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: ScanResult(source_name=url),
+    )
+    monkeypatch.setattr(
+        engine,
+        "export_csv",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+    wl = WatchList(
+        muc=[MucTheoDoi("kenh", "kenh-1")],
+        kho="Kho sai",
+    )
+
+    bao_cao = chay_giam_sat(
+        engine,
+        wl,
+        lister=lambda url, limit: [video],
+    )
+
+    assert bao_cao.quet_moi == 1
+    assert any("Kho sai" in dong and "không tồn tại" in dong for dong in bao_cao.loi)
+
+
+def test_sheets_chua_san_sang_tra_ghi_chu(engine, monkeypatch):
+    class SheetsChuaSanSang:
+        def __init__(self, sheet=""):
+            self.sheet = sheet
+
+        def san_sang(self):
+            return False
+
+        def thieu_gi(self):
+            return "Chưa có khóa Google"
+
+    monkeypatch.setattr("watch.SheetsExporter", SheetsChuaSanSang)
+
+    bao_cao = chay_giam_sat(
+        engine,
+        WatchList(),
+        lister=lambda url, limit: [],
+        sheet_link="sheet-id",
+    )
+
+    assert bao_cao.sheets_ok is False
+    assert bao_cao.sheets_note == "Chưa có khóa Google"
+
+
+def test_sheets_loi_thi_csv_van_duoc_tao(engine, monkeypatch, tmp_path):
+    class SheetsBiLoi:
+        def __init__(self, sheet=""):
+            self.sheet = sheet
+
+        def san_sang(self):
+            return True
+
+        def append(self, header, rows):
+            raise RuntimeError("Sheets tạm lỗi")
+
+    video = SimpleNamespace(id="x1", title="Một", url="u1")
+    csv_path = str(tmp_path / "ket-qua.csv")
+    monkeypatch.setattr("watch.SheetsExporter", SheetsBiLoi)
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: ScanResult(source_name=url),
+    )
+    monkeypatch.setattr(engine, "export_csv", lambda ket: csv_path)
+    monkeypatch.setattr(engine, "to_rows", lambda ket: [["dong"]])
+    wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
+
+    bao_cao = chay_giam_sat(
+        engine,
+        wl,
+        lister=lambda url, limit: [video],
+        sheet_link="sheet-id",
+    )
+
+    assert bao_cao.csv_path == csv_path
+    assert bao_cao.sheets_ok is False
+    assert "Sheets tạm lỗi" in bao_cao.sheets_note
