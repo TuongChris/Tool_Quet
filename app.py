@@ -16,7 +16,7 @@ import time
 import pandas as pd
 import streamlit as st
 
-from engine import Engine, Config, hhmmss
+from engine import Engine, Config, ScanResult, hhmmss
 from channel import ChannelSync
 from sheets import SheetsExporter
 
@@ -81,7 +81,7 @@ def day_len_sheets(rows, im_lang=False):
         return False, f"Lỗi ghi Sheets: {e}"
 
 
-def bang_ket_qua(results):
+def bang_ket_qua(results: list[ScanResult]) -> None:
     """Vẽ bảng kết quả + các nút xuất báo cáo và đẩy lên Google Sheets."""
     rows = eng.to_rows(results)
     df = pd.DataFrame(rows, columns=eng.HEADER)

@@ -4,7 +4,7 @@
 from conftest import M
 
 from dossier import dung_ho_so, render_markdown
-from engine import Engine, ScanResult
+from engine import ScanResult
 
 
 def test_ho_so_rong_khi_khong_co_ket_qua():
@@ -125,40 +125,33 @@ def test_render_co_du_so_muc():
     assert "Bằng chứng được sinh tự động" in s
 
 
-def test_render_link_rong_dung_dau_gach_dai_va_giu_markdown():
+def test_render_moi_truong_chuoi_rong_deu_hien_gach():
     kq = ScanResult(
         source_name="Video *X*_[1]",
-        source_ref="D:/video.mp4",
-        duration_s=100,
-        matches=[M("clip.mp4", matched=10)],
-    )
-
-    s = render_markdown(dung_ho_so(kq))
-
-    assert "Video *X*_[1]" in s
-    assert "**Link nhảy tới mốc:** —" in s
-    assert "**Link video gốc:** —" in s
-
-
-def test_moi_truong_rong_deu_hien_gach():
-    kq = ScanResult(
-        source_name="Video X",
         source_ref="D:/video.mp4",
         duration_s=100,
         matches=[M("   ", matched=10)],
     )
 
-    s = render_markdown(dung_ho_so(kq, meta={}))
+    ho_so = dung_ho_so(kq, meta={})
+    ho_so.muc[0].tu_hhmmss = ""
+    ho_so.muc[0].den_hhmmss = "   "
+    s = render_markdown(ho_so)
     phan_doan = s.split("## Đoạn 1", maxsplit=1)[1]
     cac_dong_du_lieu = [
         dong for dong in phan_doan.splitlines() if dong.startswith("- **")
     ]
 
+    assert "Video *X*_[1]" in s
+    assert "**Khoảng thời gian:** — – —" in phan_doan
     assert "**Tên clip gốc:** —" in phan_doan
     assert "**Tiêu đề video gốc:** —" in phan_doan
     assert "**Link nhảy tới mốc:** —" in phan_doan
     assert "**Link video gốc:** —" in phan_doan
-    assert all(dong.split("** ", maxsplit=1)[1].strip() for dong in cac_dong_du_lieu)
+    assert all(
+        not dong.replace("*", "").rstrip().endswith(":")
+        for dong in cac_dong_du_lieu
+    )
 
 
 def test_export_ho_so_tao_dung_so_file(engine, tmp_path, monkeypatch):
