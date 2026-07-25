@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 import json
 import os
 import re
+from typing import Any
 
 
 @dataclass
@@ -20,6 +21,14 @@ class WatchList:
     muc: list = field(default_factory=list)
     kho: str = ""
     gioi_han_moi_lan: int = 20
+
+
+@dataclass
+class UngVien:
+    video_id: str
+    url: str
+    tieu_de: str = ""
+    nguon: str = ""
 
 
 _MAU_ID_YOUTUBE = (
@@ -106,3 +115,30 @@ def ghi_watchlist(wl: WatchList, path: str) -> None:
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(du_lieu, f, ensure_ascii=False, indent=2)
+
+
+def id_da_quet(engine: Any, chi_thanh_cong: bool = True) -> set:
+    """Trả về set các video_id đã quét, đọc từ lịch sử SQLite."""
+    ket_qua = set()
+    for job in engine.list_jobs(limit=100000):
+        if chi_thanh_cong and job.get("status") != "ok":
+            continue
+        video_id = job.get("source_id")
+        if video_id:
+            ket_qua.add(video_id)
+    return ket_qua
+
+
+def loc_can_quet(ung_vien: list, da_quet: set, gioi_han: int = 0) -> list:
+    """Lọc ra các ứng viên CHƯA quét. Hàm thuần — không chạm engine, không I/O."""
+    ket_qua = []
+    da_gap = set()
+    for muc in ung_vien:
+        video_id = muc.video_id
+        if not video_id or video_id in da_quet or video_id in da_gap:
+            continue
+        da_gap.add(video_id)
+        ket_qua.append(muc)
+        if gioi_han > 0 and len(ket_qua) >= gioi_han:
+            break
+    return ket_qua

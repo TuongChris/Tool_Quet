@@ -5,7 +5,26 @@ import json
 
 import pytest
 
-from watch import MucTheoDoi, WatchList, doc_watchlist, ghi_watchlist, lay_id_youtube
+from watch import (
+    MucTheoDoi,
+    UngVien,
+    WatchList,
+    doc_watchlist,
+    ghi_watchlist,
+    id_da_quet,
+    lay_id_youtube,
+    loc_can_quet,
+)
+
+
+class _EngineGia:
+    def __init__(self, jobs):
+        self.jobs = jobs
+        self.limit = None
+
+    def list_jobs(self, limit=200):
+        self.limit = limit
+        return self.jobs
 
 
 @pytest.mark.parametrize("url", [
@@ -94,3 +113,70 @@ def test_ghi_doc_watchlist_giu_nguyen_tieng_viet(tmp_path):
     assert "Khiếu nại bản quyền" in noi_dung
     assert "\\u" not in noi_dung
     assert doc_lai == wl
+
+
+def test_id_da_quet_khi_lich_su_rong():
+    engine = _EngineGia([])
+
+    assert id_da_quet(engine) == set()
+    assert engine.limit == 100000
+
+
+def test_id_da_quet_chi_lay_job_thanh_cong_va_id_khong_rong():
+    engine = _EngineGia([
+        {"source_id": "ok-1", "status": "ok"},
+        {"source_id": "loi-1", "status": "error"},
+        {"source_id": "", "status": "ok"},
+        {"source_id": None, "status": "ok"},
+    ])
+
+    assert id_da_quet(engine) == {"ok-1"}
+
+
+def test_id_da_quet_co_the_tinh_ca_job_loi():
+    engine = _EngineGia([
+        {"source_id": "ok-1", "status": "ok"},
+        {"source_id": "loi-1", "status": "error"},
+    ])
+
+    assert id_da_quet(engine, chi_thanh_cong=False) == {"ok-1", "loi-1"}
+
+
+def test_khu_trung_lap_trong_ung_vien():
+    uv = [UngVien("a", "u1"), UngVien("a", "u1"), UngVien("b", "u2")]
+
+    assert [x.video_id for x in loc_can_quet(uv, set())] == ["a", "b"]
+
+
+def test_bo_qua_id_da_quet():
+    uv = [UngVien("a", "u1"), UngVien("b", "u2")]
+
+    assert [x.video_id for x in loc_can_quet(uv, {"a"})] == ["b"]
+
+
+def test_loc_can_quet_bo_id_rong_va_giu_nguyen_thu_tu():
+    uv = [
+        UngVien("", "rong"),
+        UngVien("c", "u3"),
+        UngVien("a", "u1"),
+        UngVien("b", "u2"),
+    ]
+
+    assert [x.video_id for x in loc_can_quet(uv, set())] == ["c", "a", "b"]
+
+
+def test_loc_can_quet_cat_theo_gioi_han():
+    uv = [UngVien("a", "u1"), UngVien("b", "u2"), UngVien("c", "u3")]
+
+    assert [x.video_id for x in loc_can_quet(uv, set(), gioi_han=2)] == ["a", "b"]
+
+
+@pytest.mark.parametrize("gioi_han", [0, -1, 10])
+def test_loc_can_quet_khong_cat_khi_gioi_han_khong_ap_dung(gioi_han):
+    uv = [UngVien("a", "u1"), UngVien("b", "u2")]
+
+    assert loc_can_quet(uv, set(), gioi_han=gioi_han) == uv
+
+
+def test_loc_can_quet_danh_sach_rong():
+    assert loc_can_quet([], {"a"}, gioi_han=3) == []
