@@ -1,0 +1,24 @@
+# Bi mat - TUYET DOI khong commit
+google_key.json
+*.json.key
+
+# Du lieu lon / sinh ra khi chay
+data/
+ketqua/
+bin/
+*.pklz
+*.opus
+*.m4a
+downloaded.txt
+clips_meta.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# VS Code
+.streamlit/secrets.toml
+.pytest_cache/
+tests/__pycache__/
