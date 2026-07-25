@@ -3,7 +3,7 @@
 
 from conftest import M
 
-from dossier import dung_ho_so
+from dossier import dung_ho_so, render_markdown
 from engine import ScanResult
 
 
@@ -75,3 +75,49 @@ def test_meta_thieu_clip_dung_chuoi_rong():
 
     assert h.muc[0].tieu_de_goc == ""
     assert h.muc[0].link_goc == ""
+
+
+def test_render_ho_so_rong_van_hop_le():
+    s = render_markdown(dung_ho_so(
+        ScanResult(source_name="Video X", duration_s=3600),
+    ))
+
+    assert isinstance(s, str)
+    assert "Hồ sơ khiếu nại" in s
+    assert "Video X" in s
+    assert "01:00:00" in s
+    assert "Không phát hiện" in s
+
+
+def test_render_co_du_so_muc():
+    kq = ScanResult(
+        source_name="Video X",
+        source_id="abc",
+        duration_s=100,
+        matches=[
+            M("clip-1.mp4", start=10, matched=20),
+            M("clip-2.mp4", start=50, matched=25),
+        ],
+    )
+
+    s = render_markdown(dung_ho_so(kq))
+
+    assert "## Đoạn 1" in s
+    assert "## Đoạn 2" in s
+    assert "00:00:45" in s
+    assert "Bằng chứng được sinh tự động" in s
+
+
+def test_render_link_rong_dung_dau_gach_dai_va_giu_markdown():
+    kq = ScanResult(
+        source_name="Video *X*_[1]",
+        source_ref="D:/video.mp4",
+        duration_s=100,
+        matches=[M("clip.mp4", matched=10)],
+    )
+
+    s = render_markdown(dung_ho_so(kq))
+
+    assert "Video *X*_[1]" in s
+    assert "**Link nhảy tới mốc:** —" in s
+    assert "**Link video gốc:** —" in s

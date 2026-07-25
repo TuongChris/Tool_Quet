@@ -72,3 +72,43 @@ def dung_ho_so(kq: ScanResult, meta: dict | None = None) -> HoSo:
         ty_le_video=ty_le_video,
         muc=cac_muc,
     )
+
+
+def render_markdown(ho_so: HoSo) -> str:
+    """Trả về nội dung Markdown hoàn chỉnh của hồ sơ. Không ghi file."""
+    cac_dong = [
+        "# Hồ sơ khiếu nại bản quyền",
+        "",
+        "## Thông tin chung",
+        f"- **Tiêu đề video vi phạm:** {ho_so.tieu_de_vi_pham}",
+        f"- **Link video vi phạm:** {ho_so.link_vi_pham}",
+        f"- **Thời lượng:** {ho_so.thoi_luong_hhmmss}",
+        f"- **Ngày lập:** {ho_so.ngay_lap}",
+        f"- **Tổng số đoạn vi phạm:** {len(ho_so.muc)}",
+        f"- **Tổng thời gian vi phạm:** {hhmmss(ho_so.tong_giay_vi_pham)}",
+        f"- **Tỷ lệ video bị chiếm:** {ho_so.ty_le_video}%",
+        "",
+    ]
+
+    if not ho_so.muc:
+        cac_dong.append("*Không phát hiện đoạn vi phạm nào.*")
+        return "\n".join(cac_dong)
+
+    for so_thu_tu, muc in enumerate(ho_so.muc, start=1):
+        cac_dong.extend([
+            f"## Đoạn {so_thu_tu}",
+            f"- **Khoảng thời gian:** {muc.tu_hhmmss} – {muc.den_hhmmss}",
+            f"- **Link nhảy tới mốc:** {muc.link_moc or '—'}",
+            f"- **Tên clip gốc:** {muc.ten_clip_goc}",
+            f"- **Tiêu đề video gốc:** {muc.tieu_de_goc}",
+            f"- **Link video gốc:** {muc.link_goc or '—'}",
+            f"- **Độ dài đoạn:** {muc.do_dai_giay} giây",
+            f"- **Tỷ lệ khớp:** {muc.ty_le}%",
+            f"- **Số hash:** {muc.hashes}",
+            "",
+        ])
+
+    cac_dong.append(
+        "*Ghi chú: Bằng chứng được sinh tự động bằng đối chiếu vân tay âm thanh.*"
+    )
+    return "\n".join(cac_dong)
