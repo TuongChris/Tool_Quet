@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Mô hình dữ liệu và hàm dựng hồ sơ vi phạm."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from engine import Engine, ScanResult, hhmmss
+import engine
 
 
 @dataclass
@@ -35,7 +37,7 @@ class HoSo:
     muc: list = field(default_factory=list)
 
 
-def dung_ho_so(kq: ScanResult, meta: dict | None = None) -> HoSo:
+def dung_ho_so(kq: engine.ScanResult, meta: dict | None = None) -> HoSo:
     """Dựng HoSo từ một ScanResult. Hàm thuần — không đọc/ghi file."""
     if meta is None:
         meta = {}
@@ -50,7 +52,9 @@ def dung_ho_so(kq: ScanResult, meta: dict | None = None) -> HoSo:
                 link_goc=thong_tin.get("url", ""),
                 tu_hhmmss=m.start_hhmmss,
                 den_hhmmss=m.end_hhmmss,
-                link_moc=Engine.link_moc(kq.source_id, kq.source_ref, m.start_s),
+                link_moc=engine.Engine.link_moc(
+                    kq.source_id, kq.source_ref, m.start_s
+                ),
                 do_dai_giay=round(m.matched_s),
                 ty_le=m.ty_le,
                 hashes=m.hashes,
@@ -66,7 +70,7 @@ def dung_ho_so(kq: ScanResult, meta: dict | None = None) -> HoSo:
     return HoSo(
         tieu_de_vi_pham=kq.source_name,
         link_vi_pham=kq.source_ref,
-        thoi_luong_hhmmss=hhmmss(kq.duration_s),
+        thoi_luong_hhmmss=engine.hhmmss(kq.duration_s),
         ngay_lap=datetime.now().strftime("%Y-%m-%d"),
         tong_giay_vi_pham=tong_giay_vi_pham,
         ty_le_video=ty_le_video,
@@ -76,6 +80,9 @@ def dung_ho_so(kq: ScanResult, meta: dict | None = None) -> HoSo:
 
 def render_markdown(ho_so: HoSo) -> str:
     """Trả về nội dung Markdown hoàn chỉnh của hồ sơ. Không ghi file."""
+    def hien_thi(gia_tri: str) -> str:
+        return gia_tri if gia_tri and gia_tri.strip() else "—"
+
     cac_dong = [
         "# Hồ sơ khiếu nại bản quyền",
         "",
@@ -85,7 +92,7 @@ def render_markdown(ho_so: HoSo) -> str:
         f"- **Thời lượng:** {ho_so.thoi_luong_hhmmss}",
         f"- **Ngày lập:** {ho_so.ngay_lap}",
         f"- **Tổng số đoạn vi phạm:** {len(ho_so.muc)}",
-        f"- **Tổng thời gian vi phạm:** {hhmmss(ho_so.tong_giay_vi_pham)}",
+        f"- **Tổng thời gian vi phạm:** {engine.hhmmss(ho_so.tong_giay_vi_pham)}",
         f"- **Tỷ lệ video bị chiếm:** {ho_so.ty_le_video}%",
         "",
     ]
@@ -97,11 +104,12 @@ def render_markdown(ho_so: HoSo) -> str:
     for so_thu_tu, muc in enumerate(ho_so.muc, start=1):
         cac_dong.extend([
             f"## Đoạn {so_thu_tu}",
-            f"- **Khoảng thời gian:** {muc.tu_hhmmss} – {muc.den_hhmmss}",
-            f"- **Link nhảy tới mốc:** {muc.link_moc or '—'}",
-            f"- **Tên clip gốc:** {muc.ten_clip_goc}",
-            f"- **Tiêu đề video gốc:** {muc.tieu_de_goc}",
-            f"- **Link video gốc:** {muc.link_goc or '—'}",
+            f"- **Khoảng thời gian:** {hien_thi(muc.tu_hhmmss)} – "
+            f"{hien_thi(muc.den_hhmmss)}",
+            f"- **Link nhảy tới mốc:** {hien_thi(muc.link_moc)}",
+            f"- **Tên clip gốc:** {hien_thi(muc.ten_clip_goc)}",
+            f"- **Tiêu đề video gốc:** {hien_thi(muc.tieu_de_goc)}",
+            f"- **Link video gốc:** {hien_thi(muc.link_goc)}",
             f"- **Độ dài đoạn:** {muc.do_dai_giay} giây",
             f"- **Tỷ lệ khớp:** {muc.ty_le}%",
             f"- **Số hash:** {muc.hashes}",

@@ -38,6 +38,9 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Callable, Iterable, Optional
 
+import channel
+import dossier
+
 # =====================================================================
 #  Kiểu dữ liệu
 # =====================================================================
@@ -989,3 +992,38 @@ class Engine:
             w.writerow(self.HEADER)
             w.writerows(self.to_rows(ket))
         return ten_file
+
+    def export_ho_so(self, ket: Iterable, ten_file: Optional[str] = None) -> list:
+        """Xuất mỗi ScanResult thành một file .md. Trả về danh sách đường dẫn đã tạo."""
+        os.makedirs(self.out_dir, exist_ok=True)
+        meta = self.clip_meta()
+        duong_dan_da_tao = []
+
+        for kq in ket:
+            if kq.status != "ok" or not kq.matches:
+                continue
+
+            ho_so = dossier.dung_ho_so(kq, meta)
+            noi_dung = dossier.render_markdown(ho_so)
+            if ten_file:
+                goc_ten, _ = os.path.splitext(ten_file)
+                duong_dan = goc_ten + ".md"
+            else:
+                ten_nguon = channel.lam_sach_ten(kq.source_name)
+                dau_thoi_gian = datetime.now().strftime("%Y%m%d_%H%M%S")
+                duong_dan = os.path.join(
+                    self.out_dir,
+                    f"hoso_{ten_nguon}_{dau_thoi_gian}.md",
+                )
+
+            goc_ten, duoi = os.path.splitext(duong_dan)
+            so_hau_to = 2
+            while os.path.exists(duong_dan):
+                duong_dan = f"{goc_ten}_{so_hau_to}{duoi}"
+                so_hau_to += 1
+
+            with open(duong_dan, "w", encoding="utf-8") as f:
+                f.write(noi_dung)
+            duong_dan_da_tao.append(duong_dan)
+
+        return duong_dan_da_tao

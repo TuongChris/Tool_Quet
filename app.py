@@ -82,7 +82,7 @@ def day_len_sheets(rows, im_lang=False):
 
 
 def bang_ket_qua(results):
-    """Vẽ bảng kết quả + nút tải CSV + đẩy lên Google Sheets."""
+    """Vẽ bảng kết quả + các nút xuất báo cáo và đẩy lên Google Sheets."""
     rows = eng.to_rows(results)
     df = pd.DataFrame(rows, columns=eng.HEADER)
     st.dataframe(df, width="stretch", hide_index=True)
@@ -97,7 +97,7 @@ def bang_ket_qua(results):
         elif lay_sheets().sheet_id:
             st.warning("📊 Không đẩy được lên Sheets: " + tb)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c3:
         if st.button("📊 Đẩy lên Google Sheets", width="stretch"):
             ok, tb = day_len_sheets(rows)
@@ -109,6 +109,17 @@ def bang_ket_qua(results):
     with c2:
         if st.button("💾 Lưu CSV vào thư mục ketqua\\", width="stretch"):
             st.success(f"Đã lưu: {eng.export_csv(results)}")
+    with c4:
+        if st.button("📄 Xuất hồ sơ khiếu nại", width="stretch"):
+            try:
+                fs = eng.export_ho_so(results)
+                if not fs:
+                    st.info("Không có kết quả nào đủ điều kiện lập hồ sơ.")
+                else:
+                    st.success(f"Đã tạo {len(fs)} hồ sơ trong ketqua\\")
+                    st.code("\n".join(fs))
+            except Exception as e:  # noqa: BLE001
+                st.error(str(e))
 
 
 # =====================================================================
