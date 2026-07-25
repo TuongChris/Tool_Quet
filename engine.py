@@ -111,6 +111,11 @@ class ScanResult:
     status: str = "ok"      # ok | error
     note: str = ""
     job_id: Optional[int] = None
+    channel_name: str = ""
+    channel_id: str = ""
+    channel_url: str = ""
+    upload_date: str = ""
+    so_dat_nguong: int = 0
 
 
 class Cancelled(Exception):
@@ -608,8 +613,18 @@ class Engine:
         opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
-        return {"id": info.get("id", ""), "title": info.get("title", url),
-                "duration": info.get("duration") or 0, "uploader": info.get("uploader", "")}
+        return {
+            "id": info.get("id", ""),
+            "title": info.get("title", url),
+            "duration": info.get("duration") or 0,
+            "uploader": info.get("uploader", ""),
+            "channel": info.get("channel") or info.get("uploader") or "",
+            "channel_id": info.get("channel_id", ""),
+            "channel_url": (
+                info.get("channel_url") or info.get("uploader_url") or ""
+            ),
+            "upload_date": str(info.get("upload_date") or ""),
+        }
 
     def download_audio(self, url: str, video_id: str,
                        progress: Optional[Callable] = None) -> str:
@@ -845,6 +860,10 @@ class Engine:
             goc = os.path.basename(path).lower()
             tat_ca = [m for m in tat_ca if m.clip.lower() != goc]
             self._gan_chi_so(tat_ca, tong)
+            kq.so_dat_nguong = len([
+                m for m in tat_ca
+                if m.hashes >= self.config.min_hash_floor
+            ])
             kq.matches, kq.matches_loai = self._chon_loc(tat_ca, tong)
             tb = f"Xong — chọn {len(kq.matches)} kết quả tốt nhất"
             if kq.matches_loai:
@@ -871,6 +890,10 @@ class Engine:
             info = self.youtube_info(url)
             kq.source_name = info["title"] or url
             kq.source_id = info["id"]
+            kq.channel_name = info["channel"]
+            kq.channel_id = info["channel_id"]
+            kq.channel_url = info["channel_url"]
+            kq.upload_date = info["upload_date"]
             self._bao(progress, 0.05,
                       f"{kq.source_name} ({hhmmss(info['duration'])}) — chuẩn bị tải audio...")
             f = self.download_audio(url, info["id"], progress)
@@ -879,6 +902,10 @@ class Engine:
                                 luu_lich_su=False, pct_start=0.40)
             r.source_ref = url
             r.source_id = info["id"]
+            r.channel_name = info["channel"]
+            r.channel_id = info["channel_id"]
+            r.channel_url = info["channel_url"]
+            r.upload_date = info["upload_date"]
             if not self.config.keep_downloads:
                 with contextlib.suppress(Exception):
                     os.remove(f)
