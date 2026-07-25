@@ -10,11 +10,13 @@ Hữu ích khi bạn muốn chạy tự động theo lịch (Task Scheduler) mà
   python cli.py youtube  --file links.txt
   python cli.py file     "D:\VideoDai\a.mp4"
   python cli.py file     "D:\VideoDai"          (quét cả thư mục)
+  python cli.py watch
 """
 import argparse
 import os
 import sys
 
+import watch
 from channel import ChannelSync
 from engine import Engine, liet_ke_media
 
@@ -31,16 +33,72 @@ def in_tien_do(pct, msg):
 
 def main():
     ap = argparse.ArgumentParser(description="TimClip Pro — bản dòng lệnh")
-    ap.add_argument("lenh", choices=["kenh", "taodb", "themclip", "youtube", "file"])
+    ap.add_argument(
+        "lenh",
+        choices=["kenh", "taodb", "themclip", "youtube", "file", "watch"],
+    )
     ap.add_argument("muc", nargs="*", help="Thư mục / link / đường dẫn file")
-    ap.add_argument("--file", help="File .txt chứa danh sách link, mỗi dòng một link")
+    ap.add_argument(
+        "--file",
+        help=(
+            "File link cho lệnh youtube; file watchlist cho lệnh watch "
+            "(mặc định: watchlist.json)"
+        ),
+    )
     ap.add_argument("--ncores", type=int, default=1)
     ap.add_argument("--kho", help="Thư mục kho clip gốc (dùng với lệnh 'kenh')")
     ap.add_argument("--limit", type=int, help="Chỉ lấy N video mới nhất")
+    ap.add_argument("--sheet", default="", help="Link Google Sheet cho lệnh watch")
+    ap.add_argument(
+        "--gioi-han",
+        type=int,
+        default=0,
+        help="Số video tối đa cho lệnh watch; 0 = dùng giá trị trong file",
+    )
     a = ap.parse_args()
 
     eng = Engine()
     eng.config.ncores = a.ncores
+
+    if a.lenh == "watch":
+        watchlist_path = a.file or "watchlist.json"
+        wl = watch.doc_watchlist(watchlist_path)
+        if not wl.muc:
+            print(
+                f"Không có mục theo dõi trong {watchlist_path}.\n"
+                "Hãy tạo file watchlist.json theo mẫu:\n"
+                "{\n"
+                '  "muc": [\n'
+                "    {\n"
+                '      "loai": "kenh",\n'
+                '      "url": "https://www.youtube.com/@TenKenh",\n'
+                '      "ghi_chu": "Kênh cần theo dõi",\n'
+                '      "bat": true\n'
+                "    },\n"
+                "    {\n"
+                '      "loai": "link",\n'
+                '      "url": "https://youtu.be/dQw4w9WgXcQ",\n'
+                '      "ghi_chu": "",\n'
+                '      "bat": true\n'
+                "    }\n"
+                "  ],\n"
+                '  "kho": "Kho mặc định",\n'
+                '  "gioi_han_moi_lan": 20\n'
+                "}"
+            )
+            return
+        if a.gioi_han > 0:
+            wl.gioi_han_moi_lan = a.gioi_han
+        bc = watch.chay_giam_sat(
+            eng,
+            wl,
+            in_tien_do,
+            sheet_link=a.sheet,
+        )
+        print("\n" + bc.tom_tat())
+        if bc.loi:
+            raise SystemExit(1)
+        return
 
     if a.lenh == "kenh":
         if not a.muc or not a.kho:

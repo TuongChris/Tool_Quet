@@ -384,3 +384,59 @@ hiệu chỉnh ngưỡng cho đúng kho của mình.
 
 Nếu bạn lỡ để video vi phạm nằm chung thư mục với clip gốc, trước đây nó sẽ khớp 100%
 với chính nó và chiếm mất một suất trong top 5. Giờ hệ thống tự loại trường hợp này.
+
+---
+
+# PHẦN BỔ SUNG (v5): Chạy giám sát tự động bằng Task Scheduler
+
+## A. Tạo danh sách theo dõi
+
+Tạo file `watchlist.json` trong thư mục dự án với nội dung mẫu đầy đủ:
+
+```json
+{
+  "muc": [
+    {
+      "loai": "kenh",
+      "url": "https://www.youtube.com/@TenKenh",
+      "ghi_chu": "Kênh cần theo dõi",
+      "bat": true
+    },
+    {
+      "loai": "link",
+      "url": "https://youtu.be/dQw4w9WgXcQ",
+      "ghi_chu": "Video cần kiểm tra",
+      "bat": true
+    }
+  ],
+  "kho": "Kho mặc định",
+  "gioi_han_moi_lan": 20
+}
+```
+
+- `loai` nhận `kenh` hoặc `link`.
+- Đặt `bat` thành `false` để tạm bỏ qua một mục.
+- `kho` là tên kho vân tay dùng để đối chiếu.
+- `gioi_han_moi_lan` giới hạn số video mới quét trong mỗi lượt.
+
+Có thể chạy thử bằng lệnh:
+
+```text
+python cli.py watch
+python cli.py watch --file duong\dan\watchlist.json --gioi-han 5
+python cli.py watch --sheet "https://docs.google.com/spreadsheets/d/..."
+```
+
+## B. Ghép lịch chạy trong Windows Task Scheduler
+
+1. Mở **Task Scheduler**.
+2. Chọn **Create Basic Task** và đặt tên cho tác vụ.
+3. Chọn tần suất chạy mong muốn, ví dụ mỗi ngày.
+4. Ở bước **Action**, chọn **Start a program**.
+5. Trong **Program/script**, chọn file `GiamSat.bat` trong thư mục dự án.
+6. Trong **Start in**, nhập đường dẫn đầy đủ tới thư mục dự án.
+7. Hoàn tất trình hướng dẫn và chạy thử tác vụ một lần.
+
+`GiamSat.bat` chạy nền, không dừng chờ bàn phím. Nhật ký của từng ngày được nối vào
+`ketqua\giamsat_YYYYMMDD.log`. Task Scheduler nhận mã thoát `0` khi lượt chạy không có
+lỗi và mã `1` khi báo cáo có lỗi.

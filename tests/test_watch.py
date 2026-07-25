@@ -288,6 +288,14 @@ def test_bao_cao_tom_tat_bang_tieng_viet_va_nhieu_dong():
     assert "\n" in tom_tat
 
 
+def test_bao_cao_tom_tat_khong_rong_khi_moi_so_dem_bang_khong():
+    tom_tat = BaoCao().tom_tat()
+
+    assert tom_tat
+    assert "Tổng ứng viên: 0" in tom_tat
+    assert "Quét mới: 0" in tom_tat
+
+
 def test_khong_co_ung_vien_thi_khong_tao_csv(engine, monkeypatch):
     monkeypatch.setattr(
         engine,
@@ -528,3 +536,35 @@ def test_sheets_loi_thi_csv_van_duoc_tao(engine, monkeypatch, tmp_path):
     assert bao_cao.csv_path == csv_path
     assert bao_cao.sheets_ok is False
     assert "Sheets tạm lỗi" in bao_cao.sheets_note
+
+
+def test_chay_lai_lan_hai_khong_quet_trung(engine, monkeypatch, tmp_path):
+    video_id = "abc123XYZ"
+    url = f"https://youtu.be/{video_id}"
+    wl = WatchList(muc=[MucTheoDoi("link", url)])
+    cac_lan_quet = []
+
+    def scan_gia(url_quet, progress=None):
+        cac_lan_quet.append(url_quet)
+        ket_qua = ScanResult(
+            source_name="Video theo dõi",
+            source_ref=url_quet,
+            source_id=video_id,
+        )
+        engine.save_job(ket_qua, "youtube")
+        return ket_qua
+
+    monkeypatch.setattr(engine, "scan_youtube", scan_gia)
+    monkeypatch.setattr(
+        engine,
+        "export_csv",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+
+    lan_dau = chay_giam_sat(engine, wl)
+    lan_hai = chay_giam_sat(engine, wl)
+
+    assert lan_dau.quet_moi == 1
+    assert lan_hai.quet_moi == 0
+    assert lan_hai.da_quet_truoc == 1
+    assert cac_lan_quet == [url]
