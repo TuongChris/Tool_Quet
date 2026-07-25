@@ -7,6 +7,7 @@ import os
 import re
 from typing import Any, Callable, Optional
 
+import bang_ngang
 from channel import ChannelSync
 from sheets import SheetsExporter
 
@@ -236,6 +237,7 @@ def chay_giam_sat(
     progress: Optional[Callable] = None,
     lister: Optional[Callable] = None,
     sheet_link: str = "",
+    dang_ngang: bool = True,
 ) -> BaoCao:
     """Chạy một lượt giám sát đầy đủ."""
     bao_cao = BaoCao()
@@ -289,7 +291,11 @@ def chay_giam_sat(
 
     if ket_qua:
         try:
-            bao_cao.csv_path = engine.export_csv(ket_qua)
+            bao_cao.csv_path = (
+                engine.export_csv_ngang(ket_qua)
+                if dang_ngang
+                else engine.export_csv(ket_qua)
+            )
         except Exception as e:  # noqa: BLE001
             bao_cao.loi.append(f"Không xuất được CSV: {e}")
 
@@ -301,7 +307,13 @@ def chay_giam_sat(
                     sheets.thieu_gi() or "Google Sheets chưa sẵn sàng."
                 )
             else:
-                so_dong = sheets.append(engine.HEADER, engine.to_rows(ket_qua))
+                if dang_ngang:
+                    header = bang_ngang.HEADER_NGANG
+                    rows = engine.to_rows_ngang(ket_qua)
+                else:
+                    header = engine.HEADER
+                    rows = engine.to_rows(ket_qua)
+                so_dong = sheets.append(header, rows)
                 bao_cao.sheets_ok = True
                 bao_cao.sheets_note = (
                     f"Đã ghi {so_dong} dòng lên Google Sheets."

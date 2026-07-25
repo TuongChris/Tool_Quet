@@ -299,7 +299,7 @@ def test_bao_cao_tom_tat_khong_rong_khi_moi_so_dem_bang_khong():
 def test_khong_co_ung_vien_thi_khong_tao_csv(engine, monkeypatch):
     monkeypatch.setattr(
         engine,
-        "export_csv",
+        "export_csv_ngang",
         lambda ket: pytest.fail("Không được tạo CSV"),
     )
 
@@ -324,7 +324,7 @@ def test_tat_ca_da_quet_thi_khong_quet_va_khong_tao_csv(engine, monkeypatch):
     )
     monkeypatch.setattr(
         engine,
-        "export_csv",
+        "export_csv_ngang",
         lambda ket: pytest.fail("Không được tạo CSV"),
     )
 
@@ -356,7 +356,7 @@ def test_mot_video_loi_khong_lam_dut_luot_quet(engine, monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "scan_youtube", scan_gia)
     monkeypatch.setattr(
         engine,
-        "export_csv",
+        "export_csv_ngang",
         lambda ket: str(tmp_path / "ket-qua.csv"),
     )
     wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
@@ -395,7 +395,7 @@ def test_chay_giam_sat_dem_bang_chung_va_bao_scanresult_loi(
     )
     monkeypatch.setattr(
         engine,
-        "export_csv",
+        "export_csv_ngang",
         lambda ket: str(tmp_path / "ket-qua.csv"),
     )
     wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
@@ -427,7 +427,7 @@ def test_chay_giam_sat_quy_doi_tien_do_tong(engine, monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "scan_youtube", scan_gia)
     monkeypatch.setattr(
         engine,
-        "export_csv",
+        "export_csv_ngang",
         lambda ket: str(tmp_path / "ket-qua.csv"),
     )
     wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
@@ -460,7 +460,7 @@ def test_kho_khong_ton_tai_van_tiep_tuc_quet(engine, monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         engine,
-        "export_csv",
+        "export_csv_ngang",
         lambda ket: str(tmp_path / "ket-qua.csv"),
     )
     wl = WatchList(
@@ -522,8 +522,8 @@ def test_sheets_loi_thi_csv_van_duoc_tao(engine, monkeypatch, tmp_path):
         "scan_youtube",
         lambda url, progress=None: ScanResult(source_name=url),
     )
-    monkeypatch.setattr(engine, "export_csv", lambda ket: csv_path)
-    monkeypatch.setattr(engine, "to_rows", lambda ket: [["dong"]])
+    monkeypatch.setattr(engine, "export_csv_ngang", lambda ket: csv_path)
+    monkeypatch.setattr(engine, "to_rows_ngang", lambda ket: [["dong"]])
     wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
 
     bao_cao = chay_giam_sat(
@@ -557,7 +557,7 @@ def test_chay_lai_lan_hai_khong_quet_trung(engine, monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "scan_youtube", scan_gia)
     monkeypatch.setattr(
         engine,
-        "export_csv",
+        "export_csv_ngang",
         lambda ket: str(tmp_path / "ket-qua.csv"),
     )
 
@@ -568,3 +568,82 @@ def test_chay_lai_lan_hai_khong_quet_trung(engine, monkeypatch, tmp_path):
     assert lan_hai.quet_moi == 0
     assert lan_hai.da_quet_truoc == 1
     assert cac_lan_quet == [url]
+
+
+def test_chay_giam_sat_dang_doc_giu_cach_xuat_cu(
+    engine,
+    monkeypatch,
+    tmp_path,
+):
+    video = SimpleNamespace(id="x1", title="Một", url="u1")
+    csv_path = str(tmp_path / "ket-qua-doc.csv")
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: ScanResult(source_name=url, matches=[object()]),
+    )
+    monkeypatch.setattr(engine, "export_csv", lambda ket: csv_path)
+    monkeypatch.setattr(
+        engine,
+        "export_csv_ngang",
+        lambda ket: pytest.fail("Không được xuất dạng ngang"),
+    )
+    wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
+
+    bao_cao = chay_giam_sat(
+        engine,
+        wl,
+        lister=lambda url, limit: [video],
+        dang_ngang=False,
+    )
+
+    assert bao_cao.csv_path == csv_path
+
+
+def test_chay_giam_sat_day_sheets_theo_header_ngang(
+    engine,
+    monkeypatch,
+    tmp_path,
+):
+    from bang_ngang import HEADER_NGANG
+
+    da_ghi = []
+
+    class SheetsGia:
+        def __init__(self, sheet=""):
+            self.sheet = sheet
+
+        def san_sang(self):
+            return True
+
+        def append(self, header, rows):
+            da_ghi.append((header, rows))
+            return len(rows)
+
+    video = SimpleNamespace(id="x1", title="Một", url="u1")
+    rows = [[""] * 34]
+    monkeypatch.setattr("watch.SheetsExporter", SheetsGia)
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: ScanResult(source_name=url, matches=[object()]),
+    )
+    monkeypatch.setattr(
+        engine,
+        "export_csv_ngang",
+        lambda ket: str(tmp_path / "ket-qua-ngang.csv"),
+    )
+    monkeypatch.setattr(engine, "to_rows_ngang", lambda ket: rows)
+    wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
+
+    bao_cao = chay_giam_sat(
+        engine,
+        wl,
+        lister=lambda url, limit: [video],
+        sheet_link="sheet-id",
+    )
+
+    assert da_ghi == [(HEADER_NGANG, rows)]
+    assert bao_cao.sheets_ok is True

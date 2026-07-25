@@ -42,8 +42,20 @@ def test_cli_watch_chuyen_tham_so_va_in_tom_tat(monkeypatch, capsys):
     )
     loi_goi = []
 
-    def chay_gia(engine, watchlist, progress, lister=None, sheet_link=""):
-        loi_goi.append((watchlist.gioi_han_moi_lan, progress, sheet_link))
+    def chay_gia(
+        engine,
+        watchlist,
+        progress,
+        lister=None,
+        sheet_link="",
+        dang_ngang=True,
+    ):
+        loi_goi.append((
+            watchlist.gioi_han_moi_lan,
+            progress,
+            sheet_link,
+            dang_ngang,
+        ))
         return BaoCao(quet_moi=1)
 
     monkeypatch.setattr(
@@ -65,7 +77,7 @@ def test_cli_watch_chuyen_tham_so_va_in_tom_tat(monkeypatch, capsys):
 
     cli.main()
 
-    assert loi_goi == [(5, cli.in_tien_do, "sheet-id")]
+    assert loi_goi == [(5, cli.in_tien_do, "sheet-id", True)]
     assert "Quét mới: 1" in capsys.readouterr().out
 
 
@@ -88,3 +100,22 @@ def test_cli_watch_co_loi_thoat_ma_1_sau_khi_in_tom_tat(
 
     assert exc.value.code == 1
     assert "Không có mạng" in capsys.readouterr().out
+
+
+def test_cli_watch_dang_doc_tat_bao_cao_ngang(monkeypatch):
+    wl = WatchList(muc=[MucTheoDoi("link", "https://youtu.be/dQw4w9WgXcQ")])
+    dang_ngang = []
+    monkeypatch.setattr("sys.argv", ["cli.py", "watch", "--dang-doc"])
+    monkeypatch.setattr(cli, "Engine", _EngineGia)
+    monkeypatch.setattr(cli.watch, "doc_watchlist", lambda path: wl)
+    monkeypatch.setattr(
+        cli.watch,
+        "chay_giam_sat",
+        lambda *args, **kwargs: (
+            dang_ngang.append(kwargs["dang_ngang"]) or BaoCao()
+        ),
+    )
+
+    cli.main()
+
+    assert dang_ngang == [False]

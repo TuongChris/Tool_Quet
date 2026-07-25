@@ -55,6 +55,11 @@ def main():
         default=0,
         help="Số video tối đa cho lệnh watch; 0 = dùng giá trị trong file",
     )
+    ap.add_argument(
+        "--dang-doc",
+        action="store_true",
+        help="Xuất báo cáo watch theo dạng dọc cũ",
+    )
     a = ap.parse_args()
 
     eng = Engine()
@@ -94,6 +99,7 @@ def main():
             wl,
             in_tien_do,
             sheet_link=a.sheet,
+            dang_ngang=not a.dang_doc,
         )
         print("\n" + bc.tom_tat())
         if bc.loi:

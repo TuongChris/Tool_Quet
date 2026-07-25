@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Test hàm dựng báo cáo dạng ngang 34 cột."""
 
+import csv
+
 from conftest import M
 
 from bang_ngang import (
@@ -190,3 +192,56 @@ def test_ket_qua_loi_van_du_34_o_va_bo_cac_doan():
     assert dong[5] == "(LỖI: nguồn hỏng)"
     assert dong[8:33] == [""] * 25
     assert dong[33] == 2
+
+
+def test_to_rows_ngang_bo_qua_ket_qua_loi(engine, monkeypatch):
+    so_lan_doc_meta = 0
+
+    def clip_meta():
+        nonlocal so_lan_doc_meta
+        so_lan_doc_meta += 1
+        return {}
+
+    monkeypatch.setattr(engine, "clip_meta", clip_meta)
+    ok = ScanResult(source_name="ok", matches=[M()])
+    loi = ScanResult(source_name="lỗi", matches=[M()], status="error")
+
+    rows = engine.to_rows_ngang([ok, loi])
+
+    assert so_lan_doc_meta == 1
+    assert len(rows) == 1
+    assert len(rows[0]) == len(HEADER_NGANG) == 34
+
+
+def test_export_csv_ngang_co_bom_utf8(engine, tmp_path, monkeypatch):
+    engine.out_dir = str(tmp_path)
+    monkeypatch.setattr(engine, "clip_meta", lambda: {})
+    kq = ScanResult(source_name="Tiếng Việt", matches=[M()])
+
+    path = engine.export_csv_ngang([kq])
+
+    assert path.endswith(".csv")
+    assert tmp_path.joinpath(path).read_bytes()[:3] == b"\xef\xbb\xbf"
+    with open(path, encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+    assert len(rows) == 2
+    assert len(rows[0]) == len(rows[1]) == len(HEADER_NGANG) == 34
+    assert rows[0] == HEADER_NGANG
+    assert "Tiếng Việt" in rows[1]
+
+
+def test_export_csv_ngang_khong_tao_file_khi_khong_co_dong(
+    engine,
+    tmp_path,
+):
+    thu_muc_xuat = tmp_path / "out"
+    engine.out_dir = str(thu_muc_xuat)
+
+    path = engine.export_csv_ngang([
+        ScanResult(source_name="rỗng"),
+        ScanResult(source_name="lỗi", matches=[M()], status="error"),
+    ])
+
+    assert len(HEADER_NGANG) == 34
+    assert path == ""
+    assert not thu_muc_xuat.exists()

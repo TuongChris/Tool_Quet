@@ -1020,6 +1020,35 @@ class Engine:
             w.writerows(self.to_rows(ket))
         return ten_file
 
+    def to_rows_ngang(self, ket: Iterable) -> list:
+        """Mỗi ScanResult -> đúng 1 dòng 34 cột. Bỏ qua kết quả status != 'ok'."""
+        import bang_ngang
+
+        meta = self.clip_meta()
+        return [
+            bang_ngang.dung_dong_ngang(kq, meta)
+            for kq in ket
+            if kq.status == "ok" and kq.matches
+        ]
+
+    def export_csv_ngang(self, ket: Iterable, ten_file: Optional[str] = None) -> str:
+        """Xuất CSV dạng ngang, encoding utf-8-sig. Trả về đường dẫn."""
+        import bang_ngang
+
+        rows = self.to_rows_ngang(ket)
+        if not rows:
+            return ""
+        os.makedirs(self.out_dir, exist_ok=True)
+        ten_file = ten_file or os.path.join(
+            self.out_dir,
+            "ketqua_ngang_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv",
+        )
+        with open(ten_file, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(bang_ngang.HEADER_NGANG)
+            w.writerows(rows)
+        return ten_file
+
     def export_ho_so(self, ket: Iterable, ten_file: Optional[str] = None) -> list:
         """Xuất mỗi ScanResult thành một file .md. Trả về danh sách đường dẫn đã tạo."""
         os.makedirs(self.out_dir, exist_ok=True)
