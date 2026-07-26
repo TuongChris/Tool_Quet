@@ -17,6 +17,7 @@ import os
 import sys
 
 import don_dep
+import nhat_ky
 import watch
 from channel import ChannelSync
 from dung_lai import YeuCauDung
@@ -39,6 +40,58 @@ def _file_dung_mac_dinh() -> str:
         "data",
         "DUNG",
     )
+
+
+def _chay_lenh_watch(a, eng: Engine) -> None:
+    """Chạy nhánh watch; caller chịu trách nhiệm mở và đóng nhật ký."""
+    watchlist_path = a.file or "watchlist.json"
+    wl = watch.doc_watchlist(watchlist_path)
+    dung_lai = YeuCauDung(
+        eng,
+        os.path.join(eng.data_dir, "DUNG"),
+    )
+    dung_lai.bat_tin_hieu()
+    if not wl.muc:
+        print(
+            f"Không có mục theo dõi trong {watchlist_path}.\n"
+            "Hãy tạo file watchlist.json theo mẫu:\n"
+            "{\n"
+            '  "muc": [\n'
+            "    {\n"
+            '      "loai": "kenh",\n'
+            '      "url": "https://www.youtube.com/@TenKenh",\n'
+            '      "ghi_chu": "Kênh cần theo dõi",\n'
+            '      "bat": true\n'
+            "    },\n"
+            "    {\n"
+            '      "loai": "link",\n'
+            '      "url": "https://youtu.be/dQw4w9WgXcQ",\n'
+            '      "ghi_chu": "",\n'
+            '      "bat": true\n'
+            "    }\n"
+            "  ],\n"
+            '  "kho": "Kho mặc định",\n'
+            '  "gioi_han_moi_lan": 20\n'
+            "}"
+        )
+        dung_lai.don_file_dung()
+        return
+    if a.gioi_han > 0:
+        wl.gioi_han_moi_lan = a.gioi_han
+    try:
+        bc = watch.chay_giam_sat(
+            eng,
+            wl,
+            in_tien_do,
+            sheet_link=a.sheet,
+            dang_ngang=not a.dang_doc,
+            dung_lai=dung_lai,
+        )
+    finally:
+        dung_lai.don_file_dung()
+    print("\n" + bc.tom_tat())
+    if bc.loi:
+        raise SystemExit(1)
 
 
 def main():
@@ -88,6 +141,11 @@ def main():
         action="store_true",
         help="Chỉ xem các file sẽ xóa với lệnh dondep",
     )
+    ap.add_argument(
+        "--log",
+        action="store_true",
+        help="Ghi song song console và file nhật ký cho lệnh watch",
+    )
     a = ap.parse_args()
 
     if a.lenh == "dung":
@@ -132,54 +190,13 @@ def main():
         return
 
     if a.lenh == "watch":
-        watchlist_path = a.file or "watchlist.json"
-        wl = watch.doc_watchlist(watchlist_path)
-        dung_lai = YeuCauDung(
-            eng,
-            os.path.join(eng.data_dir, "DUNG"),
-        )
-        dung_lai.bat_tin_hieu()
-        if not wl.muc:
-            print(
-                f"Không có mục theo dõi trong {watchlist_path}.\n"
-                "Hãy tạo file watchlist.json theo mẫu:\n"
-                "{\n"
-                '  "muc": [\n'
-                "    {\n"
-                '      "loai": "kenh",\n'
-                '      "url": "https://www.youtube.com/@TenKenh",\n'
-                '      "ghi_chu": "Kênh cần theo dõi",\n'
-                '      "bat": true\n'
-                "    },\n"
-                "    {\n"
-                '      "loai": "link",\n'
-                '      "url": "https://youtu.be/dQw4w9WgXcQ",\n'
-                '      "ghi_chu": "",\n'
-                '      "bat": true\n'
-                "    }\n"
-                "  ],\n"
-                '  "kho": "Kho mặc định",\n'
-                '  "gioi_han_moi_lan": 20\n'
-                "}"
-            )
-            dung_lai.don_file_dung()
-            return
-        if a.gioi_han > 0:
-            wl.gioi_han_moi_lan = a.gioi_han
+        if a.log:
+            nhat_ky.mo_nhat_ky(eng.out_dir)
         try:
-            bc = watch.chay_giam_sat(
-                eng,
-                wl,
-                in_tien_do,
-                sheet_link=a.sheet,
-                dang_ngang=not a.dang_doc,
-                dung_lai=dung_lai,
-            )
+            _chay_lenh_watch(a, eng)
         finally:
-            dung_lai.don_file_dung()
-        print("\n" + bc.tom_tat())
-        if bc.loi:
-            raise SystemExit(1)
+            if a.log:
+                nhat_ky.dong_nhat_ky()
         return
 
     if a.lenh == "kenh":
