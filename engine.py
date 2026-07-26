@@ -40,6 +40,7 @@ from typing import Callable, Iterable, Optional
 
 import channel
 import dossier
+from khoa import KhoaTienTrinh
 from luu_tru import LoiDuLieu, doc_json_an_toan, ghi_json_an_toan
 
 # =====================================================================
@@ -189,7 +190,6 @@ class Engine:
         self.kho_file = os.path.join(self.data_dir, "khos.json")
         self.audfprint = self._tim_audfprint()
         self.cancel_event = threading.Event()
-        self._lock = threading.Lock()
         self._cache_khoa = None
         self._cache_clips = []
         self.canh_bao_khoi_dong: list = []
@@ -531,14 +531,25 @@ class Engine:
         return [sys.executable, "-u", self.audfprint, sub, "--dbase", self.db_file,
                 "--ncores", str(self.config.ncores), "--continue-on-error", *them]
 
-    def _giu_khoa(self):
-        """Không cho 2 tác vụ nặng chạy đồng thời trên cùng một kho vân tay."""
-        if not self._lock.acquire(blocking=False):
-            raise RuntimeError("Đang có một tác vụ khác chạy. Vui lòng chờ nó xong.")
-        return contextlib.closing(type("_L", (), {"close": lambda _: self._lock.release()})())
-
     def build_database(self, thumuc: str, mode: str = "new",
                        progress: Optional[Callable] = None) -> dict:
+        """Tạo hoặc bổ sung kho vân tay trong khóa độc quyền liên tiến trình."""
+        with KhoaTienTrinh(
+            os.path.join(self.data_dir, "kho.lock"),
+            "dựng kho vân tay",
+        ):
+            return self._build_database_da_khoa(
+                thumuc,
+                mode=mode,
+                progress=progress,
+            )
+
+    def _build_database_da_khoa(
+        self,
+        thumuc: str,
+        mode: str = "new",
+        progress: Optional[Callable] = None,
+    ) -> dict:
         """
         Tạo (mode='new') hoặc bổ sung (mode='add') kho vân tay từ thư mục clip gốc.
         Trả về {'so_clip': n, 'giay': t}.

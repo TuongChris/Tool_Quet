@@ -2,11 +2,13 @@
 """Mô hình dữ liệu và lưu trữ danh sách nguồn YouTube cần theo dõi."""
 
 from dataclasses import asdict, dataclass, field
+import os
 import re
 from typing import Any, Callable, Optional
 
 import bang_ngang
 from channel import ChannelSync
+from khoa import DangChayRoi, KhoaTienTrinh
 from luu_tru import doc_json_an_toan, ghi_json_an_toan
 from sheets import SheetsExporter
 
@@ -248,6 +250,32 @@ def chay_giam_sat(
     dang_ngang: bool = True,
 ) -> BaoCao:
     """Chạy một lượt giám sát đầy đủ."""
+    try:
+        with KhoaTienTrinh(
+            os.path.join(engine.data_dir, "giamsat.lock"),
+            "giám sát",
+        ):
+            return _chay_giam_sat_da_khoa(
+                engine,
+                wl,
+                progress=progress,
+                lister=lister,
+                sheet_link=sheet_link,
+                dang_ngang=dang_ngang,
+            )
+    except DangChayRoi as e:
+        return BaoCao(loi=[str(e)])
+
+
+def _chay_giam_sat_da_khoa(
+    engine: Any,
+    wl: WatchList,
+    progress: Optional[Callable] = None,
+    lister: Optional[Callable] = None,
+    sheet_link: str = "",
+    dang_ngang: bool = True,
+) -> BaoCao:
+    """Thực hiện lượt giám sát sau khi caller đã giữ khóa liên tiến trình."""
     bao_cao = BaoCao()
 
     if wl.kho:
