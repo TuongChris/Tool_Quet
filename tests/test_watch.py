@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from engine import ScanResult
+from luu_tru import LoiDuLieu
 from watch import (
     BaoCao,
     MucTheoDoi,
@@ -60,11 +61,14 @@ def test_doc_file_khong_ton_tai(tmp_path):
 
 
 @pytest.mark.parametrize("noi_dung", ["", "{json hong"])
-def test_doc_json_rong_hoac_hong(tmp_path, noi_dung):
+def test_doc_json_rong_hoac_hong_khong_bi_nuot_loi(tmp_path, noi_dung):
     path = tmp_path / "watchlist.json"
     path.write_text(noi_dung, encoding="utf-8")
 
-    assert doc_watchlist(str(path)) == WatchList()
+    with pytest.raises(LoiDuLieu):
+        doc_watchlist(str(path))
+
+    assert len(list(tmp_path.glob("watchlist.json.hong.*"))) == 1
 
 
 def test_doc_json_co_muc_khong_phai_danh_sach(tmp_path):
@@ -294,6 +298,7 @@ def test_bao_cao_tom_tat_khong_rong_khi_moi_so_dem_bang_khong():
     assert tom_tat
     assert "Tổng ứng viên: 0" in tom_tat
     assert "Quét mới: 0" in tom_tat
+    assert "Google Sheets: Không sử dụng" in tom_tat
 
 
 def test_khong_co_ung_vien_thi_khong_tao_csv(engine, monkeypatch):
@@ -502,6 +507,34 @@ def test_sheets_chua_san_sang_tra_ghi_chu(engine, monkeypatch):
     assert bao_cao.sheets_note == "Chưa có khóa Google"
 
 
+def test_sheets_khong_co_du_lieu_thi_khong_bao_da_ghi(engine, monkeypatch):
+    class SheetsRong:
+        def __init__(self, sheet=""):
+            self.sheet = sheet
+
+        def san_sang(self):
+            return True
+
+        def append(self, header, rows):
+            assert rows == []
+            return 0
+
+    monkeypatch.setattr("watch.SheetsExporter", SheetsRong)
+
+    bao_cao = chay_giam_sat(
+        engine,
+        WatchList(),
+        lister=lambda url, limit: [],
+        sheet_link="sheet-id",
+    )
+    tom_tat = bao_cao.tom_tat()
+
+    assert bao_cao.sheets_so_dong == 0
+    assert "Đã ghi" not in tom_tat
+    assert "File CSV: Không có dữ liệu để ghi" in tom_tat
+    assert "Google Sheets: Không có dữ liệu để ghi" in tom_tat
+
+
 def test_sheets_loi_thi_csv_van_duoc_tao(engine, monkeypatch, tmp_path):
     class SheetsBiLoi:
         def __init__(self, sheet=""):
@@ -647,3 +680,5 @@ def test_chay_giam_sat_day_sheets_theo_header_ngang(
 
     assert da_ghi == [(HEADER_NGANG, rows)]
     assert bao_cao.sheets_ok is True
+    assert bao_cao.sheets_so_dong == 1
+    assert "Google Sheets: Đã ghi 1 dòng" in bao_cao.tom_tat()

@@ -16,6 +16,7 @@ import time
 import pandas as pd
 import streamlit as st
 
+import bang_ngang
 from engine import Engine, Config, ScanResult, hhmmss
 from channel import ChannelSync
 from sheets import SheetsExporter
@@ -35,6 +36,8 @@ if "sheet_link" not in st.session_state:
     st.session_state.sheet_link = ""
 if "sheet_auto" not in st.session_state:
     st.session_state.sheet_auto = True
+if "sheet_dang_ngang" not in st.session_state:
+    st.session_state.sheet_dang_ngang = True
 if "job" not in st.session_state:
     st.session_state.job = {"running": False, "pct": 0.0, "msg": "", "results": [],
                             "error": "", "kind": ""}
@@ -69,13 +72,25 @@ def lay_sheets() -> SheetsExporter:
     return SheetsExporter(sheet=st.session_state.sheet_link)
 
 
-def day_len_sheets(rows, im_lang=False):
+def day_len_sheets(results: list[ScanResult]) -> tuple[bool, str]:
     """Đẩy các dòng kết quả lên Google Sheets. Trả về (ok, thông_báo)."""
+    if not results:
+        return False, "Không có dữ liệu để ghi."
+
+    if st.session_state.sheet_dang_ngang:
+        header = bang_ngang.HEADER_NGANG
+        rows = eng.to_rows_ngang(results)
+    else:
+        header = eng.HEADER
+        rows = eng.to_rows(results)
+    if not rows:
+        return False, "Không có dữ liệu để ghi."
+
     sx = lay_sheets()
     if not sx.san_sang():
         return False, sx.thieu_gi()
     try:
-        n = sx.append(eng.HEADER, rows)
+        n = sx.append(header, rows)
         return True, f"Đã ghi {n} dòng lên Google Sheets."
     except Exception as e:  # noqa: BLE001
         return False, f"Lỗi ghi Sheets: {e}"
@@ -90,18 +105,25 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
 
     # Tự động đẩy lên Google Sheets ngay sau khi quét xong
     if st.session_state.sheet_auto and not job.get("da_day_sheet") and rows:
-        ok, tb = day_len_sheets(rows)
+        ok, tb = day_len_sheets(results)
         job["da_day_sheet"] = True
         if ok:
             st.success("📊 " + tb)
+        elif tb == "Không có dữ liệu để ghi.":
+            st.info("📊 " + tb)
         elif lay_sheets().sheet_id:
             st.warning("📊 Không đẩy được lên Sheets: " + tb)
 
     c1, c2, c3, c4 = st.columns(4)
     with c3:
         if st.button("📊 Đẩy lên Google Sheets", width="stretch"):
-            ok, tb = day_len_sheets(rows)
-            (st.success if ok else st.error)(tb)
+            ok, tb = day_len_sheets(results)
+            if ok:
+                st.success(tb)
+            elif tb == "Không có dữ liệu để ghi.":
+                st.info(tb)
+            else:
+                st.error(tb)
     with c1:
         st.download_button("⬇️ Tải báo cáo CSV", csv_bytes,
                            file_name=f"ketqua_{time.strftime('%Y%m%d_%H%M%S')}.csv",
@@ -201,6 +223,14 @@ with st.sidebar:
             placeholder="https://docs.google.com/spreadsheets/d/...")
         st.session_state.sheet_auto = st.checkbox(
             "Tự động đẩy sau mỗi lần quét", st.session_state.sheet_auto)
+        lua_chon_dinh_dang = st.radio(
+            "Định dạng đẩy lên Sheets",
+            ("Ngang (khớp bảng 34 cột)", "Dọc (chi tiết, 15 cột)"),
+            index=0 if st.session_state.sheet_dang_ngang else 1,
+        )
+        st.session_state.sheet_dang_ngang = (
+            lua_chon_dinh_dang == "Ngang (khớp bảng 34 cột)"
+        )
         sx_tmp = SheetsExporter(sheet=st.session_state.sheet_link)
         em = sx_tmp.email_service_account()
         if em:

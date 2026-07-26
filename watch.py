@@ -2,13 +2,12 @@
 """Mô hình dữ liệu và lưu trữ danh sách nguồn YouTube cần theo dõi."""
 
 from dataclasses import asdict, dataclass, field
-import json
-import os
 import re
 from typing import Any, Callable, Optional
 
 import bang_ngang
 from channel import ChannelSync
+from luu_tru import doc_json_an_toan, ghi_json_an_toan
 from sheets import SheetsExporter
 
 
@@ -44,23 +43,40 @@ class BaoCao:
     tong_bang_chung: int = 0
     csv_path: str = ""
     sheets_ok: bool = False
+    sheets_so_dong: int = 0
     sheets_note: str = ""
     loi: list = field(default_factory=list)
 
     def tom_tat(self) -> str:
         """Trả về bản tóm tắt nhiều dòng, tiếng Việt, để in ra console hoặc gửi email."""
+        loi_csv = any(
+            dong.startswith("Không xuất được CSV:")
+            for dong in self.loi
+        )
+        if self.csv_path:
+            trang_thai_csv = self.csv_path
+        elif loi_csv:
+            trang_thai_csv = "Lỗi (xem chi tiết bên dưới)"
+        else:
+            trang_thai_csv = "Không có dữ liệu để ghi"
+
+        if self.sheets_ok:
+            trang_thai_sheets = (
+                f"Đã ghi {self.sheets_so_dong} dòng"
+                if self.sheets_so_dong > 0
+                else "Không có dữ liệu để ghi"
+            )
+        else:
+            trang_thai_sheets = self.sheets_note or "Không sử dụng"
+
         cac_dong = [
             f"Tổng ứng viên: {self.tong_ung_vien}",
             f"Đã quét trước: {self.da_quet_truoc}",
             f"Quét mới: {self.quet_moi}",
             f"Nguồn có vi phạm: {self.nguon_co_vi_pham}",
             f"Tổng bằng chứng: {self.tong_bang_chung}",
-            f"File CSV: {self.csv_path or 'Không tạo'}",
-            (
-                "Google Sheets: Đã ghi thành công"
-                if self.sheets_ok
-                else f"Google Sheets: {self.sheets_note or 'Không sử dụng'}"
-            ),
+            f"File CSV: {trang_thai_csv}",
+            f"Google Sheets: {trang_thai_sheets}",
         ]
         if self.loi:
             cac_dong.append("Lỗi:")
@@ -96,15 +112,8 @@ def lay_id_youtube(url: str) -> str:
 
 
 def doc_watchlist(path: str) -> WatchList:
-    """Đọc watchlist.json. File không tồn tại hoặc hỏng -> trả WatchList rỗng."""
-    if not os.path.isfile(path):
-        return WatchList()
-
-    try:
-        with open(path, encoding="utf-8") as f:
-            du_lieu = json.load(f)
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return WatchList()
+    """Đọc watchlist.json; file hỏng không phục hồi được sẽ ném LoiDuLieu."""
+    du_lieu = doc_json_an_toan(path, {})
 
     if not isinstance(du_lieu, dict):
         return WatchList()
@@ -150,8 +159,7 @@ def ghi_watchlist(wl: WatchList, path: str) -> None:
         "kho": wl.kho,
         "gioi_han_moi_lan": wl.gioi_han_moi_lan,
     }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(du_lieu, f, ensure_ascii=False, indent=2)
+    ghi_json_an_toan(path, du_lieu)
 
 
 def id_da_quet(engine: Any, chi_thanh_cong: bool = True) -> set:
@@ -313,11 +321,8 @@ def chay_giam_sat(
                 else:
                     header = engine.HEADER
                     rows = engine.to_rows(ket_qua)
-                so_dong = sheets.append(header, rows)
+                bao_cao.sheets_so_dong = sheets.append(header, rows)
                 bao_cao.sheets_ok = True
-                bao_cao.sheets_note = (
-                    f"Đã ghi {so_dong} dòng lên Google Sheets."
-                )
         except Exception as e:  # noqa: BLE001
             bao_cao.sheets_note = f"Lỗi ghi Google Sheets: {e}"
 

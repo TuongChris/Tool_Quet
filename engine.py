@@ -40,6 +40,7 @@ from typing import Callable, Iterable, Optional
 
 import channel
 import dossier
+from luu_tru import LoiDuLieu, doc_json_an_toan, ghi_json_an_toan
 
 # =====================================================================
 #  Kiểu dữ liệu
@@ -191,6 +192,7 @@ class Engine:
         self._lock = threading.Lock()
         self._cache_khoa = None
         self._cache_clips = []
+        self.canh_bao_khoi_dong: list = []
         self._init_sqlite()
         self._init_kho()
 
@@ -208,23 +210,25 @@ class Engine:
         return (sach or "kho") + "_" + hashlib.md5(ten.encode("utf-8")).hexdigest()[:6]
 
     def _doc_khos(self) -> dict:
-        import json
-        if os.path.exists(self.kho_file):
-            try:
-                with open(self.kho_file, encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {"dang_dung": "", "danh_sach": []}
+        return doc_json_an_toan(
+            self.kho_file,
+            {"dang_dung": "", "danh_sach": []},
+        )
 
     def _ghi_khos(self, d: dict) -> None:
-        import json
-        with open(self.kho_file, "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=2)
+        ghi_json_an_toan(self.kho_file, d)
 
     def _init_kho(self) -> None:
         """Nạp kho đang dùng. Tự chuyển đổi dữ liệu từ phiên bản cũ (1 kho duy nhất)."""
-        d = self._doc_khos()
+        try:
+            d = self._doc_khos()
+        except LoiDuLieu as e:
+            self.canh_bao_khoi_dong.append(str(e))
+            self._ap_dung_kho(
+                "",
+                {"dang_dung": "", "danh_sach": []},
+            )
+            return
         # Nâng cấp: đã có db.pklz kiểu cũ mà chưa khai báo kho nào
         if not d["danh_sach"] and os.path.exists(os.path.join(self.data_dir, "db.pklz")):
             d = {"dang_dung": "Kho mặc định",

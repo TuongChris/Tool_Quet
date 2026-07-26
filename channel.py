@@ -16,13 +16,14 @@ Lưu ý: file này chỉ lo phần TẢI VỀ. Việc tạo vân tay vẫn do en
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+from luu_tru import doc_json_an_toan, ghi_json_an_toan
 
 # Ký tự Windows không cho phép đặt trong tên file
 RE_XAU = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -64,17 +65,10 @@ class ChannelSync:
     # ---------- metadata ----------
 
     def load_meta(self) -> dict:
-        if os.path.exists(self.meta_file):
-            try:
-                with open(self.meta_file, encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return {}
-        return {}
+        return doc_json_an_toan(self.meta_file, {})
 
     def save_meta(self, meta: dict) -> None:
-        with open(self.meta_file, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+        ghi_json_an_toan(self.meta_file, meta)
 
     def va_metadata(
         self,
@@ -327,9 +321,21 @@ class ChannelSync:
         """
         tren_dia = self.quet_id_tren_dia()
         cu = self.done_ids()
-        with open(self.archive, "w", encoding="utf-8") as f:
-            for vid in sorted(tren_dia):
-                f.write(f"youtube {vid}\n")
+        file_tam = self.archive + ".tmp"
+        try:
+            with open(file_tam, "w", encoding="utf-8") as f:
+                for vid in sorted(tren_dia):
+                    f.write(f"youtube {vid}\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(file_tam, self.archive)
+        except BaseException:
+            try:
+                if os.path.exists(file_tam):
+                    os.remove(file_tam)
+            except OSError:
+                pass
+            raise
         return {
             "tren_dia": len(tren_dia),
             "archive_cu": len(cu),
