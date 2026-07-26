@@ -16,6 +16,7 @@ import argparse
 import os
 import sys
 
+import don_dep
 import watch
 from channel import ChannelSync
 from engine import Engine, liet_ke_media
@@ -43,6 +44,7 @@ def main():
             "file",
             "watch",
             "vameta",
+            "dondep",
         ],
     )
     ap.add_argument("muc", nargs="*", help="Thư mục / link / đường dẫn file")
@@ -71,6 +73,11 @@ def main():
         action="store_true",
         help="Xuất báo cáo watch theo dạng dọc cũ",
     )
+    ap.add_argument(
+        "--xem-truoc",
+        action="store_true",
+        help="Chỉ xem các file sẽ xóa với lệnh dondep",
+    )
     a = ap.parse_args()
 
     if a.lenh == "vameta":
@@ -87,6 +94,24 @@ def main():
 
     eng = Engine()
     eng.config.ncores = a.ncores
+
+    if a.lenh == "dondep":
+        ket_qua = don_dep.don_kho_dem(
+            eng.dl_dir,
+            max_gb=eng.config.dem_max_gb,
+            max_ngay=eng.config.dem_max_ngay,
+            thuc_hien=not a.xem_truoc,
+        )
+        hanh_dong = "Sẽ xóa" if a.xem_truoc else "Đã xóa"
+        print(
+            f"Kho đệm: {ket_qua['tong_file']} file, "
+            f"{ket_qua['tong_gb']:.3f} GB.\n"
+            f"{hanh_dong}: {ket_qua['xoa_file']} file, "
+            f"{ket_qua['xoa_gb']:.3f} GB."
+        )
+        if ket_qua["loi"]:
+            print("Lỗi:", *ket_qua["loi"], sep="\n  - ")
+        return
 
     if a.lenh == "watch":
         watchlist_path = a.file or "watchlist.json"

@@ -64,6 +64,8 @@ class Config:
     dedup_s: float = 20.0      # Ngưỡng gộp 2 kết quả trùng nhau (do các khúc gối nhau)
     ytdlp_format: str = "ba/b"  # Định dạng yt-dlp: chỉ lấy audio tốt nhất cho nhẹ
     keep_downloads: bool = True  # Giữ lại audio đã tải để lần sau khỏi tải lại
+    dem_max_gb: float = 20.0    # Ngân sách kho đệm; đặt 0 để tắt giới hạn dung lượng
+    dem_max_ngay: int = 7       # Tuổi tối đa của file đệm; đặt 0 để tắt giới hạn tuổi
 
     # --- Chọn lọc kết quả cuối cùng ---
     top_n: int = 5               # Chỉ giữ lại bao nhiêu kết quả tốt nhất

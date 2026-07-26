@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 import bang_ngang
 from channel import ChannelSync
+from don_dep import don_kho_dem
 from khoa import DangChayRoi, KhoaTienTrinh
 from luu_tru import doc_json_an_toan, ghi_json_an_toan
 from sheets import SheetsExporter
@@ -43,6 +44,8 @@ class BaoCao:
     quet_moi: int = 0
     nguon_co_vi_pham: int = 0
     tong_bang_chung: int = 0
+    da_don_file: int = 0
+    da_don_gb: float = 0.0
     csv_path: str = ""
     sheets_ok: bool = False
     sheets_so_dong: int = 0
@@ -77,6 +80,10 @@ class BaoCao:
             f"Quét mới: {self.quet_moi}",
             f"Nguồn có vi phạm: {self.nguon_co_vi_pham}",
             f"Tổng bằng chứng: {self.tong_bang_chung}",
+            (
+                f"Đã dọn kho đệm: {self.da_don_file} file "
+                f"({self.da_don_gb:.3f} GB)"
+            ),
             f"File CSV: {trang_thai_csv}",
             f"Google Sheets: {trang_thai_sheets}",
         ]
@@ -277,7 +284,43 @@ def _chay_giam_sat_da_khoa(
 ) -> BaoCao:
     """Thực hiện lượt giám sát sau khi caller đã giữ khóa liên tiến trình."""
     bao_cao = BaoCao()
+    try:
+        return _thuc_hien_giam_sat(
+            engine,
+            wl,
+            bao_cao,
+            progress=progress,
+            lister=lister,
+            sheet_link=sheet_link,
+            dang_ngang=dang_ngang,
+        )
+    finally:
+        try:
+            ket_qua_don = don_kho_dem(
+                engine.dl_dir,
+                max_gb=engine.config.dem_max_gb,
+                max_ngay=engine.config.dem_max_ngay,
+            )
+            bao_cao.da_don_file = ket_qua_don["xoa_file"]
+            bao_cao.da_don_gb = ket_qua_don["xoa_gb"]
+            bao_cao.loi.extend(
+                f"Dọn kho đệm: {dong}"
+                for dong in ket_qua_don["loi"]
+            )
+        except Exception as e:  # noqa: BLE001
+            bao_cao.loi.append(f"Không dọn được kho đệm: {e}")
 
+
+def _thuc_hien_giam_sat(
+    engine: Any,
+    wl: WatchList,
+    bao_cao: BaoCao,
+    progress: Optional[Callable] = None,
+    lister: Optional[Callable] = None,
+    sheet_link: str = "",
+    dang_ngang: bool = True,
+) -> BaoCao:
+    """Quét nguồn, xuất CSV và đẩy Sheets trong một lượt giám sát."""
     if wl.kho:
         try:
             engine.use_kho(wl.kho)
