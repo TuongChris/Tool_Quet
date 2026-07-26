@@ -19,6 +19,7 @@ import sys
 import don_dep
 import watch
 from channel import ChannelSync
+from dung_lai import YeuCauDung
 from engine import Engine, liet_ke_media
 
 try:
@@ -30,6 +31,14 @@ except Exception:
 def in_tien_do(pct, msg):
     sys.stdout.write(f"\r[{pct*100:5.1f}%] {msg[:90]:<90}")
     sys.stdout.flush()
+
+
+def _file_dung_mac_dinh() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "data",
+        "DUNG",
+    )
 
 
 def main():
@@ -45,6 +54,7 @@ def main():
             "watch",
             "vameta",
             "dondep",
+            "dung",
         ],
     )
     ap.add_argument("muc", nargs="*", help="Thư mục / link / đường dẫn file")
@@ -79,6 +89,14 @@ def main():
         help="Chỉ xem các file sẽ xóa với lệnh dondep",
     )
     a = ap.parse_args()
+
+    if a.lenh == "dung":
+        file_dung = _file_dung_mac_dinh()
+        os.makedirs(os.path.dirname(file_dung), exist_ok=True)
+        with open(file_dung, "w", encoding="utf-8") as f:
+            f.write("Yêu cầu dừng từ CLI.\n")
+        print(f"Đã gửi yêu cầu dừng qua file: {file_dung}")
+        return
 
     if a.lenh == "vameta":
         if not a.kho:
@@ -116,6 +134,11 @@ def main():
     if a.lenh == "watch":
         watchlist_path = a.file or "watchlist.json"
         wl = watch.doc_watchlist(watchlist_path)
+        dung_lai = YeuCauDung(
+            eng,
+            os.path.join(eng.data_dir, "DUNG"),
+        )
+        dung_lai.bat_tin_hieu()
         if not wl.muc:
             print(
                 f"Không có mục theo dõi trong {watchlist_path}.\n"
@@ -139,16 +162,21 @@ def main():
                 '  "gioi_han_moi_lan": 20\n'
                 "}"
             )
+            dung_lai.don_file_dung()
             return
         if a.gioi_han > 0:
             wl.gioi_han_moi_lan = a.gioi_han
-        bc = watch.chay_giam_sat(
-            eng,
-            wl,
-            in_tien_do,
-            sheet_link=a.sheet,
-            dang_ngang=not a.dang_doc,
-        )
+        try:
+            bc = watch.chay_giam_sat(
+                eng,
+                wl,
+                in_tien_do,
+                sheet_link=a.sheet,
+                dang_ngang=not a.dang_doc,
+                dung_lai=dung_lai,
+            )
+        finally:
+            dung_lai.don_file_dung()
         print("\n" + bc.tom_tat())
         if bc.loi:
             raise SystemExit(1)

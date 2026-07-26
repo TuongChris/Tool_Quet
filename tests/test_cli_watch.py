@@ -12,6 +12,7 @@ from watch import BaoCao, MucTheoDoi, WatchList
 class _EngineGia:
     def __init__(self):
         self.config = SimpleNamespace(ncores=1)
+        self.data_dir = ""
 
 
 class _ChannelSyncGia:
@@ -25,6 +26,18 @@ class _ChannelSyncGia:
         return self.ket_qua
 
 
+class _YeuCauDungGia:
+    def __init__(self, engine=None, file_dung=""):
+        self.engine = engine
+        self.file_dung = file_dung
+
+    def bat_tin_hieu(self):
+        pass
+
+    def don_file_dung(self):
+        pass
+
+
 def test_cli_watch_khong_co_danh_sach_in_huong_dan(
     monkeypatch,
     capsys,
@@ -32,6 +45,7 @@ def test_cli_watch_khong_co_danh_sach_in_huong_dan(
     duong_dan = []
     monkeypatch.setattr("sys.argv", ["cli.py", "watch"])
     monkeypatch.setattr(cli, "Engine", _EngineGia)
+    monkeypatch.setattr(cli, "YeuCauDung", _YeuCauDungGia)
     monkeypatch.setattr(
         cli.watch,
         "doc_watchlist",
@@ -60,12 +74,14 @@ def test_cli_watch_chuyen_tham_so_va_in_tom_tat(monkeypatch, capsys):
         lister=None,
         sheet_link="",
         dang_ngang=True,
+        dung_lai=None,
     ):
         loi_goi.append((
             watchlist.gioi_han_moi_lan,
             progress,
             sheet_link,
             dang_ngang,
+            dung_lai,
         ))
         return BaoCao(quet_moi=1)
 
@@ -83,12 +99,15 @@ def test_cli_watch_chuyen_tham_so_va_in_tom_tat(monkeypatch, capsys):
         ],
     )
     monkeypatch.setattr(cli, "Engine", _EngineGia)
+    monkeypatch.setattr(cli, "YeuCauDung", _YeuCauDungGia)
     monkeypatch.setattr(cli.watch, "doc_watchlist", lambda path: wl)
     monkeypatch.setattr(cli.watch, "chay_giam_sat", chay_gia)
 
     cli.main()
 
-    assert loi_goi == [(5, cli.in_tien_do, "sheet-id", True)]
+    assert len(loi_goi) == 1
+    assert loi_goi[0][:4] == (5, cli.in_tien_do, "sheet-id", True)
+    assert isinstance(loi_goi[0][4], _YeuCauDungGia)
     assert "Quét mới: 1" in capsys.readouterr().out
 
 
@@ -99,6 +118,7 @@ def test_cli_watch_co_loi_thoat_ma_1_sau_khi_in_tom_tat(
     wl = WatchList(muc=[MucTheoDoi("link", "https://youtu.be/dQw4w9WgXcQ")])
     monkeypatch.setattr("sys.argv", ["cli.py", "watch"])
     monkeypatch.setattr(cli, "Engine", _EngineGia)
+    monkeypatch.setattr(cli, "YeuCauDung", _YeuCauDungGia)
     monkeypatch.setattr(cli.watch, "doc_watchlist", lambda path: wl)
     monkeypatch.setattr(
         cli.watch,
@@ -118,6 +138,7 @@ def test_cli_watch_dang_doc_tat_bao_cao_ngang(monkeypatch):
     dang_ngang = []
     monkeypatch.setattr("sys.argv", ["cli.py", "watch", "--dang-doc"])
     monkeypatch.setattr(cli, "Engine", _EngineGia)
+    monkeypatch.setattr(cli, "YeuCauDung", _YeuCauDungGia)
     monkeypatch.setattr(cli.watch, "doc_watchlist", lambda path: wl)
     monkeypatch.setattr(
         cli.watch,

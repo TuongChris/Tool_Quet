@@ -2,11 +2,17 @@
   "muc": [
     {
       "loai": "link",
-      "url": "https://www.youtube.com/watch?v=gP2ZcBxs9BU",
-      "ghi_chu": "thu nghiem",
+      "url": "https://www.youtube.com/watch?v=UcRptZ7TsHI",
+      "ghi_chu": "thu nghiem 1",
+      "bat": true
+    },
+    {
+      "loai": "link",
+      "url": "https://www.youtube.com/watch?v=jewRQQJOgcY",
+      "ghi_chu": "thu nghiem 2",
       "bat": true
     }
   ],
   "kho": "SML",
-  "gioi_han_moi_lan": 1
+  "gioi_han_moi_lan": 3
 }

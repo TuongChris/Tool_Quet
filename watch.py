@@ -255,6 +255,7 @@ def chay_giam_sat(
     lister: Optional[Callable] = None,
     sheet_link: str = "",
     dang_ngang: bool = True,
+    dung_lai: Any = None,
 ) -> BaoCao:
     """Chạy một lượt giám sát đầy đủ."""
     try:
@@ -269,6 +270,7 @@ def chay_giam_sat(
                 lister=lister,
                 sheet_link=sheet_link,
                 dang_ngang=dang_ngang,
+                dung_lai=dung_lai,
             )
     except DangChayRoi as e:
         return BaoCao(loi=[str(e)])
@@ -281,6 +283,7 @@ def _chay_giam_sat_da_khoa(
     lister: Optional[Callable] = None,
     sheet_link: str = "",
     dang_ngang: bool = True,
+    dung_lai: Any = None,
 ) -> BaoCao:
     """Thực hiện lượt giám sát sau khi caller đã giữ khóa liên tiến trình."""
     bao_cao = BaoCao()
@@ -293,6 +296,7 @@ def _chay_giam_sat_da_khoa(
             lister=lister,
             sheet_link=sheet_link,
             dang_ngang=dang_ngang,
+            dung_lai=dung_lai,
         )
     finally:
         try:
@@ -319,6 +323,7 @@ def _thuc_hien_giam_sat(
     lister: Optional[Callable] = None,
     sheet_link: str = "",
     dang_ngang: bool = True,
+    dung_lai: Any = None,
 ) -> BaoCao:
     """Quét nguồn, xuất CSV và đẩy Sheets trong một lượt giám sát."""
     if wl.kho:
@@ -336,7 +341,20 @@ def _thuc_hien_giam_sat(
 
     ket_qua = []
     tong_can_quet = len(can_quet)
+
+    def dung_neu_duoc_yeu_cau(so_con_lai: int) -> bool:
+        if dung_lai is None or not dung_lai.can_dung():
+            return False
+        bao_cao.loi.append(
+            "Đã dừng theo yêu cầu; "
+            f"còn {so_con_lai} video chưa quét."
+        )
+        return True
+
     for i, ung_vien_moi in enumerate(can_quet):
+        if dung_neu_duoc_yeu_cau(tong_can_quet - i):
+            break
+
         def bao_tien_do(pct: float, msg: str, i: int = i) -> None:
             if progress is not None:
                 progress(
@@ -354,6 +372,8 @@ def _thuc_hien_giam_sat(
             bao_cao.loi.append(
                 f"Không quét được {ung_vien_moi.url}: {e}"
             )
+            if dung_neu_duoc_yeu_cau(tong_can_quet - i - 1):
+                break
             continue
 
         ket_qua.append(ket_qua_quet)
@@ -367,6 +387,8 @@ def _thuc_hien_giam_sat(
                 or ung_vien_moi.url
             )
             bao_cao.loi.append(f"{ten_nguon}: {ket_qua_quet.note}")
+        if dung_neu_duoc_yeu_cau(tong_can_quet - i - 1):
+            break
 
     if ket_qua:
         try:
