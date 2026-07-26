@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Test logic thuần cho Engine._merge(), không dùng audio thật."""
 
+from engine import ScanResult
+
 
 def _ket_qua_tho(
     clip: str = "C:/kho/clip.opus",
@@ -113,3 +115,43 @@ def test_merge_chi_tra_ten_file_clip(engine):
     ket_qua = engine._merge(tho)
 
     assert ket_qua[0].clip == "clip-goc.opus"
+
+
+def test_ids_da_quet_loc_dung(engine):
+    engine.save_job(
+        ScanResult(source_name="A lỗi", source_id="a", status="error"),
+        "youtube",
+    )
+    engine.save_job(
+        ScanResult(source_name="A thành công", source_id="a"),
+        "youtube",
+    )
+    engine.save_job(
+        ScanResult(source_name="B lỗi", source_id="b", status="error"),
+        "youtube",
+    )
+
+    assert engine.ids_da_quet() == {"a"}
+    assert engine.ids_da_quet(chi_thanh_cong=False) == {"a", "b"}
+
+
+def test_ids_da_quet_bo_source_id_rong(engine):
+    engine.save_job(ScanResult(source_name="Rỗng", source_id=""), "youtube")
+    engine.save_job(ScanResult(source_name="None", source_id=None), "youtube")
+    engine.save_job(ScanResult(source_name="Hợp lệ", source_id="abc"), "youtube")
+
+    assert engine.ids_da_quet() == {"abc"}
+
+
+def test_chi_muc_duoc_tao(engine):
+    with engine._db() as db:
+        rows = db.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'index' AND name IN (?, ?)",
+            ("idx_jobs_source_id", "idx_matches_job_id"),
+        ).fetchall()
+
+    assert {row["name"] for row in rows} == {
+        "idx_jobs_source_id",
+        "idx_matches_job_id",
+    }

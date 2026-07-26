@@ -328,6 +328,14 @@ class Engine:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER,
                 clip TEXT, start_s REAL, end_s REAL, matched_s REAL,
                 clip_offset_s REAL, hashes INTEGER, confidence TEXT)""")
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_jobs_source_id "
+                "ON jobs(source_id)"
+            )
+            c.execute(
+                "CREATE INDEX IF NOT EXISTS idx_matches_job_id "
+                "ON matches(job_id)"
+            )
 
     @contextlib.contextmanager
     def _db(self):
@@ -975,6 +983,17 @@ class Engine:
         with self._db() as c:
             rows = c.execute("SELECT * FROM jobs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def ids_da_quet(self, chi_thanh_cong: bool = True) -> set:
+        """Trả về tập source_id đã quét, truy vấn thẳng trong SQLite."""
+        dieu_kien = "source_id IS NOT NULL AND source_id != ''"
+        if chi_thanh_cong:
+            dieu_kien += " AND status = 'ok'"
+        with self._db() as c:
+            rows = c.execute(
+                f"SELECT DISTINCT source_id FROM jobs WHERE {dieu_kien}"
+            ).fetchall()
+        return {row["source_id"] for row in rows}
 
     def job_matches(self, job_id: int) -> list:
         with self._db() as c:

@@ -173,8 +173,12 @@ def ghi_watchlist(wl: WatchList, path: str) -> None:
 
 def id_da_quet(engine: Any, chi_thanh_cong: bool = True) -> set:
     """Trả về set các video_id đã quét, đọc từ lịch sử SQLite."""
+    lay_ids = getattr(engine, "ids_da_quet", None)
+    if callable(lay_ids):
+        return lay_ids(chi_thanh_cong=chi_thanh_cong)
+
     ket_qua = set()
-    for job in engine.list_jobs(limit=100000):
+    for job in engine.list_jobs(limit=100_000):
         if chi_thanh_cong and job.get("status") != "ok":
             continue
         video_id = job.get("source_id")

@@ -33,6 +33,15 @@ class _EngineGia:
         return self.jobs
 
 
+class _EngineIdsGia:
+    def __init__(self):
+        self.chi_thanh_cong = None
+
+    def ids_da_quet(self, chi_thanh_cong=True):
+        self.chi_thanh_cong = chi_thanh_cong
+        return {"truy-van-sql"}
+
+
 @pytest.mark.parametrize("url", [
     "https://youtu.be/dQw4w9WgXcQ",
     "https://youtu.be/dQw4w9WgXcQ?t=90",
@@ -149,6 +158,13 @@ def test_id_da_quet_co_the_tinh_ca_job_loi():
     ])
 
     assert id_da_quet(engine, chi_thanh_cong=False) == {"ok-1", "loi-1"}
+
+
+def test_id_da_quet_uu_tien_truy_van_sql():
+    engine = _EngineIdsGia()
+
+    assert id_da_quet(engine, chi_thanh_cong=False) == {"truy-van-sql"}
+    assert engine.chi_thanh_cong is False
 
 
 def test_khu_trung_lap_trong_ung_vien():
@@ -319,8 +335,8 @@ def test_tat_ca_da_quet_thi_khong_quet_va_khong_tao_csv(engine, monkeypatch):
     wl = WatchList(muc=[MucTheoDoi("kenh", "kenh-1")])
     monkeypatch.setattr(
         engine,
-        "list_jobs",
-        lambda limit: [{"source_id": "x1", "status": "ok"}],
+        "ids_da_quet",
+        lambda chi_thanh_cong=True: {"x1"},
     )
     monkeypatch.setattr(
         engine,
