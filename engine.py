@@ -26,6 +26,7 @@ import contextlib
 import csv
 import glob
 import io
+import math
 import os
 import re
 import shutil
@@ -39,6 +40,7 @@ from datetime import datetime
 from typing import Callable, Iterable, Optional
 
 import channel
+import cau_hinh
 import dossier
 from khoa import KhoaTienTrinh
 from luu_tru import LoiDuLieu, doc_json_an_toan, ghi_json_an_toan
@@ -57,16 +59,18 @@ class Config:
     """Toàn bộ tham số điều chỉnh được của hệ thống."""
     chunk_s: int = 3600        # Độ dài mỗi khúc audio khi cắt video dài (giây)
     overlap_s: int = 600       # Hai khúc liên tiếp gối nhau bao nhiêu giây (phải >= clip dài nhất)
+    overlap_tu_dong: bool = True  # Tự tính overlap theo clip dài nhất trong kho
     min_hash: int = 15         # Số hash khớp tối thiểu để tính là kết quả
     min_match_s: float = 5.0   # Đoạn khớp phải dài tối thiểu bao nhiêu giây
     max_matches: int = 200     # Số kết quả tối đa audfprint trả về mỗi khúc
-    ncores: int = 1            # Số tiến trình audfprint dùng song song
+    ncores: int = 0            # 0 = tự dò theo số nhân CPU
     dedup_s: float = 20.0      # Ngưỡng gộp 2 kết quả trùng nhau (do các khúc gối nhau)
     # Shifts cao hơn tăng độ chính xác nhưng chạy chậm và làm kho lớn hơn; 0 = hành vi cũ.
     shifts_kho: int = 4        # Subframe shifts khi tạo kho vân tay
     shifts_quet: int = 4       # Subframe shifts khi quét video dài
     ytdlp_format: str = "ba/b"  # Định dạng yt-dlp: chỉ lấy audio tốt nhất cho nhẹ
     keep_downloads: bool = True  # Giữ lại audio đã tải để lần sau khỏi tải lại
+    ghi_tung_phan: bool = True   # Ghi Sheets ngay sau mỗi video giám sát
     dem_max_gb: float = 20.0    # Ngân sách kho đệm; đặt 0 để tắt giới hạn dung lượng
     dem_max_ngay: int = 7       # Tuổi tối đa của file đệm; đặt 0 để tắt giới hạn tuổi
 
@@ -77,10 +81,11 @@ class Config:
     phan_bo_deu: bool = True     # Chia video vi phạm thành N vùng, mỗi vùng lấy 1 kết quả
     uu_tien_clip_khac_nhau: bool = True  # Ưu tiên 5 clip GỐC KHÁC NHAU thay vì trùng lặp
 
-    def validate(self) -> None:
-        if self.chunk_s <= self.overlap_s:
+    def validate(self, overlap_s: Optional[int] = None) -> None:
+        overlap = self.overlap_s if overlap_s is None else overlap_s
+        if self.chunk_s <= overlap:
             raise ValueError("chunk_s phải lớn hơn overlap_s.")
-        if self.overlap_s < 60:
+        if overlap < 60:
             raise ValueError("overlap_s nên >= 60 giây để không bỏ sót clip nằm vắt qua ranh giới.")
 
 
@@ -144,6 +149,12 @@ def hhmmss(giay: float) -> str:
     return f"{giay // 3600:02d}:{(giay % 3600) // 60:02d}:{giay % 60:02d}"
 
 
+def so_nhan_nen_dung() -> int:
+    """Tự chọn số nhân CPU cho tác vụ nền, luôn chừa ít nhất một nhân cho hệ thống."""
+    so_nhan = os.cpu_count() or 1
+    return max(1, min(8, so_nhan - 1))
+
+
 def danh_gia(so_hash: int) -> str:
     if so_hash >= 100:
         return "Rất chắc chắn"
@@ -180,6 +191,8 @@ class Engine:
     def __init__(self, root: Optional[str] = None, config: Optional[Config] = None):
         self.root = os.path.abspath(root or os.path.dirname(os.path.abspath(__file__)))
         self.config = config or Config()
+        self.canh_bao_khoi_dong: list = []
+        self.cau_hinh_da_luu: dict = {}
 
         self.bin_dir = os.path.join(self.root, "bin")
         self.data_dir = os.path.join(self.root, "data")
@@ -203,9 +216,51 @@ class Engine:
         self.cancel_event = threading.Event()
         self._cache_khoa = None
         self._cache_clips = []
-        self.canh_bao_khoi_dong: list = []
+        self._nap_cau_hinh()
         self._init_sqlite()
         self._init_kho()
+
+    def _nap_cau_hinh(self) -> None:
+        """Nạp cấu hình bền vững; mọi lỗi đều được hạ thành cảnh báo khởi động."""
+        try:
+            du_lieu = cau_hinh.doc_cau_hinh(self.data_dir)
+            self.cau_hinh_da_luu = du_lieu
+            bi_bo_qua = cau_hinh.ap_vao_config(self.config, du_lieu)
+            bi_bo_qua = [
+                khoa for khoa in bi_bo_qua
+                if khoa not in cau_hinh.GIA_TRI_GIAO_DIEN_MAC_DINH
+            ]
+            if bi_bo_qua:
+                self.canh_bao_khoi_dong.append(
+                    "Đã bỏ qua khóa cấu hình lạ hoặc sai kiểu: "
+                    + ", ".join(sorted(bi_bo_qua))
+                )
+            if du_lieu:
+                self.config.validate()
+        except Exception as e:  # noqa: BLE001
+            self.config = Config()
+            self.cau_hinh_da_luu = {}
+            self.canh_bao_khoi_dong.append(
+                f"Không nạp được cấu hình người dùng; đang dùng mặc định: {e}"
+            )
+
+    def luu_cau_hinh(self, them: dict | None = None) -> None:
+        """Lưu Config và các tùy chọn giao diện không bí mật được cho phép."""
+        du_lieu = cau_hinh.lay_tu_config(self.config)
+        for khoa, mac_dinh in cau_hinh.GIA_TRI_GIAO_DIEN_MAC_DINH.items():
+            if them and khoa in them and type(them[khoa]) is type(mac_dinh):
+                du_lieu[khoa] = them[khoa]
+        cau_hinh.ghi_cau_hinh(self.data_dir, du_lieu)
+        self.cau_hinh_da_luu = dict(du_lieu)
+
+    def khoi_phuc_cau_hinh_mac_dinh(self) -> None:
+        """Xóa cấu hình đã lưu và áp Config mặc định ngay trong phiên hiện tại."""
+        duong_dan = os.path.join(self.data_dir, cau_hinh.TEN_FILE)
+        for hau_to in ("", ".bak", ".tmp"):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(duong_dan + hau_to)
+        self.config = Config()
+        self.cau_hinh_da_luu = {}
 
     # =================================================================
     #  QUẢN LÝ NHIỀU KHO CLIP GỐC
@@ -547,14 +602,17 @@ class Engine:
         return meta
 
     def _audfprint_cmd(self, sub: str, *them: str) -> list:
+        ncores = self.config.ncores
+        if ncores <= 0:
+            ncores = so_nhan_nen_dung()
         return [sys.executable, "-u", self.audfprint, sub, "--dbase", self.db_file,
-                "--ncores", str(self.config.ncores), "--continue-on-error", *them]
+                "--ncores", str(ncores), "--continue-on-error", *them]
 
     def build_database(self, thumuc: str, mode: str = "new",
                        progress: Optional[Callable] = None) -> dict:
         """Tạo hoặc bổ sung kho vân tay trong khóa độc quyền liên tiến trình."""
         with KhoaTienTrinh(
-            os.path.join(self.data_dir, "kho.lock"),
+            os.path.join(self.data_dir, "tool.lock"),
             "dựng kho vân tay",
         ):
             return self._build_database_da_khoa(
@@ -630,18 +688,32 @@ class Engine:
         sub = "new" if (mode == "new" or not os.path.exists(self.db_file)) else "add"
 
         tong = len(files)
-        dem = {"n": 0}
+        dem = {"n": 0, "don": 0, "song_song": 0}
         self._bao(progress, 0.0, f"Bắt đầu tạo vân tay cho {tong} clip gốc...")
 
         loi_file = []
 
         def on_line(dong: str):
             if "ingesting #" in dong:
-                dem["n"] += 1
+                dem["don"] += 1
+                dem["n"] = max(dem["don"], dem["song_song"])
                 ten = dong.split(":", 1)[-1].replace("...", "").strip()
                 self._bao(progress, dem["n"] / max(1, tong),
                           f"[{dem['n']}/{tong}] {os.path.basename(ten)}")
-            elif any(k in dong for k in ("Error", "error", "Traceback", "Failed", "Cannot")):
+            else:
+                da_xu_ly_song_song = re.search(
+                    r"hash_table\s+\d+\s+has\s+(\d+)\s+files",
+                    dong,
+                )
+                if da_xu_ly_song_song:
+                    dem["song_song"] += int(da_xu_ly_song_song.group(1))
+                    dem["n"] = max(dem["don"], dem["song_song"])
+                    self._bao(
+                        progress,
+                        dem["n"] / max(1, tong),
+                        f"Đã xử lý song song {dem['n']}/{tong} clip...",
+                    )
+            if any(k in dong for k in ("Error", "error", "Traceback", "Failed", "Cannot")):
                 loi_file.append(dong)
                 # Vẫn báo ra giao diện để người dùng thấy có chuyện gì đang xảy ra
                 self._bao(progress, dem["n"] / max(1, tong), f"⚠️ {dong[:80]}")
@@ -742,10 +814,59 @@ class Engine:
     #  3) CẮT KHÚC + SO KHỚP
     # =================================================================
 
+    def _overlap_thuc_te(
+        self,
+        progress: Optional[Callable] = None,
+        pct: float = 0.0,
+    ) -> int:
+        """Tính overlap hiệu lực từ metadata, không làm thay đổi cấu hình gốc."""
+        cfg = self.config
+        overlap = int(cfg.overlap_s)
+        clip_dai_nhat = 0.0
+
+        if cfg.overlap_tu_dong:
+            for meta in self.clip_meta().values():
+                try:
+                    duration = float(meta.get("duration") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if duration > clip_dai_nhat:
+                    clip_dai_nhat = duration
+
+            if clip_dai_nhat > 0:
+                de_xuat = math.ceil(clip_dai_nhat + 30)
+                overlap = max(120, min(1800, de_xuat))
+                # An toàn phát hiện quan trọng hơn giới hạn tối ưu 1800 giây.
+                overlap = max(overlap, math.ceil(clip_dai_nhat))
+
+        if overlap >= cfg.chunk_s:
+            overlap_cu = overlap
+            overlap = max(1, cfg.chunk_s // 2)
+            self._bao(
+                progress,
+                pct,
+                f"⚠️ Khúc gối tính được {overlap_cu} giây không nhỏ hơn độ dài "
+                f"khúc; đã kẹp về {overlap} giây.",
+            )
+
+        cfg.validate(overlap)
+        if clip_dai_nhat > 0:
+            thong_tin = (
+                f"Khúc gối thực tế: {overlap} giây "
+                f"(clip dài nhất: {math.ceil(clip_dai_nhat)} giây)."
+            )
+        else:
+            thong_tin = (
+                f"Khúc gối thực tế: {overlap} giây "
+                "(không có metadata thời lượng, dùng cấu hình hiện tại)."
+            )
+        self._bao(progress, pct, thong_tin)
+        return overlap
+
     def _cut_chunks(self, media: str, progress: Optional[Callable] = None,
                     pct0: float = 0.40, pct1: float = 0.60) -> tuple:
         cfg = self.config
-        cfg.validate()
+        overlap = self._overlap_thuc_te(progress, pct0)
         shutil.rmtree(self.chunk_dir, ignore_errors=True)
         os.makedirs(self.chunk_dir, exist_ok=True)
 
@@ -753,7 +874,7 @@ class Engine:
         if not tong:
             raise RuntimeError(f"Không đọc được thời lượng file: {media}")
 
-        buoc = cfg.chunk_s - cfg.overlap_s
+        buoc = cfg.chunk_s - overlap
         moc = list(range(0, int(tong) + 1, buoc))
         ds = []
         for i, bat_dau in enumerate(moc):

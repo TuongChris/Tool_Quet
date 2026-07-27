@@ -89,7 +89,7 @@ def test_tien_trinh_bi_kill_thi_he_dieu_hanh_tu_nha_khoa(tmp_path):
 
 
 def test_chay_giam_sat_khi_dang_khoa_tra_bao_cao_loi(engine):
-    path = os.path.join(engine.data_dir, "giamsat.lock")
+    path = os.path.join(engine.data_dir, "tool.lock")
 
     with KhoaTienTrinh(path, "lượt trước"):
         bao_cao = chay_giam_sat(engine, WatchList())
@@ -99,8 +99,20 @@ def test_chay_giam_sat_khi_dang_khoa_tra_bao_cao_loi(engine):
 
 
 def test_build_database_bi_chan_khi_tien_trinh_khac_dang_dung(engine):
-    path = os.path.join(engine.data_dir, "kho.lock")
+    path = os.path.join(engine.data_dir, "tool.lock")
 
     with KhoaTienTrinh(path, "dựng kho lần trước"):
         with pytest.raises(DangChayRoi, match="dựng kho lần trước"):
             engine.build_database("không được xử lý tới đường dẫn này")
+
+
+def test_mot_khoa_chan_ca_hai_thao_tac(engine):
+    path = os.path.join(engine.data_dir, "tool.lock")
+
+    with KhoaTienTrinh(path, "tác vụ kiểm tra"):
+        bao_cao = chay_giam_sat(engine, WatchList())
+        with pytest.raises(DangChayRoi, match="tác vụ kiểm tra"):
+            engine.build_database("không được xử lý")
+
+    assert bao_cao.loi
+    assert "tác vụ kiểm tra" in bao_cao.loi[0]

@@ -1,6 +1,7 @@
 # Bi mat - TUYET DOI khong commit
 google_key.json
 *.json.key
+cau_hinh.json
 
 # Du lieu lon / sinh ra khi chay
 data/

@@ -63,6 +63,24 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 - Xử lý lỗi: hàm cấp cao trả `ScanResult(status="error", note=...)` thay vì ném exception
   ra tận UI, để quét hàng loạt không bị đứt giữa chừng.
 
+## Quy ước khoá
+
+- Mọi thao tác nặng có thể đọc hoặc ghi kho vân tay, lịch sử hay dữ liệu giám sát phải dùng
+  chung khoá cấp hệ điều hành `data/tool.lock`. Tên chủ khoá vẫn phải mô tả đúng thao tác
+  đang chạy để thông báo bận có ích cho người dùng.
+- Nếu sau này thật sự cần nhiều khoá, phải quy định và tuân thủ một thứ tự lấy khoá cố định
+  trên toàn dự án. Không được lấy các khoá theo thứ tự tùy ý vì sẽ tạo kẹt chéo.
+
+## Ý nghĩa các trường thời gian trong Match
+
+- `clip_bat_dau_s`: thời điểm **clip bắt đầu** trong video dài; dùng để hiển thị và tạo link
+  nhảy mốc. `start_s` mang cùng ý nghĩa này.
+- `vung_khop_s`: thời điểm **vùng vân tay bắt đầu khớp**, không phải đầu clip.
+- `clip_offset_s`: độ dài phần đầu clip gốc đã bị bỏ qua trước khi vùng khớp bắt đầu.
+
+Ba khái niệm trên không được dùng thay thế cho nhau. Khi dựng báo cáo hoặc link mốc, luôn dùng
+thời điểm clip bắt đầu; khi chẩn đoán vân tay mới dùng vùng khớp và offset.
+
 ## Kiểm thử — LÀM ƠN CHẠY TRƯỚC KHI BÁO XONG
 
 Dự án chưa có test tự động. Trước khi kết luận một thay đổi là xong, phải chạy tối thiểu:

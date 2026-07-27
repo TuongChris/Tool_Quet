@@ -698,3 +698,163 @@ def test_chay_giam_sat_day_sheets_theo_header_ngang(
     assert bao_cao.sheets_ok is True
     assert bao_cao.sheets_so_dong == 1
     assert "Google Sheets: Đã ghi 1 dòng" in bao_cao.tom_tat()
+
+
+def test_ghi_tung_phan_khong_trung_dong(engine, monkeypatch, tmp_path):
+    da_ghi = []
+
+    class SheetsGia:
+        def __init__(self, sheet=""):
+            self.sheet = sheet
+
+        def san_sang(self):
+            return True
+
+        def append(self, header, rows):
+            da_ghi.extend(rows)
+            return len(rows)
+
+    videos = [
+        SimpleNamespace(id=f"x{i}", title=f"Video {i}", url=f"u{i}")
+        for i in range(1, 3)
+    ]
+    monkeypatch.setattr("watch.SheetsExporter", SheetsGia)
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: ScanResult(
+            source_name=url,
+            matches=[object()],
+        ),
+    )
+    monkeypatch.setattr(
+        engine,
+        "to_rows_ngang",
+        lambda ket: [[kq.source_name] for kq in ket],
+    )
+    monkeypatch.setattr(
+        engine,
+        "export_csv_ngang",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+
+    bao_cao = chay_giam_sat(
+        engine,
+        WatchList(muc=[MucTheoDoi("kenh", "kenh-1")]),
+        lister=lambda url, limit: videos,
+        sheet_link="sheet-id",
+    )
+
+    assert da_ghi == [["u1"], ["u2"]]
+    assert bao_cao.sheets_so_dong == 2
+
+
+def test_ghi_tung_phan_that_bai_van_tiep_tuc(engine, monkeypatch, tmp_path):
+    so_lan_append = 0
+    da_ghi = []
+    da_quet = []
+
+    class SheetsLoiLanDau:
+        def __init__(self, sheet=""):
+            self.sheet = sheet
+
+        def san_sang(self):
+            return True
+
+        def append(self, header, rows):
+            nonlocal so_lan_append
+            so_lan_append += 1
+            if so_lan_append == 1:
+                raise RuntimeError("mạng tạm lỗi")
+            da_ghi.extend(rows)
+            return len(rows)
+
+    videos = [
+        SimpleNamespace(id=f"x{i}", title=f"Video {i}", url=f"u{i}")
+        for i in range(1, 4)
+    ]
+
+    def scan_gia(url, progress=None):
+        da_quet.append(url)
+        return ScanResult(source_name=url, matches=[object()])
+
+    monkeypatch.setattr("watch.SheetsExporter", SheetsLoiLanDau)
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(engine, "scan_youtube", scan_gia)
+    monkeypatch.setattr(
+        engine,
+        "to_rows_ngang",
+        lambda ket: [[kq.source_name] for kq in ket],
+    )
+    monkeypatch.setattr(
+        engine,
+        "export_csv_ngang",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+
+    bao_cao = chay_giam_sat(
+        engine,
+        WatchList(muc=[MucTheoDoi("kenh", "kenh-1")]),
+        lister=lambda url, limit: videos,
+        sheet_link="sheet-id",
+    )
+
+    assert da_quet == ["u1", "u2", "u3"]
+    assert da_ghi == [["u2"], ["u3"], ["u1"]]
+    assert bao_cao.sheets_so_dong == 3
+    assert any(
+        "Không ghi được kết quả từng phần" in dong
+        and "mạng tạm lỗi" in dong
+        for dong in bao_cao.loi
+    )
+
+
+def test_tat_ghi_tung_phan_giu_mot_batch_cuoi(engine, monkeypatch, tmp_path):
+    cac_batch = []
+
+    class SheetsGia:
+        def __init__(self, sheet=""):
+            self.sheet = sheet
+
+        def san_sang(self):
+            return True
+
+        def append(self, header, rows):
+            cac_batch.append(rows)
+            return len(rows)
+
+    videos = [
+        SimpleNamespace(id=f"x{i}", title=f"Video {i}", url=f"u{i}")
+        for i in range(1, 3)
+    ]
+    engine.config.ghi_tung_phan = False
+    monkeypatch.setattr("watch.SheetsExporter", SheetsGia)
+    monkeypatch.setattr(engine, "list_jobs", lambda limit: [])
+    monkeypatch.setattr(
+        engine,
+        "scan_youtube",
+        lambda url, progress=None: ScanResult(
+            source_name=url,
+            matches=[object()],
+        ),
+    )
+    monkeypatch.setattr(
+        engine,
+        "to_rows_ngang",
+        lambda ket: [[kq.source_name] for kq in ket],
+    )
+    monkeypatch.setattr(
+        engine,
+        "export_csv_ngang",
+        lambda ket: str(tmp_path / "ket-qua.csv"),
+    )
+
+    chay_giam_sat(
+        engine,
+        WatchList(muc=[MucTheoDoi("kenh", "kenh-1")]),
+        lister=lambda url, limit: videos,
+        sheet_link="sheet-id",
+    )
+
+    assert cac_batch == [[["u1"], ["u2"]]]

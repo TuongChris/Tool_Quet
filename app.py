@@ -17,7 +17,8 @@ import pandas as pd
 import streamlit as st
 
 import bang_ngang
-from engine import Engine, Config, ScanResult, hhmmss
+from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
+from engine import Engine, ScanResult, hhmmss
 from channel import ChannelSync
 from sheets import SheetsExporter
 
@@ -30,14 +31,13 @@ st.set_page_config(page_title="TimClip Pro — Tìm video gốc trong video dài
 
 if "eng" not in st.session_state:
     st.session_state.eng = Engine()
-if "kho_dir" not in st.session_state:
-    st.session_state.kho_dir = ""
-if "sheet_link" not in st.session_state:
-    st.session_state.sheet_link = ""
-if "sheet_auto" not in st.session_state:
-    st.session_state.sheet_auto = True
-if "sheet_dang_ngang" not in st.session_state:
-    st.session_state.sheet_dang_ngang = True
+du_lieu_giao_dien = st.session_state.eng.cau_hinh_da_luu
+for khoa, mac_dinh in GIA_TRI_GIAO_DIEN_MAC_DINH.items():
+    if khoa not in st.session_state:
+        gia_tri = du_lieu_giao_dien.get(khoa, mac_dinh)
+        st.session_state[khoa] = (
+            gia_tri if type(gia_tri) is type(mac_dinh) else mac_dinh
+        )
 if "job" not in st.session_state:
     st.session_state.job = {"running": False, "pct": 0.0, "msg": "", "results": [],
                             "error": "", "kind": ""}
@@ -151,6 +151,11 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
 with st.sidebar:
     st.title("🔎 TimClip Pro")
     st.caption("Tìm video gốc bên trong video dài — chạy hoàn toàn trên máy bạn.")
+    thong_bao_cau_hinh = st.session_state.pop("thong_bao_cau_hinh", "")
+    if thong_bao_cau_hinh:
+        st.success(thong_bao_cau_hinh)
+    for canh_bao in eng.canh_bao_khoi_dong:
+        st.warning(canh_bao)
 
     st.subheader("Tình trạng hệ thống")
     env = eng.check_env()
@@ -193,8 +198,9 @@ with st.sidebar:
         c.min_hash = st.slider("Số hash tối thiểu", 5, 100, c.min_hash,
                                help="Bị báo nhầm → tăng lên. Bỏ sót → giảm xuống.")
         c.min_match_s = st.slider("Đoạn khớp tối thiểu (giây)", 1.0, 60.0, c.min_match_s, 1.0)
-        c.ncores = st.slider("Số nhân CPU", 1, 8, c.ncores,
-                             help="Máy nhiều nhân thì tăng lên để chạy nhanh hơn.")
+        c.ncores = st.slider(
+            "Số nhân CPU", 0, 8, c.ncores,
+            help="Đặt 0 để tự dò, chừa một nhân cho hệ thống và dùng tối đa 8 nhân.")
         c.shifts_kho = st.number_input(
             "Subframe shifts khi tạo kho", 0, 8, max(0, c.shifts_kho), 1,
             help="Cao hơn giúp bắt vân tay chính xác hơn nhưng tạo kho chậm và tốn "
@@ -249,6 +255,39 @@ with st.sidebar:
             (st.success if ok else st.error)(tb)
         if not sx_tmp.co_key():
             st.caption("Chưa có `google_key.json` — xem hướng dẫn ở đầu file `sheets.py`.")
+
+    st.divider()
+    c_luu, c_mac_dinh = st.columns(2)
+    with c_luu:
+        if st.button(
+            "💾 Lưu cấu hình",
+            width="stretch",
+            disabled=job["running"],
+        ):
+            try:
+                eng.luu_cau_hinh({
+                    khoa: st.session_state[khoa]
+                    for khoa in GIA_TRI_GIAO_DIEN_MAC_DINH
+                })
+                st.success("Đã lưu cấu hình.")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Không lưu được cấu hình: {e}")
+    with c_mac_dinh:
+        if st.button(
+            "↩️ Khôi phục mặc định",
+            width="stretch",
+            disabled=job["running"],
+        ):
+            try:
+                eng.khoi_phuc_cau_hinh_mac_dinh()
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Không khôi phục được cấu hình: {e}")
+            else:
+                st.session_state.clear()
+                st.session_state.thong_bao_cau_hinh = (
+                    "Đã khôi phục cấu hình mặc định."
+                )
+                st.rerun()
 
     st.divider()
     st.caption(f"📂 Dữ liệu: `{eng.data_dir}`")
@@ -522,8 +561,12 @@ with tab3:
     st.caption("Nhập đường dẫn FILE hoặc THƯ MỤC. Không dùng nút upload để tránh "
                "phải copy file hàng chục GB.")
 
-    duong_dan = st.text_input("Đường dẫn file hoặc thư mục",
-                              placeholder=r"D:\VideoDai  hoặc  D:\VideoDai\video30h.mp4")
+    st.session_state.thu_muc_quet_gan_nhat = st.text_input(
+        "Đường dẫn file hoặc thư mục",
+        st.session_state.thu_muc_quet_gan_nhat,
+        placeholder=r"D:\VideoDai  hoặc  D:\VideoDai\video30h.mp4",
+    )
+    duong_dan = st.session_state.thu_muc_quet_gan_nhat
     ds_file = []
     if duong_dan:
         dd = duong_dan.strip('" ')

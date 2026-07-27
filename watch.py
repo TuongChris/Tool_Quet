@@ -264,7 +264,7 @@ def chay_giam_sat(
     """Chạy một lượt giám sát đầy đủ."""
     try:
         with KhoaTienTrinh(
-            os.path.join(engine.data_dir, "giamsat.lock"),
+            os.path.join(engine.data_dir, "tool.lock"),
             "giám sát",
         ):
             return _chay_giam_sat_da_khoa(
@@ -345,6 +345,57 @@ def _thuc_hien_giam_sat(
 
     ket_qua = []
     tong_can_quet = len(can_quet)
+    ghi_tung_phan = bool(
+        getattr(engine.config, "ghi_tung_phan", True)
+    )
+    sheets = None
+    da_kiem_tra_sheets = False
+    da_day_sheets: set[int] = set()
+
+    def khoi_tao_sheets():
+        nonlocal sheets, da_kiem_tra_sheets
+        if da_kiem_tra_sheets or not sheet_link:
+            return sheets
+        da_kiem_tra_sheets = True
+        try:
+            ung_dung_sheets = SheetsExporter(sheet=sheet_link)
+            if not ung_dung_sheets.san_sang():
+                bao_cao.sheets_note = (
+                    ung_dung_sheets.thieu_gi()
+                    or "Google Sheets chưa sẵn sàng."
+                )
+                return None
+            sheets = ung_dung_sheets
+            bao_cao.sheets_ok = True
+            return sheets
+        except Exception as e:  # noqa: BLE001
+            bao_cao.sheets_note = f"Lỗi kết nối Google Sheets: {e}"
+            return None
+
+    def chuyen_dong_sheets(ds: list) -> tuple[list, list]:
+        if dang_ngang:
+            return bang_ngang.HEADER_NGANG, engine.to_rows_ngang(ds)
+        return engine.HEADER, engine.to_rows(ds)
+
+    def day_tung_phan(kq: Any) -> None:
+        ung_dung_sheets = khoi_tao_sheets()
+        if ung_dung_sheets is None:
+            return
+        header, rows = chuyen_dong_sheets([kq])
+        if not rows:
+            da_day_sheets.add(id(kq))
+            return
+        try:
+            so_dong = ung_dung_sheets.append(header, rows)
+            bao_cao.sheets_so_dong += so_dong
+            if so_dong > 0:
+                da_day_sheets.add(id(kq))
+        except Exception as e:  # noqa: BLE001
+            ten_nguon = kq.source_name or kq.source_ref or "(không rõ nguồn)"
+            bao_cao.loi.append(
+                f"Không ghi được kết quả từng phần lên Google Sheets "
+                f"cho {ten_nguon}: {e}"
+            )
 
     def dung_neu_duoc_yeu_cau(so_con_lai: int) -> bool:
         if dung_lai is None or not dung_lai.can_dung():
@@ -391,6 +442,8 @@ def _thuc_hien_giam_sat(
                 or ung_vien_moi.url
             )
             bao_cao.loi.append(f"{ten_nguon}: {ket_qua_quet.note}")
+        if sheet_link and ghi_tung_phan:
+            day_tung_phan(ket_qua_quet)
         if dung_neu_duoc_yeu_cau(tong_can_quet - i - 1):
             break
 
@@ -406,21 +459,22 @@ def _thuc_hien_giam_sat(
 
     if sheet_link:
         try:
-            sheets = SheetsExporter(sheet=sheet_link)
-            if not sheets.san_sang():
-                bao_cao.sheets_note = (
-                    sheets.thieu_gi() or "Google Sheets chưa sẵn sàng."
+            ung_dung_sheets = khoi_tao_sheets()
+            if ung_dung_sheets is not None:
+                chua_day = (
+                    [kq for kq in ket_qua if id(kq) not in da_day_sheets]
+                    if ghi_tung_phan
+                    else ket_qua
                 )
-            else:
-                if dang_ngang:
-                    header = bang_ngang.HEADER_NGANG
-                    rows = engine.to_rows_ngang(ket_qua)
-                else:
-                    header = engine.HEADER
-                    rows = engine.to_rows(ket_qua)
-                bao_cao.sheets_so_dong = sheets.append(header, rows)
-                bao_cao.sheets_ok = True
+                if chua_day or not ghi_tung_phan:
+                    header, rows = chuyen_dong_sheets(chua_day)
+                    if rows or not ghi_tung_phan:
+                        bao_cao.sheets_so_dong += ung_dung_sheets.append(
+                            header,
+                            rows,
+                        )
         except Exception as e:  # noqa: BLE001
+            bao_cao.sheets_ok = False
             bao_cao.sheets_note = f"Lỗi ghi Google Sheets: {e}"
 
     return bao_cao
