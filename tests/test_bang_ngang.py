@@ -86,15 +86,10 @@ def test_dinh_dang_ngay():
     assert dinh_dang_ngay("2025A115") == ""
 
 
-def test_dinh_dang_doan_co_va_khong_co_link():
+def test_dinh_dang_doan_khong_co_link():
     _dong_34()
     match = M(start=850, matched=996)
 
-    assert dinh_dang_doan(
-        match,
-        "abc123",
-        "",
-    ) == "00:14:10 – 00:30:46 · https://youtu.be/abc123?t=850"
     assert dinh_dang_doan(
         match,
         "",

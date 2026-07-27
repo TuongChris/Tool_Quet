@@ -61,7 +61,8 @@ def dinh_dang_ngay(s: str) -> str:
 def dinh_dang_doan(m: Any, source_id: str, source_ref: str) -> str:
     """Trả về khoảng thời gian và link nhảy tới mốc nếu có."""
     noi_dung = f"{m.start_hhmmss} – {m.end_hhmmss}"
-    link = Engine.link_moc(source_id, source_ref, m.start_s)
+    giay_link = max(0, int(m.start_s) - 3)
+    link = Engine.link_moc(source_id, source_ref, giay_link)
     return f"{noi_dung} · {link}" if link else noi_dung
 
 

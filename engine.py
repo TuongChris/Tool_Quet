@@ -62,6 +62,9 @@ class Config:
     max_matches: int = 200     # Số kết quả tối đa audfprint trả về mỗi khúc
     ncores: int = 1            # Số tiến trình audfprint dùng song song
     dedup_s: float = 20.0      # Ngưỡng gộp 2 kết quả trùng nhau (do các khúc gối nhau)
+    # Shifts cao hơn tăng độ chính xác nhưng chạy chậm và làm kho lớn hơn; 0 = hành vi cũ.
+    shifts_kho: int = 4        # Subframe shifts khi tạo kho vân tay
+    shifts_quet: int = 4       # Subframe shifts khi quét video dài
     ytdlp_format: str = "ba/b"  # Định dạng yt-dlp: chỉ lấy audio tốt nhất cho nhẹ
     keep_downloads: bool = True  # Giữ lại audio đã tải để lần sau khỏi tải lại
     dem_max_gb: float = 20.0    # Ngân sách kho đệm; đặt 0 để tắt giới hạn dung lượng
@@ -85,7 +88,7 @@ class Config:
 class Match:
     """Một lần clip gốc xuất hiện trong video dài."""
     clip: str              # tên file clip gốc
-    start_s: float         # xuất hiện từ giây thứ mấy trong video dài
+    start_s: float         # thời điểm clip bắt đầu trong video dài
     end_s: float           # đến giây thứ mấy
     matched_s: float       # độ dài đoạn khớp đã xác nhận
     clip_offset_s: float   # khớp bắt đầu từ giây thứ mấy CỦA CLIP GỐC
@@ -93,10 +96,16 @@ class Match:
     confidence: str        # đánh giá dạng chữ
     ty_le: float = 0.0     # % vân tay của clip gốc khớp được (chỉ số CHUẨN HOÁ)
     vung: str = ""         # Đầu / Giữa / Cuối video vi phạm
+    clip_bat_dau_s: float = 0.0  # thời điểm CLIP bắt đầu trong video dài
+    vung_khop_s: float = 0.0     # thời điểm VÙNG KHỚP bắt đầu
 
     @property
     def start_hhmmss(self) -> str:
         return hhmmss(self.start_s)
+
+    @property
+    def clip_bat_dau_hhmmss(self) -> str:
+        return hhmmss(self.clip_bat_dau_s)
 
     @property
     def end_hhmmss(self) -> str:
@@ -575,6 +584,27 @@ class Engine:
         if self.kho_dang_dung:
             self.update_kho(self.kho_dang_dung, thumuc)
 
+        shifts_kho = max(0, int(self.config.shifts_kho))
+        db_da_ton_tai = os.path.exists(self.db_file)
+        shifts_da_luu = 0
+        if self.kho_dang_dung:
+            dang_ky = self._doc_khos()
+            kho_hien_tai = next(
+                (k for k in dang_ky["danh_sach"]
+                 if k["ten"] == self.kho_dang_dung),
+                None,
+            )
+            if kho_hien_tai:
+                shifts_da_luu = max(0, int(kho_hien_tai.get("shifts", 0) or 0))
+
+        canh_bao = []
+        if db_da_ton_tai and mode != "new" and shifts_da_luu != shifts_kho:
+            canh_bao.append(
+                f"Kho «{self.kho_dang_dung or os.path.basename(self.db_file)}» "
+                f"được tạo với shifts={shifts_da_luu}, nhưng cấu hình hiện tại là "
+                f"shifts={shifts_kho}. Nên tạo lại kho từ đầu để đồng bộ."
+            )
+
         listfile = os.path.join(self.data_dir, "_ds_clip.txt")
         with open(listfile, "w", encoding="utf-8") as f:
             f.write("\n".join(files))
@@ -618,16 +648,32 @@ class Engine:
 
         t0 = time.time()
         # --maxtimebits 16: cho phép clip gốc dài tới ~25 phút vẫn định vị đúng mốc thời gian
+        tham_so = ["--maxtimebits", "16"]
+        if shifts_kho > 0:
+            tham_so.extend(["--shifts", str(shifts_kho)])
+        tham_so.extend(["--list", listfile])
         rc, duoi = self._run_stream(
-            self._audfprint_cmd(sub, "--maxtimebits", "16", "--list", listfile), on_line)
+            self._audfprint_cmd(sub, *tham_so), on_line)
         if rc != 0 or dem["n"] == 0:
             chi_tiet = "\n".join(duoi[-12:]) or "(không có thông báo nào)"
             raise RuntimeError(
                 f"audfprint không xử lý được file nào (mã lỗi {rc}).\n\n"
                 f"Thông báo cuối cùng:\n{chi_tiet}")
+
+        # Chỉ đổi metadata khi toàn bộ kho vừa được tạo mới, hoặc khi phần bổ sung
+        # dùng đúng shifts cũ. Kho add lệch shifts phải tiếp tục mang metadata cũ
+        # để những lượt sau vẫn cảnh báo cho tới khi người dùng chủ động tạo lại.
+        if self.kho_dang_dung and (sub == "new" or shifts_da_luu == shifts_kho):
+            dang_ky = self._doc_khos()
+            for kho in dang_ky["danh_sach"]:
+                if kho["ten"] == self.kho_dang_dung:
+                    kho["shifts"] = shifts_kho
+                    break
+            self._ghi_khos(dang_ky)
+
         self._bao(progress, 1.0, "Hoàn tất.")
         return {"so_clip": tong, "da_xu_ly": dem["n"], "loi_file": loi_file,
-                "giay": time.time() - t0}
+                "giay": time.time() - t0, "canh_bao": canh_bao}
 
     # =================================================================
     #  2) TẢI AUDIO TỪ YOUTUBE (dùng yt-dlp như một THƯ VIỆN)
@@ -741,10 +787,18 @@ class Engine:
                 self._bao(progress, pct0 + (pct1 - pct0) * dem["n"] / max(1, len(chunks)),
                           f"Đang so khớp vân tay... khúc {dem['n']}/{len(chunks)}")
 
-        rc, duoi = self._run_stream(self._audfprint_cmd(
-            "match", "--find-time-range", "--sortbytime", "--exact-count",
+        tham_so = [
+            "--find-time-range", "--sortbytime", "--exact-count",
             "--min-count", "10", "--max-matches", str(self.config.max_matches),
-            "--opfile", opfile, "--list", listfile), on_line)
+        ]
+        shifts_quet = max(0, int(self.config.shifts_quet))
+        if shifts_quet > 0:
+            tham_so.extend(["--shifts", str(shifts_quet)])
+        tham_so.extend(["--opfile", opfile, "--list", listfile])
+        rc, duoi = self._run_stream(
+            self._audfprint_cmd("match", *tham_so),
+            on_line,
+        )
         if rc != 0:
             raise RuntimeError("Lỗi khi so khớp:\n" + "\n".join(duoi[-10:]))
 
@@ -785,11 +839,21 @@ class Engine:
                 cuoi = max(trung["bat_dau"] + trung["khop"], x["bat_dau"] + x["khop"])
                 trung["bat_dau"], trung["khop"] = dau, cuoi - dau
                 trung["t_clip"] = min(trung["t_clip"], x["t_clip"])
-        gop.sort(key=lambda x: x["bat_dau"])
-        return [Match(clip=os.path.basename(g["clip"]), start_s=g["bat_dau"],
-                      end_s=g["bat_dau"] + g["khop"], matched_s=g["khop"],
-                      clip_offset_s=g["t_clip"], hashes=g["hash"],
-                      confidence=danh_gia(g["hash"])) for g in gop]
+        ket_qua = []
+        for g in gop:
+            clip_bat_dau_s = max(0.0, g["bat_dau"] - g["t_clip"])
+            ket_qua.append(Match(
+                clip=os.path.basename(g["clip"]),
+                start_s=clip_bat_dau_s,
+                end_s=clip_bat_dau_s + g["khop"] + g["t_clip"],
+                matched_s=g["khop"],
+                clip_offset_s=g["t_clip"],
+                hashes=g["hash"],
+                confidence=danh_gia(g["hash"]),
+                clip_bat_dau_s=clip_bat_dau_s,
+                vung_khop_s=g["bat_dau"],
+            ))
+        return sorted(ket_qua, key=lambda m: m.start_s)
 
     def _gan_chi_so(self, ds: list, duration: float) -> None:
         """Tính tỷ lệ vân tay khớp (%) và vùng vị trí cho từng kết quả."""
@@ -1008,7 +1072,8 @@ class Engine:
 
     HEADER = ["Thời điểm quét", "Nguồn video dài", "Link / đường dẫn",
               "Clip gốc tìm thấy", "Tên video gốc (YouTube)", "Link video gốc",
-              "Vùng", "Xuất hiện từ", "Đến", "🔗 Nhảy tới đúng mốc vi phạm",
+              "Vùng", "Clip bắt đầu từ", "Vùng khớp từ", "Đến",
+              "🔗 Nhảy tới đúng mốc vi phạm",
               "Đoạn khớp (giây)", "Khớp từ giây thứ (của clip)", "Số hash khớp",
               "Tỷ lệ vân tay khớp (%)", "Đánh giá"]
 
@@ -1030,17 +1095,18 @@ class Engine:
         for kq in ket:
             dau = [luc, kq.source_name, kq.source_ref]
             if kq.status != "ok":
-                rows.append(dau + [f"(LỖI: {kq.note})"] + [""] * 11)
+                rows.append(dau + [f"(LỖI: {kq.note})"] + [""] * 12)
             elif not kq.matches:
                 gc = "(không có kết quả nào đạt ngưỡng)" if kq.matches_loai \
                      else "(không tìm thấy clip nào)"
-                rows.append(dau + [gc] + [""] * 11)
+                rows.append(dau + [gc] + [""] * 12)
             else:
                 for m in kq.matches:
                     mt = meta.get(m.clip, {})
                     rows.append(dau + [
                         m.clip, mt.get("title", ""), mt.get("url", ""),
-                        m.vung, m.start_hhmmss, m.end_hhmmss,
+                        m.vung, m.start_hhmmss, hhmmss(m.vung_khop_s),
+                        m.end_hhmmss,
                         Engine.link_moc(kq.source_id, kq.source_ref, m.start_s),
                         f"{m.matched_s:.0f}", f"{m.clip_offset_s:.0f}",
                         m.hashes, m.ty_le, m.confidence])

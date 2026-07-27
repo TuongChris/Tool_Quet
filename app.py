@@ -195,6 +195,14 @@ with st.sidebar:
         c.min_match_s = st.slider("Đoạn khớp tối thiểu (giây)", 1.0, 60.0, c.min_match_s, 1.0)
         c.ncores = st.slider("Số nhân CPU", 1, 8, c.ncores,
                              help="Máy nhiều nhân thì tăng lên để chạy nhanh hơn.")
+        c.shifts_kho = st.number_input(
+            "Subframe shifts khi tạo kho", 0, 8, max(0, c.shifts_kho), 1,
+            help="Cao hơn giúp bắt vân tay chính xác hơn nhưng tạo kho chậm và tốn "
+                 "dung lượng hơn. Đặt 0 để dùng hành vi cũ.")
+        c.shifts_quet = st.number_input(
+            "Subframe shifts khi quét", 0, 8, max(0, c.shifts_quet), 1,
+            help="Cao hơn giúp chịu nén và lệch pha tốt hơn nhưng quét chậm hơn. "
+                 "Đặt 0 để dùng hành vi cũ.")
 
         st.markdown("**Chọn lọc kết quả**")
         c.top_n = st.number_input("Chỉ lấy bao nhiêu kết quả tốt nhất", 1, 50, c.top_n)
@@ -278,6 +286,8 @@ if not job["running"] and (job["results"] or job["error"]):
         r = job["results"]
         st.success(f"✅ Đã xử lý {r.get('da_xu_ly', r['so_clip'])}/{r['so_clip']} clip "
                    f"trong {r['giay']:.0f} giây.")
+        if r.get("canh_bao"):
+            st.warning("\n\n".join(r["canh_bao"]))
         if r.get("loi_file"):
             with st.expander(f"⚠️ {len(r['loi_file'])} file có vấn đề — bấm xem"):
                 st.code("\n".join(r["loi_file"][:50]))
