@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Test đỏ mô tả chính sách overlap có trần và không bị đảo chiều."""
 
+import pytest
+
 from engine import Config, Engine
 
 
@@ -22,6 +24,14 @@ def _engine_thuan_voi_clip(clip_dai_giay: float) -> Engine:
 def test_config_co_tran_overlap_mac_dinh_180_giay():
     """Trần phải là cấu hình công khai để phase sau có thể hiệu chỉnh."""
     assert Config().overlap_max_s == 180
+
+
+@pytest.mark.parametrize("overlap_max_s", [0, 59, 3600])
+def test_config_tu_choi_tran_overlap_ngoai_gioi_han(overlap_max_s):
+    cfg = Config(overlap_max_s=overlap_max_s)
+
+    with pytest.raises(ValueError):
+        cfg.validate()
 
 
 def test_overlap_khong_bao_gio_vuot_tran_cau_hinh():

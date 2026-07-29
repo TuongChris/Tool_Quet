@@ -58,7 +58,8 @@ MEDIA_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".
 class Config:
     """Toàn bộ tham số điều chỉnh được của hệ thống."""
     chunk_s: int = 3600        # Độ dài mỗi khúc audio khi cắt video dài (giây)
-    overlap_s: int = 600       # Hai khúc liên tiếp gối nhau bao nhiêu giây (phải >= clip dài nhất)
+    overlap_s: int = 600       # Khúc gối đề xuất khi không có metadata thời lượng
+    overlap_max_s: int = 180   # Trần khúc gối; giảm quét lặp, mặc định 3 phút
     overlap_tu_dong: bool = True  # Tự tính overlap theo clip dài nhất trong kho
     min_hash: int = 15         # Số hash khớp tối thiểu để tính là kết quả
     min_match_s: float = 5.0   # Đoạn khớp phải dài tối thiểu bao nhiêu giây
@@ -82,7 +83,12 @@ class Config:
     uu_tien_clip_khac_nhau: bool = True  # Ưu tiên 5 clip GỐC KHÁC NHAU thay vì trùng lặp
 
     def validate(self, overlap_s: Optional[int] = None) -> None:
-        overlap = self.overlap_s if overlap_s is None else overlap_s
+        if self.overlap_max_s < 60:
+            raise ValueError("overlap_max_s phải >= 60 giây.")
+        if self.overlap_max_s >= self.chunk_s:
+            raise ValueError("overlap_max_s phải nhỏ hơn chunk_s.")
+        de_xuat = self.overlap_s if overlap_s is None else overlap_s
+        overlap = min(self.overlap_max_s, de_xuat)
         if self.chunk_s <= overlap:
             raise ValueError("chunk_s phải lớn hơn overlap_s.")
         if overlap < 60:

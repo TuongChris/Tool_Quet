@@ -114,7 +114,7 @@ def test_file_chua_ton_tai_khong_bi_tao(tmp_path):
 def test_cau_hinh_khong_hop_le_quay_ve_mac_dinh(tmp_path):
     du_lieu = lay_tu_config(Config())
     du_lieu["chunk_s"] = 300
-    du_lieu["overlap_s"] = 600
+    du_lieu["overlap_max_s"] = 300
     ghi_cau_hinh(str(tmp_path / "data"), du_lieu)
 
     engine = Engine(root=str(tmp_path))
