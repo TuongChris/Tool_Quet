@@ -140,3 +140,44 @@ def test_cut_chunks_dung_overlap_tu_dong(engine, tmp_path, monkeypatch):
         "chunk_0000000.wav",
         "chunk_0000820.wav",
     ]
+
+
+def test_cut_chunks_khong_goi_ffmpeg_tai_dung_eof(engine, tmp_path, monkeypatch):
+    engine.config.chunk_s = 300
+    engine.config.overlap_s = 60
+    engine.config.overlap_max_s = 60
+    engine.config.overlap_tu_dong = False
+    monkeypatch.setattr(engine, "duration_of", lambda media: 480)
+    cac_moc = []
+
+    def ffmpeg_gia(lenh, **kwargs):
+        cac_moc.append(int(lenh[lenh.index("-ss") + 1]))
+        tmp_path.joinpath(lenh[-1]).write_bytes(b"x" * 2048)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(engine_module.subprocess, "run", ffmpeg_gia)
+
+    chunks, _ = engine._cut_chunks("video.mp4")
+
+    assert cac_moc == [0, 240]
+    assert len(chunks) == 2
+
+
+def test_match_chunks_bao_truoc_khi_chay_subprocess(engine, monkeypatch):
+    su_kien = []
+
+    def progress(pct, msg):
+        su_kien.append(("progress", msg))
+
+    def run_stream(lenh, on_line=None):
+        su_kien.append(("subprocess", lenh))
+        return 0, []
+
+    monkeypatch.setattr(engine, "_run_stream", run_stream)
+
+    assert engine._match_chunks(["chunk.wav"], progress) == []
+    assert su_kien[0] == (
+        "progress",
+        "Đang nạp kho vân tay và bắt đầu so khớp...",
+    )
+    assert su_kien[1][0] == "subprocess"

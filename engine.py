@@ -872,7 +872,11 @@ class Engine:
             raise RuntimeError(f"Không đọc được thời lượng file: {media}")
 
         buoc = cfg.chunk_s - overlap
-        moc = list(range(0, int(tong) + 1, buoc))
+        moc = [
+            bat_dau
+            for bat_dau in range(0, int(tong) + 1, buoc)
+            if bat_dau < tong
+        ]
         ds = []
         for i, bat_dau in enumerate(moc):
             self._check_cancel()
@@ -913,6 +917,11 @@ class Engine:
         if shifts_quet > 0:
             tham_so.extend(["--shifts", str(shifts_quet)])
         tham_so.extend(["--opfile", opfile, "--list", listfile])
+        self._bao(
+            progress,
+            pct0,
+            "Đang nạp kho vân tay và bắt đầu so khớp...",
+        )
         rc, duoi = self._run_stream(
             self._audfprint_cmd("match", *tham_so),
             on_line,
