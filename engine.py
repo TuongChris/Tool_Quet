@@ -198,6 +198,7 @@ class Engine:
         self.root = os.path.abspath(root or os.path.dirname(os.path.abspath(__file__)))
         self.config = config or Config()
         self.canh_bao_khoi_dong: list = []
+        self.canh_bao_gop: list = []
         self.cau_hinh_da_luu: dict = {}
 
         self.bin_dir = os.path.join(self.root, "bin")
@@ -940,35 +941,125 @@ class Engine:
         return tho
 
     def _merge(self, tho: list) -> list:
-        """Lọc theo ngưỡng và gộp kết quả trùng do các khúc gối lên nhau."""
+        """
+        Lọc và gộp các mảnh cùng lần xuất hiện.
+
+        ``dedup_s`` vừa là dung sai align, vừa là khoảng trống tối đa giữa hai
+        interval. Hash được tích phân theo mật độ tốt nhất trên từng đoạn con
+        của hợp interval, tránh đếm đôi vùng overlap nhưng vẫn giữ đủ bằng
+        chứng khi clip bị chia qua ranh giới khúc.
+        """
         cfg = self.config
-        loc = [x for x in tho if x["hash"] >= cfg.min_hash and x["khop"] >= cfg.min_match_s]
+        self.canh_bao_gop = []
+        loc = [
+            x for x in tho
+            if x["hash"] >= cfg.min_hash
+            and x["khop"] >= cfg.min_match_s
+            and x["khop"] > 0
+        ]
         loc.sort(key=lambda x: (x["clip"], x["align"], -x["hash"]))
+
+        try:
+            tong_hash = {
+                os.path.basename(c["ten"]): int(c["so_hash"])
+                for c in self.db_clips()
+                if c.get("ten") and int(c.get("so_hash") or 0) > 0
+            }
+        except Exception as e:  # kho lỗi vẫn phải trả được kết quả chưa kẹp
+            tong_hash = {}
+            self.canh_bao_gop.append(
+                f"Không đọc được tổng hash trong kho để áp cận trên: {e}"
+            )
+
+        def khoang_cach_interval(a: dict, b: dict) -> float:
+            a0, a1 = a["bat_dau"], a["bat_dau"] + a["khop"]
+            b0, b1 = b["bat_dau"], b["bat_dau"] + b["khop"]
+            return max(0.0, max(a0, b0) - min(a1, b1))
+
+        def tinh_hash_va_hop(manh: list) -> tuple:
+            bien = sorted({
+                moc
+                for x in manh
+                for moc in (x["bat_dau"], x["bat_dau"] + x["khop"])
+                if x["khop"] > 0
+            })
+            cong_don = 0.0
+            do_dai_hop = 0.0
+            for a, b in zip(bien, bien[1:]):
+                if b <= a:
+                    continue
+                phu = [
+                    x for x in manh
+                    if x["khop"] > 0
+                    and x["bat_dau"] <= a
+                    and b <= x["bat_dau"] + x["khop"]
+                ]
+                if not phu:
+                    continue
+                mat_do_tot_nhat = max(x["hash"] / x["khop"] for x in phu)
+                do_dai_hop += b - a
+                cong_don += (b - a) * mat_do_tot_nhat
+            return round(cong_don), do_dai_hop
+
         gop = []
         for x in loc:
-            trung = next((g for g in gop if g["clip"] == x["clip"]
-                          and abs(g["align"] - x["align"]) <= cfg.dedup_s), None)
+            trung = next(
+                (
+                    g for g in gop
+                    if g["clip"] == x["clip"]
+                    and abs(g["align"] - x["align"]) <= cfg.dedup_s
+                    and any(
+                        khoang_cach_interval(cu, x) <= cfg.dedup_s
+                        for cu in g["manh"]
+                    )
+                ),
+                None,
+            )
             if trung is None:
-                gop.append(dict(x))
+                gop.append({
+                    "clip": x["clip"],
+                    "align": x["align"],
+                    "manh": [dict(x)],
+                })
             else:
-                trung["hash"] = max(trung["hash"], x["hash"])
-                dau = min(trung["bat_dau"], x["bat_dau"])
-                cuoi = max(trung["bat_dau"] + trung["khop"], x["bat_dau"] + x["khop"])
-                trung["bat_dau"], trung["khop"] = dau, cuoi - dau
-                trung["t_clip"] = min(trung["t_clip"], x["t_clip"])
+                trung["manh"].append(dict(x))
+
         ket_qua = []
         for g in gop:
-            clip_bat_dau_s = max(0.0, g["bat_dau"] - g["t_clip"])
+            manh = g["manh"]
+            som_nhat = min(manh, key=lambda x: (x["bat_dau"], x["t_clip"]))
+            vung_khop_s = min(x["bat_dau"] for x in manh)
+            end_s = max(x["bat_dau"] + x["khop"] for x in manh)
+            hash_uoc, do_dai_hop = tinh_hash_va_hop(manh)
+            ten_clip = os.path.basename(g["clip"])
+            gioi_han = tong_hash.get(ten_clip)
+            if gioi_han is None:
+                self.canh_bao_gop.append(
+                    f"Không tra được tổng hash của clip «{ten_clip}»; "
+                    f"giữ kết quả ước tính {hash_uoc}, không áp cận trên."
+                )
+                hashes = hash_uoc
+            else:
+                hashes = min(hash_uoc, gioi_han)
+                if hash_uoc > gioi_han:
+                    self.canh_bao_gop.append(
+                        f"Hash ước tính của clip «{ten_clip}» là {hash_uoc}, "
+                        f"đã chạm cận trên {gioi_han}; có dấu hiệu đếm trùng."
+                    )
+            clip_bat_dau_s = max(
+                0.0,
+                som_nhat["bat_dau"] - som_nhat["t_clip"],
+            )
             ket_qua.append(Match(
-                clip=os.path.basename(g["clip"]),
+                clip=ten_clip,
                 start_s=clip_bat_dau_s,
-                end_s=clip_bat_dau_s + g["khop"] + g["t_clip"],
-                matched_s=g["khop"],
-                clip_offset_s=g["t_clip"],
-                hashes=g["hash"],
-                confidence=danh_gia(g["hash"]),
+                end_s=end_s,
+                matched_s=do_dai_hop,
+                clip_offset_s=vung_khop_s - clip_bat_dau_s,
+                hashes=hashes,
+                confidence=danh_gia(hashes),
                 clip_bat_dau_s=clip_bat_dau_s,
-                vung_khop_s=g["bat_dau"],
+                vung_khop_s=vung_khop_s,
             ))
         return sorted(ket_qua, key=lambda m: m.start_s)
 
@@ -977,7 +1068,7 @@ class Engine:
         tong_hash = {c["ten"]: c["so_hash"] for c in self.db_clips() if c["so_hash"]}
         for m in ds:
             goc = tong_hash.get(m.clip, 0)
-            m.ty_le = round(100.0 * m.hashes / goc, 1) if goc else 0.0
+            m.ty_le = min(100.0, round(100.0 * m.hashes / goc, 1)) if goc else 0.0
             if duration:
                 p = m.start_s / duration
                 m.vung = "Đầu" if p < 1 / 3 else ("Giữa" if p < 2 / 3 else "Cuối")
@@ -1061,6 +1152,10 @@ class Engine:
                 raise RuntimeError("Không cắt được khúc nào từ file này.")
             tho = self._match_chunks(chunks, progress, p_cut1, p_match1)
             tat_ca = self._merge(tho)
+            if self.canh_bao_gop:
+                kq.note = "\n".join(self.canh_bao_gop)
+                for canh_bao in self.canh_bao_gop:
+                    self._bao(progress, p_match1, f"⚠️ {canh_bao}")
             # Chặn tự khớp: nếu chính file đang quét cũng nằm trong kho vân tay
             # (do lỡ để chung thư mục), nó sẽ khớp 100% với chính nó — vô nghĩa.
             goc = os.path.basename(path).lower()
