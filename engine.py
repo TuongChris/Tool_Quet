@@ -827,7 +827,9 @@ class Engine:
     ) -> int:
         """Tính overlap hiệu lực từ metadata, không làm thay đổi cấu hình gốc."""
         cfg = self.config
-        overlap = int(cfg.overlap_s)
+        tran = int(cfg.overlap_max_s)
+        san = min(120, tran)
+        de_xuat = int(cfg.overlap_s)
         clip_dai_nhat = 0.0
 
         if cfg.overlap_tu_dong:
@@ -840,21 +842,9 @@ class Engine:
                     clip_dai_nhat = duration
 
             if clip_dai_nhat > 0:
-                de_xuat = math.ceil(clip_dai_nhat + 30)
-                overlap = max(120, min(1800, de_xuat))
-                # An toàn phát hiện quan trọng hơn giới hạn tối ưu 1800 giây.
-                overlap = max(overlap, math.ceil(clip_dai_nhat))
+                de_xuat = max(san, math.ceil(clip_dai_nhat + 30))
 
-        if overlap >= cfg.chunk_s:
-            overlap_cu = overlap
-            overlap = max(1, cfg.chunk_s // 2)
-            self._bao(
-                progress,
-                pct,
-                f"⚠️ Khúc gối tính được {overlap_cu} giây không nhỏ hơn độ dài "
-                f"khúc; đã kẹp về {overlap} giây.",
-            )
-
+        overlap = min(tran, de_xuat)
         cfg.validate(overlap)
         if clip_dai_nhat > 0:
             thong_tin = (

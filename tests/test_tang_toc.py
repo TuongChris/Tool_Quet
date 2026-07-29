@@ -69,12 +69,12 @@ def test_overlap_tu_dong_theo_clip_dai_nhat(engine, monkeypatch):
         0.4,
     )
 
-    assert overlap == 1530
-    assert any("Khúc gối thực tế: 1530 giây" in msg for _, msg in thong_bao)
+    assert overlap == 180
+    assert any("Khúc gối thực tế: 180 giây" in msg for _, msg in thong_bao)
 
 
 @pytest.mark.parametrize("clip_dai_nhat", [30, 1790, 1900])
-def test_overlap_khong_bao_gio_nho_hon_clip_dai_nhat(
+def test_overlap_tu_dong_tang_den_tran_roi_giu_nguyen(
     engine,
     monkeypatch,
     clip_dai_nhat,
@@ -87,7 +87,8 @@ def test_overlap_khong_bao_gio_nho_hon_clip_dai_nhat(
         lambda: {"clip.opus": {"duration": clip_dai_nhat}},
     )
 
-    assert engine._overlap_thuc_te() >= clip_dai_nhat
+    mong_doi = min(180, max(120, clip_dai_nhat + 30))
+    assert engine._overlap_thuc_te() == mong_doi
 
 
 def test_kho_rong_dung_gia_tri_cau_hinh(engine, monkeypatch):
@@ -95,10 +96,10 @@ def test_kho_rong_dung_gia_tri_cau_hinh(engine, monkeypatch):
     engine.config.overlap_tu_dong = True
     monkeypatch.setattr(engine, "clip_meta", lambda: {})
 
-    assert engine._overlap_thuc_te() == 450
+    assert engine._overlap_thuc_te() == 180
 
 
-def test_overlap_lon_hon_khuc_duoc_kep_va_canh_bao(engine, monkeypatch):
+def test_overlap_tu_dong_cham_tran_thay_vi_phu_thuoc_clip_dai(engine, monkeypatch):
     engine.config.chunk_s = 300
     engine.config.overlap_tu_dong = True
     thong_bao = []
@@ -112,8 +113,8 @@ def test_overlap_lon_hon_khuc_duoc_kep_va_canh_bao(engine, monkeypatch):
         lambda pct, msg: thong_bao.append(msg),
     )
 
-    assert overlap == 150
-    assert any("đã kẹp về 150 giây" in msg for msg in thong_bao)
+    assert overlap == 180
+    assert any("Khúc gối thực tế: 180 giây" in msg for msg in thong_bao)
 
 
 def test_cut_chunks_dung_overlap_tu_dong(engine, tmp_path, monkeypatch):
@@ -137,6 +138,5 @@ def test_cut_chunks_dung_overlap_tu_dong(engine, tmp_path, monkeypatch):
     assert duration == 1500
     assert [engine_module.os.path.basename(path) for path in chunks] == [
         "chunk_0000000.wav",
-        "chunk_0000700.wav",
-        "chunk_0001400.wav",
+        "chunk_0000820.wav",
     ]
