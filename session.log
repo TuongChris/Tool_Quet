@@ -17,3 +17,20 @@
 - Thêm hai bộ test đỏ cho chính sách overlap có trần/đơn điệu và quy tắc cộng hash ở các
   mảnh liền kề hoặc rời nhau. Không sửa mã chức năng.
 - Kế hoạch triển khai Phase 2b được ghi tại `docs/PHASE2_FIX_PLAN.md`.
+
+## 2026-07-29 — Phase 2b: sửa overlap và merge
+
+- Thêm `Config.overlap_max_s=180`; overlap hiệu lực luôn chịu trần, tăng đơn điệu theo
+  độ dài clip rồi giữ phẳng ở trần. Quy tắc cũ “overlap phải dài hơn clip dài nhất”
+  đã bị loại bỏ.
+- `_merge()` gộp các mảnh theo clip, dung sai align và khoảng cách interval; số hash
+  được tính bằng tích phân mật độ hash lớn nhất trên từng đoạn con của hợp interval.
+- Hash ước tính bị kẹp theo tổng hash clip từ `db_clips()`. Cả trường hợp chạm cận trên
+  lẫn không tra được tổng hash đều tạo cảnh báo quan sát được; `ty_le` không vượt 100%.
+- `_cut_chunks()` không còn gọi ffmpeg tại đúng EOF. `_match_chunks()` báo trạng thái
+  nạp kho vân tay trước khi khởi động audfprint.
+- Gỡ `TimClipPro_source.zip` khỏi Git nhưng giữ file trên đĩa; đồng bộ quy ước trong
+  `CLAUDE.md` và kế hoạch Phase 2.
+- Kết quả cuối: suite nhanh `248 passed, 1 skipped, 3 deselected`; suite slow
+  `3 passed, 249 deselected`. Một lượt slow đầu tiên bị treo không ổn định trong
+  audfprint đa tiến trình; chạy lại trong tiến trình sạch hoàn tất sau 37,52 giây.

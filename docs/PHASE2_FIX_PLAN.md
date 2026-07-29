@@ -184,46 +184,50 @@ phát hành.
 
 ## 4. Thiết kế sửa `_merge`
 
-### Hai lớp quyết định
+> Cập nhật theo quyết định PM Phase 2b: quy tắc nhị phân “chồng → max, rời → cộng”
+> đã bị thay thế vì vùng overlap dương có thể chứa hai nửa khác nhau của cùng một clip.
 
-1. Hai mảnh chỉ thuộc cùng một lần xuất hiện khi:
-   - cùng `clip`;
-   - `abs(align_a - align_b) <= dedup_s`;
-   - khoảng cách giữa hai interval không lớn hơn `dedup_s`.
-2. Trong cùng lần xuất hiện, coi mỗi mảnh là interval nửa mở
-   `[bat_dau, bat_dau + khop)`:
-   - giao nhau với độ dài dương: cùng nội dung bị thấy lại do overlap → lấy `max(hash)`;
-   - chỉ chạm biên hoặc rời nhau không quá `dedup_s`: hai vùng bằng chứng khác nhau →
-     cộng hash.
+### Điều kiện cùng nhóm
 
-Dùng interval nửa mở làm cho `end_a == start_b` thuộc nhánh liền kề và phải cộng.
+Hai mảnh chỉ thuộc cùng một lần xuất hiện khi:
 
-### Không chỉ giữ một số hash cho cả nhóm
+- cùng `clip`;
+- `abs(align_a - align_b) <= dedup_s`;
+- khoảng cách giữa hai interval không lớn hơn `dedup_s`.
 
-Nhóm cần giữ các “thành phần bằng chứng”:
+`dedup_s` tiếp tục dùng cho cả dung sai align và khoảng trống tối đa. Nếu dữ liệu thực
+cho thấy hai ngưỡng cần hiệu chỉnh độc lập, phase sau mới tách cấu hình.
 
-- mảnh mới chồng dương với thành phần nào thì hợp interval và lấy max hash trong thành phần;
-- mảnh mới không chồng thành phần nào thì tạo thành phần mới, kể cả khi chỉ chạm biên;
-- hash cuối của Match là tổng `max_hash` của các thành phần không chồng nhau.
+### Tích phân mật độ hash lớn nhất theo đoạn
 
-Cấu trúc này xử lý đúng trường hợp A và C chồng nhau nhưng B nằm rời: kết quả là
-`max(hash_A, hash_C) + hash_B`, không phải `max(hash_A + hash_B, hash_C)`.
+Trong mỗi nhóm, coi mảnh là interval nửa mở `[bat_dau, bat_dau + khop)`:
+
+1. Thu thập, sắp xếp và khử trùng mọi mốc đầu/cuối để chia thành các đoạn con.
+2. Với từng đoạn `[a, b)`, tìm các mảnh phủ trọn đoạn đó. Khoảng trống không có mảnh phủ
+   không được tính vào hợp interval.
+3. Mật độ của đoạn là `max(hash_i / khop_i)` trong các mảnh phủ; mảnh có `khop_i <= 0`
+   bị bỏ để không chia cho 0.
+4. `hash_uoc = round(sum((b - a) * mat_do_doan))`.
+5. Nếu tra được tổng hash clip từ `db_clips()`, kết quả bị kẹp ở tổng đó. Khi chạm cận
+   trên phải phát cảnh báo; nếu không tra được thì giữ nguyên ước tính và cũng cảnh báo.
+
+Quy tắc này tự động giữ quan sát tốt hơn khi cùng nội dung được thấy nhiều lần, đồng thời
+cộng đủ bằng chứng ở phần clip liền kề. Ví dụ
+`[100,130)h50 + [100,130)h80 + [130,160)h80` cho `80 + 80 = 160`, không phải `140`.
 
 Các biên thời gian:
 
 - `vung_khop_s = min(bat_dau)` của mọi mảnh;
 - `end_s = max(bat_dau + khop)` của mọi mảnh;
-- `matched_s` nên là tổng độ dài hợp interval, không tính khoảng trống;
+- `matched_s` là tổng độ dài hợp interval, không tính khoảng trống;
 - `clip_bat_dau_s` tiếp tục suy ra từ align đại diện và kẹp không âm;
 - `clip_offset_s` lấy theo mảnh bắt đầu sớm nhất hoặc tính lại từ
   `vung_khop_s - clip_bat_dau_s`, tránh lấy `min(t_clip)` từ một mảnh không tương ứng.
 
 ### Vai trò của `dedup_s`
 
-Phase 2b có thể dùng `dedup_s` cho cả dung sai align và khoảng trống tối đa để tránh thêm quá
-nhiều cấu hình trong một lượt sửa. Cần ghi rõ hai vai trò này trong docstring. Nếu dữ liệu
-thực cho thấy hai ngưỡng cần hiệu chỉnh độc lập, phase sau mới tách thành
-`align_tolerance_s` và `fragment_gap_s`.
+Phase 2b dùng `dedup_s` cho cả dung sai align và khoảng trống tối đa để tránh thêm quá
+nhiều cấu hình trong một lượt sửa.
 
 ### Ảnh hưởng tới ngưỡng chọn lọc
 
@@ -331,7 +335,8 @@ Hai test integration mang marker `slow`; phải chạy riêng bằng `python -m 
   khoảng trống sang độ dài hợp interval.
 - Overlap nhỏ hơn làm số chunk, thời gian cắt, dung lượng WAV tạm và thời gian audfprint giảm
   mạnh; đồng thời tăng xác suất clip dài bị chia thành nhiều mảnh.
-- Các mảnh chồng nhau vẫn lấy max, nên hash của trường hợp bị quét lặp do overlap không đổi.
+- Các vùng bị nhiều mảnh phủ chỉ lấy mật độ hash cao nhất, nên quan sát kém không kéo thấp
+  quan sát tốt và vùng overlap không bị cộng lặp.
 - Không đổi `Engine.HEADER` hoặc `bang_ngang.HEADER_NGANG` trong Phase 2b.
 
 ## 7. Thứ tự triển khai Phase 2b

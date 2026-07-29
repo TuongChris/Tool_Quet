@@ -45,8 +45,10 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
   đối chiếu với bản đã bị nén lại. Nén xuống 32 kbps vẫn tìm đúng vị trí nhưng hash
   giảm còn ~50% → **64 kbps mono 16 kHz là điểm tối ưu**, đừng hạ thấp hơn.
 - audfprint hạ mẫu về 11025 Hz nên chỉ dùng phổ tới ~5.5 kHz. Lưu audio > 16 kHz là lãng phí.
-- `overlap_s` **phải lớn hơn** clip gốc dài nhất, nếu không sẽ sót clip nằm vắt qua
-  ranh giới hai khúc.
+- Overlap hiệu lực phải nằm trong `[60, overlap_max_s]`; mặc định
+  `overlap_max_s=180`. Clip dài hơn trần có thể bị chia thành nhiều mảnh ở ranh giới
+  khúc; `_merge()` phải phục hồi bằng chứng bằng hợp interval và mật độ hash tốt nhất,
+  không được tăng overlap vượt trần để bao trọn clip dài nhất.
 - Điểm mù đã biết: video vi phạm bị **thay/đè toàn bộ tiếng** thì phương pháp này bó tay.
   Hướng mở rộng khi cần: pHash + OpenCV, cao hơn nữa là VCSL/TransVCL (cần GPU).
 - `data/db.pklz` chứa vân tay; `clips_meta.json` (trong thư mục kho) map tên file →
@@ -83,19 +85,17 @@ thời điểm clip bắt đầu; khi chẩn đoán vân tay mới dùng vùng k
 
 ## Kiểm thử — LÀM ƠN CHẠY TRƯỚC KHI BÁO XONG
 
-Dự án chưa có test tự động. Trước khi kết luận một thay đổi là xong, phải chạy tối thiểu:
+Dự án có hơn 240 test tự động. Trước khi kết luận một thay đổi là xong, phải chạy tối thiểu:
 
 ```bash
-# 1) Lõi còn import sạch không
+# 1) Toàn bộ suite nhanh
+python -m pytest -q
+
+# 2) Hai test tích hợp audio tổng hợp
+python -m pytest -m slow
+
+# 3) Lõi còn import sạch không
 python -c "import engine, channel, sheets; print('ok')"
-
-# 2) Giao diện có render lỗi không (bắt lỗi runtime mà import không thấy)
-python -c "from streamlit.testing.v1 import AppTest; \
-at=AppTest.from_file('app.py',default_timeout=120).run(); \
-print('EXC:', [str(e.value) for e in at.exception])"
-
-# 3) Chạy thật một vòng nếu đã có db.pklz
-python cli.py file "duong\dan\file_test.mp4"
 ```
 
 **Nếu tôi nhờ thêm tính năng, hãy tự viết test nhỏ để tự kiểm chứng trước khi báo cáo,
