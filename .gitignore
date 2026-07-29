@@ -12,6 +12,7 @@ bin/
 *.m4a
 downloaded.txt
 clips_meta.json
+TimClipPro_source.zip
 
 # Python
 __pycache__/

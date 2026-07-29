@@ -1,0 +1,19 @@
+# TimClipPro session log
+#
+# File này là nhật ký append-only. Không sửa hoặc xóa entry cũ; mỗi phiên chỉ nối entry mới.
+
+## 2026-07-29 — Khôi phục ngữ cảnh và Phase 2a
+
+- Ngữ cảnh phiên cũ (`session.log`, `AGENTS.md`, `docs/CHANGELOG.md`) đã thất lạc sau khi dự
+  án được tái cấu trúc về `D:\Tool_Tim_Video_v2\TimClipPro`.
+- Governance còn lại và đang được dùng: `docs/EXECUTION_PLAN*.md`,
+  `docs/PROMPT_CONTRACT.md`, `CLAUDE.md` và `.github/copilot-instructions.md`.
+- Không tạo lại `AGENTS.md` trong Phase 2a để tránh chồng chéo governance; PM sẽ quyết định
+  sau khi rà soát các quy ước hiện hành.
+- Baseline trước thay đổi: 231 pass, 1 skip, 3 deselected, 0 fail.
+- Phase 2a chỉ điều tra: xác nhận anomaly overlap 50 phút khoảng 5,97× so với clip 60 phút
+  khoảng 1,99× trên video 80 giờ; benchmark bác bỏ giả thuyết seek O(N²) với WAV và
+  WebM/Opus có index; segment chỉ nhanh hơn khoảng 2,3% trên WebM.
+- Thêm hai bộ test đỏ cho chính sách overlap có trần/đơn điệu và quy tắc cộng hash ở các
+  mảnh liền kề hoặc rời nhau. Không sửa mã chức năng.
+- Kế hoạch triển khai Phase 2b được ghi tại `docs/PHASE2_FIX_PLAN.md`.
