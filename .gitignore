@@ -1,0 +1,39 @@
+@"
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Build/output
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Runtime data, logs and backups
+logs/
+*.log
+data_backup_truoc_2b/
+data/
+temp/
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+"@ | Set-Content -Encoding utf8 .gitignore
