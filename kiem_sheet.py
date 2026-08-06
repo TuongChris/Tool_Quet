@@ -18,10 +18,10 @@ if len(sys.argv) < 2:
     sys.exit(1)
 LINK = sys.argv[1]
 
-import bang_ngang
-from bang_ngang import HEADER_NGANG
-from engine import Match, ScanResult
-from sheets import SheetsExporter
+import bang_ngang  # noqa: E402 - chỉ nạp dependency sau khi kiểm tra đối số
+from bang_ngang import HEADER_NGANG  # noqa: E402
+from engine import Match, ScanResult  # noqa: E402
+from sheets import SheetsExporter  # noqa: E402
 
 # --- Dòng giả, dễ nhận ra để xoá sau ---
 kq = ScanResult(

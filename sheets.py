@@ -117,7 +117,7 @@ class SheetsExporter:
 
         ws = self._mo_worksheet(len(header))
         if ghi_header_neu_trong and not ws.get_all_values():
-            ws.append_row([str(x) for x in header], value_input_option="USER_ENTERED")
+            ws.append_row([str(x) for x in header], value_input_option="RAW")
         ws.append_rows([[("" if v is None else str(v)) for v in r] for r in rows],
-                       value_input_option="USER_ENTERED")
+                       value_input_option="RAW")
         return len(rows)

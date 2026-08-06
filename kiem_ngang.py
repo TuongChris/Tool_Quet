@@ -1,5 +1,4 @@
 import csv
-import os
 import sys
 
 try:
@@ -46,7 +45,7 @@ meta_gia = {
 }
 
 # --- 1) Kiểm hàm dựng dòng ---
-import bang_ngang
+import bang_ngang  # noqa: E402 - script kiểm tra cấu hình stdout trước import ứng dụng
 dong = bang_ngang.dung_dong_ngang(kq, meta_gia)
 print(f"Số ô trong dòng : {len(dong)}")
 print(f"Số cột tiêu đề  : {len(HEADER_NGANG)}")

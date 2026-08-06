@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 """Test các thành phần lõi: tiện ích, quản lý kho, báo cáo, đồng bộ kênh."""
-import os
-
 import pytest
 from conftest import M
 

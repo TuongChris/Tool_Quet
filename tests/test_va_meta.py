@@ -181,4 +181,5 @@ def test_fetcher_mac_dinh_chi_lay_metadata_khong_tai_video(
 
     assert ket_qua["da_va"] == 1
     assert loi_goi[0][1]["skip_download"] is True
+    assert loi_goi[0][1]["socket_timeout"] == 30
     assert loi_goi[1] == ("extract", "https://youtu.be/abc123", False)

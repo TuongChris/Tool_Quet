@@ -1,0 +1,5 @@
+# Minimum patched transitive versions verified by pip-audit on 2026-08-06.
+# Keep this list narrow; it is not a request to upgrade every dependency.
+cryptography>=50.0.0
+GitPython>=3.1.57
+

@@ -7,7 +7,6 @@ import sys
 
 import pytest
 
-import nhat_ky
 from nhat_ky import dong_nhat_ky, mo_nhat_ky
 
 

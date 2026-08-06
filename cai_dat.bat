@@ -7,15 +7,28 @@ cd /d "%~dp0"
 
 echo.
 echo ===== BUOC 1/4: Kiem tra Python =====
-set "PY="
-py -3 --version >nul 2>nul && set "PY=py -3"
-if not defined PY python --version >nul 2>nul && set "PY=python"
-if not defined PY (
+set "BOOT_PY="
+py -3.12 --version >nul 2>nul && set "BOOT_PY=py -3.12"
+if not defined BOOT_PY py -3 --version >nul 2>nul && set "BOOT_PY=py -3"
+if not defined BOOT_PY python --version >nul 2>nul && set "BOOT_PY=python"
+if not defined BOOT_PY (
     echo [LOI] Chua cai Python hoac chua tick "Add python.exe to PATH".
-    echo       Tai tai: https://www.python.org/downloads/
+    echo       Hay cai Python 3.12 64-bit tu: https://www.python.org/downloads/
     pause
     exit /b 1
 )
+%BOOT_PY% --version
+
+if not exist ".venv\Scripts\python.exe" (
+    echo Dang tao moi truong ao .venv rieng cho du an...
+    %BOOT_PY% -m venv .venv
+    if errorlevel 1 (
+        echo [LOI] Khong tao duoc .venv.
+        pause
+        exit /b 1
+    )
+)
+set "PY=.venv\Scripts\python.exe"
 %PY% --version
 
 echo.

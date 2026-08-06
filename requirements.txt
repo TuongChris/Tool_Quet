@@ -1,3 +1,6 @@
+# Security compatibility constraints for transitive packages.
+-c constraints.txt
+
 # Loi fingerprint (audfprint can)
 numpy
 scipy

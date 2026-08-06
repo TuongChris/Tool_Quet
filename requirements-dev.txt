@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Test and audit tools are intentionally kept out of the production dependency list.
+pytest>=9,<10
+pytest-cov>=6,<8
+pip-audit>=2.10,<3
+ruff>=0.12,<1

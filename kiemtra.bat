@@ -5,7 +5,9 @@ REM  Day la buoc 3 trong vong lap: Spec -> Code -> KIEM TRA -> Fix
 REM ============================================================
 cd /d "%~dp0"
 set "PY="
-py -3 --version >nul 2>nul && set "PY=py -3"
+if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+if not defined PY py -3.12 --version >nul 2>nul && set "PY=py -3.12"
+if not defined PY py -3 --version >nul 2>nul && set "PY=py -3"
 if not defined PY set "PY=python"
 
 echo ===== 1/3: Import sach =====

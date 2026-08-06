@@ -1,0 +1,58 @@
+# Version control, editors and local environments
+.git/
+.github/
+.vscode/
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.py[cod]
+
+# Credentials and local configuration must be mounted at runtime, never baked in
+google_key.json
+credentials.json
+client_secret.json
+token.json
+**/google_key.json
+**/credentials.json
+**/client_secret.json
+**/token.json
+*.json.key
+.env
+.env.*
+*.pem
+*.key
+*credential*.json
+*secret*.json
+*token*.json
+*service-account*.json
+*service_account*.json
+**/*[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]*.json
+**/*[Ss][Ee][Cc][Rr][Ee][Tt]*.json
+**/*[Tt][Oo][Kk][Ee][Nn]*.json
+
+# User data, caches, reports and logs
+data/
+ketqua/
+*.log
+watchlist.json
+watchlist.local.json
+watchlist.local.*.json
+session.log
+.streamlit/secrets.toml
+
+# Windows-only bundled binaries are replaced by apt packages in the Linux image
+bin/
+
+# Development/audit artifacts not needed by the runtime image
+tests/
+docs/
+*.zip
+requirements-lock.txt
+*.bat
+kiem_*.py
+dong_goi.py

@@ -35,7 +35,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Iterable, Optional
 
@@ -70,6 +70,7 @@ class Config:
     shifts_kho: int = 4        # Subframe shifts khi tạo kho vân tay
     shifts_quet: int = 4       # Subframe shifts khi quét video dài
     ytdlp_format: str = "ba/b"  # Định dạng yt-dlp: chỉ lấy audio tốt nhất cho nhẹ
+    network_timeout_s: int = 30  # Timeout socket cho request/tải YouTube
     keep_downloads: bool = True  # Giữ lại audio đã tải để lần sau khỏi tải lại
     ghi_tung_phan: bool = True   # Ghi Sheets ngay sau mỗi video giám sát
     dem_max_gb: float = 20.0    # Ngân sách kho đệm; đặt 0 để tắt giới hạn dung lượng
@@ -83,6 +84,8 @@ class Config:
     uu_tien_clip_khac_nhau: bool = True  # Ưu tiên 5 clip GỐC KHÁC NHAU thay vì trùng lặp
 
     def validate(self, overlap_s: Optional[int] = None) -> None:
+        if self.chunk_s <= 60:
+            raise ValueError("chunk_s phải lớn hơn 60 giây.")
         if self.overlap_max_s < 60:
             raise ValueError("overlap_max_s phải >= 60 giây.")
         if self.overlap_max_s >= self.chunk_s:
@@ -93,6 +96,26 @@ class Config:
             raise ValueError("chunk_s phải lớn hơn overlap_s.")
         if overlap < 60:
             raise ValueError("overlap_s nên >= 60 giây để không bỏ sót clip nằm vắt qua ranh giới.")
+        if self.min_hash < 1:
+            raise ValueError("min_hash phải >= 1.")
+        if self.min_match_s < 0:
+            raise ValueError("min_match_s không được âm.")
+        if self.max_matches < 1:
+            raise ValueError("max_matches phải >= 1.")
+        if not 0 <= self.ncores <= 64:
+            raise ValueError("ncores phải nằm trong khoảng 0..64.")
+        if not 5 <= self.network_timeout_s <= 300:
+            raise ValueError("network_timeout_s phải nằm trong khoảng 5..300 giây.")
+        if self.dedup_s < 0:
+            raise ValueError("dedup_s không được âm.")
+        if not 0 <= self.shifts_kho <= 8 or not 0 <= self.shifts_quet <= 8:
+            raise ValueError("shifts_kho và shifts_quet phải nằm trong khoảng 0..8.")
+        if self.top_n < 1:
+            raise ValueError("top_n phải >= 1.")
+        if self.min_hash_floor < 0 or self.min_hash_strong < 0:
+            raise ValueError("Ngưỡng hash chọn lọc không được âm.")
+        if self.dem_max_gb < 0 or self.dem_max_ngay < 0:
+            raise ValueError("Giới hạn kho đệm không được âm.")
 
 
 @dataclass
@@ -155,6 +178,28 @@ def hhmmss(giay: float) -> str:
     return f"{giay // 3600:02d}:{(giay % 3600) // 60:02d}:{giay % 60:02d}"
 
 
+def o_bang_tinh_an_toan(gia_tri):
+    """Ép chuỗi có thể bị spreadsheet hiểu là công thức thành dữ liệu thuần."""
+    if not isinstance(gia_tri, str):
+        return gia_tri
+    noi_dung = gia_tri.lstrip(" \t\r\n")
+    if noi_dung.startswith(("=", "+", "-", "@")):
+        return "'" + gia_tri
+    return gia_tri
+
+
+def _mo_file_text_moi(path: str, **kwargs):
+    """Mở file text bằng mode độc quyền và thêm hậu tố nếu tên đã tồn tại."""
+    goc, duoi = os.path.splitext(path)
+    thu_tu = 1
+    while True:
+        ung_vien = path if thu_tu == 1 else f"{goc}_{thu_tu}{duoi}"
+        try:
+            return open(ung_vien, "x", **kwargs), ung_vien
+        except FileExistsError:
+            thu_tu += 1
+
+
 def so_nhan_nen_dung() -> int:
     """Tự chọn số nhân CPU cho tác vụ nền, luôn chừa ít nhất một nhân cho hệ thống."""
     so_nhan = os.cpu_count() or 1
@@ -194,7 +239,8 @@ RE_MATCH = re.compile(
 class Engine:
     """Lõi xử lý. Không phụ thuộc vào bất kỳ giao diện nào."""
 
-    def __init__(self, root: Optional[str] = None, config: Optional[Config] = None):
+    def __init__(self, root: Optional[str] = None, config: Optional[Config] = None,
+                 data_dir: Optional[str] = None, out_dir: Optional[str] = None):
         self.root = os.path.abspath(root or os.path.dirname(os.path.abspath(__file__)))
         self.config = config or Config()
         self.canh_bao_khoi_dong: list = []
@@ -202,13 +248,13 @@ class Engine:
         self.cau_hinh_da_luu: dict = {}
 
         self.bin_dir = os.path.join(self.root, "bin")
-        self.data_dir = os.path.join(self.root, "data")
+        self.data_dir = os.path.abspath(data_dir or os.path.join(self.root, "data"))
         self.db_file = os.path.join(self.data_dir, "db.pklz")  # sẽ được _init_kho ghi đè
         self.kho_dang_dung = ""
         self.kho_thu_muc = ""
         self.dl_dir = os.path.join(self.data_dir, "downloads")
         self.chunk_dir = os.path.join(self.data_dir, "chunks")
-        self.out_dir = os.path.join(self.root, "ketqua")
+        self.out_dir = os.path.abspath(out_dir or os.path.join(self.root, "ketqua"))
         self.sqlite_file = os.path.join(self.data_dir, "lichsu.db")
 
         for d in (self.data_dir, self.dl_dir, self.out_dir):
@@ -253,6 +299,7 @@ class Engine:
 
     def luu_cau_hinh(self, them: dict | None = None) -> None:
         """Lưu Config và các tùy chọn giao diện không bí mật được cho phép."""
+        self.config.validate()
         du_lieu = cau_hinh.lay_tu_config(self.config)
         for khoa, mac_dinh in cau_hinh.GIA_TRI_GIAO_DIEN_MAC_DINH.items():
             if them and khoa in them and type(them[khoa]) is type(mac_dinh):
@@ -291,6 +338,30 @@ class Engine:
     def _ghi_khos(self, d: dict) -> None:
         ghi_json_an_toan(self.kho_file, d)
 
+    def _duong_dan_db_kho(self, ten_file: str) -> str:
+        """Chỉ chấp nhận basename `.pklz` nằm trực tiếp trong data_dir."""
+        if not isinstance(ten_file, str) or not ten_file:
+            raise LoiDuLieu("Tên file vân tay trong khos.json không hợp lệ.")
+        if (
+            os.path.isabs(ten_file)
+            or os.path.basename(ten_file) != ten_file
+            or not ten_file.lower().endswith(".pklz")
+        ):
+            raise LoiDuLieu(
+                "Tên file vân tay trong khos.json phải là một file .pklz "
+                "nằm trực tiếp trong thư mục data."
+            )
+        duong_dan = os.path.abspath(os.path.join(self.data_dir, ten_file))
+        try:
+            nam_trong_data = os.path.commonpath(
+                [self.data_dir, duong_dan]
+            ) == os.path.commonpath([self.data_dir])
+        except ValueError:
+            nam_trong_data = False
+        if not nam_trong_data:
+            raise LoiDuLieu("Đường dẫn file vân tay thoát khỏi thư mục data.")
+        return duong_dan
+
     def _init_kho(self) -> None:
         """Nạp kho đang dùng. Tự chuyển đổi dữ liệu từ phiên bản cũ (1 kho duy nhất)."""
         try:
@@ -307,14 +378,18 @@ class Engine:
             d = {"dang_dung": "Kho mặc định",
                  "danh_sach": [{"ten": "Kho mặc định", "thu_muc": "", "db": "db.pklz"}]}
             self._ghi_khos(d)
-        self._ap_dung_kho(d.get("dang_dung", ""), d)
+        try:
+            self._ap_dung_kho(d.get("dang_dung", ""), d)
+        except LoiDuLieu as e:
+            self.canh_bao_khoi_dong.append(str(e))
+            self._ap_dung_kho("", {"dang_dung": "", "danh_sach": []})
 
     def _ap_dung_kho(self, ten: str, d: Optional[dict] = None) -> None:
         d = d or self._doc_khos()
         kho = next((k for k in d["danh_sach"] if k["ten"] == ten), None)
         if kho is None and d["danh_sach"]:
             kho = d["danh_sach"][0]
-        self.db_file = os.path.join(self.data_dir, kho["db"]) if kho else \
+        self.db_file = self._duong_dan_db_kho(kho["db"]) if kho else \
             os.path.join(self.data_dir, "db.pklz")
         self.kho_dang_dung = kho["ten"] if kho else ""
         self.kho_thu_muc = kho.get("thu_muc", "") if kho else ""
@@ -325,7 +400,7 @@ class Engine:
         d = self._doc_khos()
         ds = []
         for k in d["danh_sach"]:
-            db = os.path.join(self.data_dir, k["db"])
+            db = self._duong_dan_db_kho(k["db"])
             ds.append({**k, "duong_dan_db": db, "co_van_tay": os.path.exists(db),
                        "dang_dung": k["ten"] == self.kho_dang_dung})
         return ds
@@ -369,7 +444,7 @@ class Engine:
             return
         if xoa_van_tay:
             self._cache_khoa = None
-            self._xoa_an_toan(os.path.join(self.data_dir, kho["db"]))
+            self._xoa_an_toan(self._duong_dan_db_kho(kho["db"]))
         d["danh_sach"] = [k for k in d["danh_sach"] if k["ten"] != ten]
         if d.get("dang_dung") == ten:
             d["dang_dung"] = d["danh_sach"][0]["ten"] if d["danh_sach"] else ""
@@ -760,7 +835,13 @@ class Engine:
 
     def youtube_info(self, url: str) -> dict:
         import yt_dlp
-        opts = {"quiet": True, "no_warnings": True, "noplaylist": True, "skip_download": True}
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "skip_download": True,
+            "socket_timeout": self.config.network_timeout_s,
+        }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
         return {
@@ -806,6 +887,7 @@ class Engine:
             "noplaylist": True, "quiet": True, "no_warnings": True,
             "continuedl": True,          # đứt mạng thì lần sau tải tiếp
             "retries": 10, "fragment_retries": 10,
+            "socket_timeout": self.config.network_timeout_s,
             "progress_hooks": [hook],
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -1337,10 +1419,16 @@ class Engine:
         os.makedirs(self.out_dir, exist_ok=True)
         ten_file = ten_file or os.path.join(
             self.out_dir, "ketqua_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv")
-        with open(ten_file, "w", newline="", encoding="utf-8-sig") as f:
+        f, ten_file = _mo_file_text_moi(
+            ten_file, newline="", encoding="utf-8-sig"
+        )
+        with f:
             w = csv.writer(f)
             w.writerow(self.HEADER)
-            w.writerows(self.to_rows(ket))
+            w.writerows([
+                [o_bang_tinh_an_toan(o) for o in dong]
+                for dong in self.to_rows(ket)
+            ])
         return ten_file
 
     def to_rows_ngang(self, ket: Iterable) -> list:
@@ -1366,10 +1454,16 @@ class Engine:
             self.out_dir,
             "ketqua_ngang_" + datetime.now().strftime("%Y%m%d_%H%M%S") + ".csv",
         )
-        with open(ten_file, "w", newline="", encoding="utf-8-sig") as f:
+        f, ten_file = _mo_file_text_moi(
+            ten_file, newline="", encoding="utf-8-sig"
+        )
+        with f:
             w = csv.writer(f)
             w.writerow(bang_ngang.HEADER_NGANG)
-            w.writerows(rows)
+            w.writerows([
+                [o_bang_tinh_an_toan(o) for o in dong]
+                for dong in rows
+            ])
         return ten_file
 
     def export_ho_so(self, ket: Iterable, ten_file: Optional[str] = None) -> list:

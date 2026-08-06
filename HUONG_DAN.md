@@ -1,8 +1,8 @@
 # TimClip Pro — Hệ thống tìm video gốc trong video dài
 
-Chạy **100% trên máy bạn**. Giao diện hiển thị bằng trình duyệt tại `http://localhost:8501`,
-nhưng không có dữ liệu nào rời khỏi máy (trừ lúc tải YouTube). Rút mạng vẫn quét được
-các file có sẵn — giống hệt cách VS Code hay Zalo PC hoạt động.
+Phần nhận dạng chạy **100% trên máy bạn**. Giao diện hiển thị bằng trình duyệt tại
+`http://localhost:8501`. Dữ liệu chỉ ra ngoài khi bạn yêu cầu tải/đọc metadata YouTube hoặc
+bật xuất Google Sheets; quét file có sẵn và xuất báo cáo cục bộ không cần mạng.
 
 ---
 
@@ -46,17 +46,19 @@ File có sẵn ────────────────┤
 | Thứ | Ghi chú |
 |---|---|
 | Windows 10/11 64-bit | Có sẵn `curl`, `tar` |
-| Python 3.10 – 3.13 | python.org — **NHỚ TICK "Add python.exe to PATH"** |
+| Python 3.12 64-bit | Bản runtime chuẩn của dự án; Python 3.14 chỉ mới qua fast suite |
 | Ổ trống | Audio 30 tiếng ≈ 1–2 GB |
 
-Đã kiểm thử: Python 3.12, numpy 2.4, Streamlit 1.60, yt-dlp 2026.07, FFmpeg 6.x.
+Baseline audit 2026-08-06: fast suite chạy trên Python 3.14.6; Docker và hướng dẫn cài đặt
+chuẩn hóa trên Python 3.12. FFmpeg/FFprobe 8.1.2 và yt-dlp 2026.07.04 đã smoke-test.
 
 ## 3. Cài đặt (một lần)
 
 1. Cài Python từ https://www.python.org/downloads/ — **tick "Add python.exe to PATH"**.
 2. Giải nén `TimClipPro.zip` vào thư mục cố định, ví dụ `D:\TimClipPro\`
    (tránh đường dẫn có dấu tiếng Việt và tránh OneDrive).
-3. Double-click **`cai_dat.bat`** → tự cài thư viện, tự tải audfprint + FFmpeg.
+3. Double-click **`cai_dat.bat`** → tự tạo `.venv`, cài thư viện vào môi trường riêng,
+   kiểm tra audfprint và tải FFmpeg nếu còn thiếu.
 4. Cuối màn hình hiện đủ 3 dòng `[OK]` là xong.
 
 > Nếu bạn đã cài Video Duplicate Finder trước đó: copy sẵn `ffmpeg.exe` và `ffprobe.exe`
@@ -67,7 +69,7 @@ File có sẵn ────────────────┤
 Double-click **`ChayTool.bat`** → trình duyệt tự mở. Cửa sổ đen phải để nguyên
 (đó là server); đóng nó là tắt tool.
 
-## 5. Sử dụng — 4 tab
+## 5. Sử dụng — 5 tab
 
 ### 🎬 Tab «Kho clip gốc» — làm một lần
 
@@ -109,7 +111,7 @@ Khoảng "từ → đến" thường ngắn hơn clip thật vài giây — bìn
 | Tham số | Mặc định | Khi nào sửa |
 |---|---|---|
 | Độ dài mỗi khúc | 3600s | Máy yếu RAM → 1800 |
-| Khúc gối nhau | 600s | **Phải > clip gốc dài nhất** |
+| Khúc gối đề xuất | 600s | Giá trị hiệu lực bị kẹp bởi `overlap_max_s` (mặc định 180s) |
 | Số hash tối thiểu | 15 | Báo nhầm → tăng 30–40; bỏ sót → giảm 8–10 |
 | Số nhân CPU | 1 | Máy nhiều nhân → 4 |
 
@@ -145,7 +147,7 @@ nhập đường dẫn trong giao diện thì dùng đường dẫn **bên trong
 | Trình duyệt không tự mở | Tự vào `http://localhost:8501` |
 | Cổng 8501 bị chiếm | Sửa `--server.port=8502` trong `ChayTool.bat` |
 | yt-dlp lỗi 403 / tải hỏng | `pip install -U yt-dlp` (YouTube đổi cơ chế thường xuyên) |
-| Video giới hạn tuổi | Trong `engine.py`, hàm `download_audio`, thêm vào `opts`: `"cookiesfrombrowser": ("chrome",)` |
+| Video giới hạn tuổi | Không chép cookie/token vào source. Cấu hình xác thực yt-dlp ở môi trường riêng và kiểm tra điều khoản sử dụng trước khi chạy |
 | Quét ra 0 kết quả dù chắc chắn có | ① Video dài còn tiếng gốc không? ② Giảm «Số hash tối thiểu» ③ Kiểm tra kho đã đủ clip |
 | Báo nhầm | Tăng «Số hash tối thiểu» lên 30–40 |
 

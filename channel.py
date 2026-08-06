@@ -33,6 +33,7 @@ AUDIO_CODEC = "libopus"
 AUDIO_BITRATE = "64k"
 AUDIO_RATE = "16000"   # audfprint chỉ dùng tới ~5.5 kHz nên 16 kHz là dư
 AUDIO_EXT = "opus"
+NETWORK_TIMEOUT_S = 30
 
 
 @dataclass
@@ -54,8 +55,11 @@ def lam_sach_ten(s: str, max_len: int = 80) -> str:
 class ChannelSync:
     """Đồng bộ kênh YouTube về thư mục kho clip gốc."""
 
-    def __init__(self, dest: str):
+    def __init__(self, dest: str, network_timeout_s: int = NETWORK_TIMEOUT_S):
+        if not 5 <= network_timeout_s <= 300:
+            raise ValueError("network_timeout_s phải nằm trong khoảng 5..300 giây.")
         self.dest = os.path.abspath(dest)
+        self.network_timeout_s = network_timeout_s
         os.makedirs(self.dest, exist_ok=True)
         # File archive theo đúng định dạng chuẩn của yt-dlp ("youtube <id>" mỗi dòng)
         self.archive = os.path.join(self.dest, "downloaded.txt")
@@ -94,6 +98,7 @@ class ChannelSync:
                     "quiet": True,
                     "no_warnings": True,
                     "skip_download": True,
+                    "socket_timeout": self.network_timeout_s,
                 }
                 with yt_dlp.YoutubeDL(opts) as ydl:
                     info = ydl.extract_info(
@@ -183,7 +188,8 @@ class ChannelSync:
             url = url.rstrip("/") + "/videos"
 
         opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist",
-                "ignoreerrors": True, "skip_download": True}
+                "ignoreerrors": True, "skip_download": True,
+                "socket_timeout": NETWORK_TIMEOUT_S}
         if limit:
             opts["playlistend"] = limit
 
@@ -225,6 +231,7 @@ class ChannelSync:
             "outtmpl": os.path.join(self.tmp_dir, "%(id)s.%(ext)s"),
             "noplaylist": True, "quiet": True, "no_warnings": True,
             "continuedl": True, "retries": 10, "fragment_retries": 10,
+            "socket_timeout": self.network_timeout_s,
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([v.url])
@@ -273,8 +280,11 @@ class ChannelSync:
 
         meta = self.load_meta()
         loi = []
+        da_tai = 0
+        da_huy = False
         for i, v in enumerate(can_tai):
             if cancel_check and cancel_check():
+                da_huy = True
                 break
             bao(0.02 + 0.96 * i / max(1, len(can_tai)),
                 f"[{i+1}/{len(can_tai)}] {v.title[:60]}")
@@ -286,13 +296,15 @@ class ChannelSync:
                 }
                 self.save_meta(meta)
                 self._mark_done(v.id)
+                da_tai += 1
             except Exception as e:  # noqa: BLE001
                 loi.append(f"{v.title[:40]}: {e}")
 
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         bao(1.0, "Đồng bộ xong.")
-        return {"tong": len(ds), "moi": len(can_tai) - len(loi),
-                "bo_qua": len(ds) - len(can_tai), "loi": loi, "thu_muc": self.dest}
+        return {"tong": len(ds), "moi": da_tai,
+                "bo_qua": len(ds) - len(can_tai), "loi": loi,
+                "thu_muc": self.dest, "da_huy": da_huy}
 
     # ---------- khôi phục / đối chiếu ----------
 

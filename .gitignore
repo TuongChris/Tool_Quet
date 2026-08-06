@@ -23,4 +23,12 @@ venv/
 # VS Code
 .streamlit/secrets.toml
 .pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 tests/__pycache__/
+
+# Nhat ky runtime co the chua duong dan/URL cua nguoi dung
+*.log
+watchlist.local.json
+watchlist.local.*.json

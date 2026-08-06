@@ -8,6 +8,8 @@ services:
       # Du lieu he thong (kho van tay, lich su, audio da tai) - giu lai giua cac lan chay
       - ./data:/app/data
       - ./ketqua:/app/ketqua
+      # Tuy chon: bo dau # sau khi da tao key; mount read-only, khong bake vao image.
+      # - ./google_key.json:/app/google_key.json:ro
       # SUA 2 DONG DUOI cho dung o dia cua ban, roi trong giao dien nhap
       # duong dan /clips va /videodai (khong phai D:\...)
       - D:/ClipGoc:/clips:ro

@@ -2,7 +2,9 @@
 cd /d "%~dp0"
 
 set "PY="
-py -3 --version >nul 2>nul && set "PY=py -3"
+if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+if not defined PY py -3.12 --version >nul 2>nul && set "PY=py -3.12"
+if not defined PY py -3 --version >nul 2>nul && set "PY=py -3"
 if not defined PY python --version >nul 2>nul && set "PY=python"
 if not defined PY exit /b 1
 

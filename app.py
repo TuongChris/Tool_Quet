@@ -18,7 +18,7 @@ import streamlit as st
 
 import bang_ngang
 from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
-from engine import Engine, ScanResult, hhmmss
+from engine import Engine, ScanResult, hhmmss, o_bang_tinh_an_toan
 from channel import ChannelSync
 from sheets import SheetsExporter
 
@@ -30,7 +30,10 @@ st.set_page_config(page_title="TimClip Pro — Tìm video gốc trong video dài
 # =====================================================================
 
 if "eng" not in st.session_state:
-    st.session_state.eng = Engine()
+    st.session_state.eng = Engine(
+        data_dir=os.environ.get("TIMCLIP_DATA_DIR") or None,
+        out_dir=os.environ.get("TIMCLIP_OUTPUT_DIR") or None,
+    )
 du_lieu_giao_dien = st.session_state.eng.cau_hinh_da_luu
 for khoa, mac_dinh in GIA_TRI_GIAO_DIEN_MAC_DINH.items():
     if khoa not in st.session_state:
@@ -101,7 +104,11 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
     rows = eng.to_rows(results)
     df = pd.DataFrame(rows, columns=eng.HEADER)
     st.dataframe(df, width="stretch", hide_index=True)
-    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+    df_csv = pd.DataFrame(
+        [[o_bang_tinh_an_toan(o) for o in dong] for dong in rows],
+        columns=eng.HEADER,
+    )
+    csv_bytes = df_csv.to_csv(index=False).encode("utf-8-sig")
 
     # Tự động đẩy lên Google Sheets ngay sau khi quét xong
     if st.session_state.sheet_auto and not job.get("da_day_sheet") and rows:
@@ -193,8 +200,9 @@ with st.sidebar:
         c.chunk_s = st.number_input("Độ dài mỗi khúc (giây)", 300, 7200, c.chunk_s, 300,
                                     help="Máy yếu RAM thì giảm xuống 1800.")
         c.overlap_s = st.number_input("Khúc gối nhau (giây)", 60, 3600, c.overlap_s, 60,
-                                      help="Phải LỚN HƠN thời lượng clip gốc dài nhất, "
-                                           "nếu không sẽ sót clip nằm vắt qua ranh giới.")
+                                      help="Giá trị đề xuất khi thiếu metadata. Giá trị hiệu lực "
+                                           "luôn bị giới hạn bởi trần khúc gối "
+                                           f"({c.overlap_max_s} giây).")
         c.min_hash = st.slider("Số hash tối thiểu", 5, 100, c.min_hash,
                                help="Bị báo nhầm → tăng lên. Bỏ sót → giảm xuống.")
         c.min_match_s = st.slider("Đoạn khớp tối thiểu (giây)", 1.0, 60.0, c.min_match_s, 1.0)
@@ -226,8 +234,10 @@ with st.sidebar:
             "Ưu tiên các clip gốc khác nhau", c.uu_tien_clip_khac_nhau)
         c.keep_downloads = st.checkbox("Giữ lại audio đã tải", c.keep_downloads,
                                        help="Bỏ tick để tiết kiệm ổ cứng (lần sau phải tải lại).")
-        if c.overlap_s >= c.chunk_s:
-            st.error("«Khúc gối nhau» phải NHỎ HƠN «Độ dài mỗi khúc».")
+        st.caption(
+            f"Khúc gối hiệu lực tối đa hiện tại: {c.overlap_max_s} giây; "
+            "clip dài có thể được ghép lại từ nhiều mảnh ở ranh giới."
+        )
 
     st.divider()
     st.subheader("📊 Google Sheets")
@@ -315,8 +325,10 @@ if not job["running"] and (job["results"] or job["error"]):
         st.error(f"Lỗi: {job['error']}")
     elif job["kind"] == "channel":
         r = job["results"]
-        st.success(f"✅ Đồng bộ xong: tải mới **{r['moi']}** video, "
-                   f"bỏ qua {r['bo_qua']} video đã có. Thư mục: `{r['thu_muc']}`")
+        thong_bao = st.warning if r.get("da_huy") else st.success
+        tien_to = "⏹️ Đã dừng đồng bộ" if r.get("da_huy") else "✅ Đồng bộ xong"
+        thong_bao(f"{tien_to}: tải mới **{r['moi']}** video, "
+                  f"bỏ qua {r['bo_qua']} video đã có. Thư mục: `{r['thu_muc']}`")
         if r["loi"]:
             st.warning("Một số video lỗi:\n\n- " + "\n- ".join(r["loi"][:10]))
         st.info("Bước tiếp theo: sang tab «Kho clip gốc» bấm «Bổ sung clip mới vào kho» "
@@ -507,7 +519,14 @@ with tab1:
 
         xoa = st.selectbox("Xoá kho (chỉ xoá vân tay, KHÔNG xoá file video của bạn)",
                            ["— chọn —"] + [k["ten"] for k in khos])
-        if xoa != "— chọn —" and st.button(f"🗑️ Xoá kho «{xoa}»"):
+        xac_nhan_xoa_kho = st.checkbox(
+            "Tôi xác nhận muốn xóa vân tay của kho đã chọn",
+            disabled=xoa == "— chọn —",
+        )
+        if xoa != "— chọn —" and st.button(
+            f"🗑️ Xoá kho «{xoa}»",
+            disabled=not xac_nhan_xoa_kho,
+        ):
             eng.delete_kho(xoa)
             st.rerun()
 
@@ -613,6 +632,12 @@ with tab4:
                                file_name=f"ketqua_job{chon}.csv", mime="text/csv")
         else:
             st.info("Lần quét này không có kết quả nào.")
-        if st.button("🗑️ Xóa lần quét này khỏi lịch sử"):
+        xac_nhan_xoa_lich_su = st.checkbox(
+            "Tôi xác nhận muốn xóa lần quét đã chọn khỏi lịch sử"
+        )
+        if st.button(
+            "🗑️ Xóa lần quét này khỏi lịch sử",
+            disabled=not xac_nhan_xoa_lich_su,
+        ):
             eng.delete_job(chon)
             st.rerun()

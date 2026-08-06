@@ -55,19 +55,11 @@ def engine(tmp_path):
     """Engine sạch, dữ liệu ghi vào thư mục tạm — không đụng data/ thật."""
     from engine import Engine
     goc = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    e = Engine(root=goc)
-    e.data_dir = str(tmp_path / "data")
-    os.makedirs(e.data_dir, exist_ok=True)
-    e.kho_file = os.path.join(e.data_dir, "khos.json")
-    e.sqlite_file = os.path.join(e.data_dir, "lichsu.db")
-    e.chunk_dir = os.path.join(e.data_dir, "chunks")
-    e.dl_dir = os.path.join(e.data_dir, "downloads")
-    e.out_dir = str(tmp_path / "ketqua")
-    e.db_file = os.path.join(e.data_dir, "db.pklz")
-    e._cache_khoa = None
-    e._init_sqlite()
-    e._init_kho()
-    return e
+    return Engine(
+        root=goc,
+        data_dir=str(tmp_path / "data"),
+        out_dir=str(tmp_path / "ketqua"),
+    )
 
 
 def M(clip="a.opus", start=0.0, hashes=1000, matched=60.0, offset=0.0):

@@ -204,7 +204,9 @@ def main():
             ap.error('Dùng: python cli.py kenh "https://youtube.com/@Kenh" --kho "D:\\KhoClipGoc"')
         cs = ChannelSync(a.kho)
         r = cs.sync(a.muc[0], a.limit, in_tien_do)
-        print(f"\nXONG: tải mới {r['moi']} video, bỏ qua {r['bo_qua']} video đã có.")
+        trang_thai = "ĐÃ DỪNG" if r.get("da_huy") else "XONG"
+        print(f"\n{trang_thai}: tải mới {r['moi']} video, "
+              f"bỏ qua {r['bo_qua']} video đã có.")
         if r["loi"]:
             print("Lỗi:", *r["loi"][:10], sep="\n  - ")
         print("Tiếp theo: python cli.py themclip \"%s\"" % a.kho)
