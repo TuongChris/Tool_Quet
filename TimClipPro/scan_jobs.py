@@ -63,6 +63,31 @@ def doan_phase(thong_bao: str) -> Optional[str]:
 
 
 @dataclass(frozen=True)
+class ScanLaunchConfig:
+    """Ảnh chụp cấu hình lúc bấm Bắt đầu quét.
+
+    Thread nền **không có ScriptRunContext**, nên đọc ``st.session_state`` từ đó chỉ
+    nhận một proxy rỗng — đó là nguyên nhân thật của «missing ScriptRunContext» và
+    ``KeyError: sheet_link``, chứ không phải key chưa được khởi tạo. Main thread chụp
+    cấu hình một lần rồi truyền xuống; worker chỉ đọc dữ liệu Python thuần.
+
+    Bất biến còn có lợi về nghiệp vụ: đổi link Sheet giữa batch không làm batch đang
+    chạy bắn sang bảng khác.
+    """
+
+    auto_sheet: bool = False
+    sheet_link: str = ""
+    dang_ngang: bool = True
+
+    @property
+    def sheet_id(self) -> str:
+        """ID đã chuẩn hoá; dùng cho khoá idempotency."""
+        from sheets import _lay_sheet_id
+
+        return _lay_sheet_id(self.sheet_link)
+
+
+@dataclass(frozen=True)
 class VideoState:
     """Trạng thái một video trong batch. Bất biến; cập nhật bằng ``replace``."""
 

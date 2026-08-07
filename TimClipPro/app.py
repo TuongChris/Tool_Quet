@@ -22,7 +22,8 @@ from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
 from clip_metadata import configure_metadata_logging
 from engine import Engine, ScanResult, hhmmss, o_bang_tinh_an_toan
 from fingerprint_progress import FingerprintJobController
-from scan_jobs import QUET_DANG_CHAY, QUET_LOI, QUET_XONG, ScanJobController
+from scan_jobs import ScanJobController, ScanLaunchConfig
+from scan_ui import build_scan_status_dataframe
 from sheet_delivery import SheetDelivery, SheetDeliveryWorker, khoa_giao_hang
 from channel import ChannelSync
 from sheets import SheetsExporter
@@ -75,8 +76,11 @@ _dong_bo_job_van_tay()
 
 
 if "scan_sheet_worker" not in st.session_state:
+    # sender nhận sheet_link kèm theo công việc nên chạy được ở thread nền:
+    # nó KHÔNG đọc st.session_state, nơi thread nền chỉ thấy proxy rỗng.
     st.session_state.scan_sheet_worker = SheetDeliveryWorker(
-        sender=lambda header, rows: lay_sheets().append(header, rows)
+        sender=lambda sheet_link, header, rows:
+            tao_sheets_exporter(sheet_link).append(header, rows)
     )
 if "scan_controller" not in st.session_state:
     st.session_state.scan_controller = ScanJobController(
@@ -91,16 +95,24 @@ def chay_quet(nguon: list, source_type: str) -> None:
     if job.get("running") or scan_controller.running:
         st.warning("Đang có tác vụ chạy; không tạo job trùng.")
         return
-    tu_dong_sheet = bool(st.session_state.sheet_auto)
-    dang_ngang = bool(st.session_state.sheet_dang_ngang)
-    if tu_dong_sheet:
+    # SNAPSHOT toàn bộ cấu hình NGAY TẠI ĐÂY, trên main thread. Thread nền không
+    # có ScriptRunContext nên đọc st.session_state từ đó chỉ nhận proxy rỗng —
+    # đó chính là nguyên nhân của «missing ScriptRunContext» và KeyError sheet_link.
+    # Snapshot cũng khiến batch đang chạy không bị đổi đích khi người dùng sửa
+    # link Sheet giữa chừng; batch sau mới dùng cấu hình mới.
+    cau_hinh_quet = ScanLaunchConfig(
+        auto_sheet=bool(st.session_state.sheet_auto),
+        sheet_link=str(st.session_state.sheet_link or ""),
+        dang_ngang=bool(st.session_state.sheet_dang_ngang),
+    )
+    if cau_hinh_quet.auto_sheet:
         scan_sheet_worker.start()
 
     def sau_moi_video(index: int, tong: int, ket_qua) -> None:
-        """Chạy trong scan worker — chỉ xếp hàng, tuyệt đối không chờ Google."""
-        if not tu_dong_sheet or ket_qua.status != "ok":
+        """Chạy trong SCAN WORKER — chỉ dùng cau_hinh_quet, không chạm Streamlit."""
+        if not cau_hinh_quet.auto_sheet or ket_qua.status != "ok":
             return
-        if dang_ngang:
+        if cau_hinh_quet.dang_ngang:
             header, rows = bang_ngang.HEADER_NGANG, eng.to_rows_ngang([ket_qua])
         else:
             header, rows = eng.HEADER, eng.to_rows([ket_qua])
@@ -108,7 +120,8 @@ def chay_quet(nguon: list, source_type: str) -> None:
             return
         rows = [[o_bang_tinh_an_toan(o) for o in dong] for dong in rows]
         khoa = khoa_giao_hang(
-            lay_sheets().sheet_id, "", "ngang" if dang_ngang else "doc",
+            cau_hinh_quet.sheet_id, "",
+            "ngang" if cau_hinh_quet.dang_ngang else "doc",
             ket_qua.job_id, ket_qua.source_id, rows,
         )
         scan_sheet_worker.enqueue(SheetDelivery(
@@ -116,6 +129,7 @@ def chay_quet(nguon: list, source_type: str) -> None:
             source_id=ket_qua.source_id or "",
             source_name=ket_qua.source_name or "",
             header=header, rows=rows,
+            sheet_link=cau_hinh_quet.sheet_link,
         ))
         scan_controller.ghi_nhan_giao_hang(index, khoa)
 
@@ -199,23 +213,18 @@ TEN_PHASE_QUET = {
     "failed": "Lỗi",
     "cancelled": "Đã dừng",
 }
-TEN_TRANG_THAI_QUET = {
-    QUET_XONG: "✅ Xong",
-    QUET_LOI: "❌ Lỗi",
-    QUET_DANG_CHAY: "⏳ Đang chạy",
-    "queued": "Chờ",
-}
-TEN_TRANG_THAI_SHEET = {
-    "pending": "Chờ gửi",
-    "sending": "Đang gửi",
-    "sent": "✅ Đã gửi",
-    "retrying": "Đang thử lại",
-    "failed": "❌ Lỗi",
-}
+# Tên hiển thị của trạng thái quét/Sheets nằm trong scan_ui.py, cạnh builder
+# DataFrame, để bảng và schema không bao giờ lệch nhau.
+
+
+def tao_sheets_exporter(sheet_link: str) -> SheetsExporter:
+    """Hàm THUẦN — gọi được từ thread nền vì không chạm Streamlit."""
+    return SheetsExporter(sheet=sheet_link)
 
 
 def lay_sheets() -> SheetsExporter:
-    return SheetsExporter(sheet=st.session_state.sheet_link)
+    """Bản tiện dụng cho MAIN THREAD; đọc cấu hình từ session state."""
+    return tao_sheets_exporter(st.session_state.sheet_link)
 
 
 def day_len_sheets(results: list[ScanResult]) -> tuple[bool, str]:
@@ -606,18 +615,10 @@ if job["running"]:
                 f"{v.message}"
             )
 
-        tt_sheet = scan_sheet_worker.snapshot()
-        st.dataframe(pd.DataFrame([{
-            "#": v.index,
-            "Video": (v.title or v.nguon)[:60],
-            "Quét": TEN_TRANG_THAI_QUET.get(v.scan_status, v.scan_status),
-            "Đoạn": "—" if v.matches is None else v.matches,
-            "Sheets": (
-                TEN_TRANG_THAI_SHEET.get(tt_sheet[v.delivery_key].status,
-                                         tt_sheet[v.delivery_key].status)
-                if v.delivery_key and v.delivery_key in tt_sheet else "—"
-            ),
-        } for v in anh.videos]), width="stretch", hide_index=True, height=260)
+        st.dataframe(
+            build_scan_status_dataframe(anh.videos, scan_sheet_worker.snapshot()),
+            width="stretch", hide_index=True, height=260,
+        )
 
         tom_tat = scan_sheet_worker.tom_tat()
         if tom_tat["tong"]:

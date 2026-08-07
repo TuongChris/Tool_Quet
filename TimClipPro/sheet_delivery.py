@@ -98,6 +98,9 @@ class SheetDelivery:
     source_name: str
     header: list
     rows: list
+    # Đích đến đi kèm chính công việc. Nhờ vậy thread giao hàng không phải hỏi
+    # lại Streamlit session state — nơi nó không có ScriptRunContext để đọc.
+    sheet_link: str = ""
     status: str = CHO_GUI
     attempts: int = 0
     last_error: str = ""
@@ -117,7 +120,10 @@ class SheetDeliveryWorker:
 
     def __init__(
         self,
-        sender: Callable[[list, list], int],
+        # sender(sheet_link, header, rows) -> số dòng đã ghi. Phải là hàm THUẦN
+        # theo nghĩa không chạm Streamlit: nó chạy trong thread giao hàng, nơi
+        # `st.session_state` là một proxy rỗng vì thiếu ScriptRunContext.
+        sender: Callable[[str, list, list], int],
         max_attempts: int = 4,
         base_delay: float = 2.0,
         queue_maxsize: int = 256,
@@ -222,7 +228,7 @@ class SheetDeliveryWorker:
                 return
             self._cap_nhat(key, status=DANG_GUI, attempts=lan)
             try:
-                so_dong = self.sender(viec.header, viec.rows)
+                so_dong = self.sender(viec.sheet_link, viec.header, viec.rows)
             except Exception as loi:  # noqa: BLE001
                 co_the_thu_lai = phan_loai_loi(loi)
                 mo_ta = f"{type(loi).__name__}: {loi}"[:300]

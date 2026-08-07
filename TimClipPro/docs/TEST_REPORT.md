@@ -269,3 +269,27 @@ Bao phủ đáng chú ý:
 - 10 lần append chỉ xác thực + mở bảng **một** lần; `get_all_values()` **0** lượt.
 - `sheets.append()` không tự thử lại ⇒ không sinh dòng trùng.
 - 12 thread append đồng thời vẫn dùng chung một kết nối.
+
+
+---
+
+## Vòng sửa thread boundary + Arrow schema — 2026-08-07
+
+| Bộ | Kết quả |
+|---|---|
+| `tests/test_scan_ui_schema.py` (mới) | 9 passed |
+| `tests/test_scan_thread_boundary.py` (mới) | 10 passed |
+| `tests/test_app_scan_no_warnings.py` (mới) | 1 passed |
+| **Fast suite toàn bộ** | **470 passed, 1 skipped, 5 deselected** |
+| `ruff` · `compileall` · `pip check` | sạch |
+| Streamlit thật (cổng 8503, data dir tạm) | health `200 ok`, trang `200`, terminal không có ArrowInvalid/Serialization/ScriptRunContext |
+
+Đáng chú ý:
+
+- `pa.Table.from_pandas()` chạy thẳng trên bảng trạng thái với đủ tổ hợp trạng thái
+  (chưa quét · 0 đoạn · N đoạn · lỗi · đang chạy), cả khung rỗng và batch 50 dòng.
+- Callback chạy thật trong thread nền với `st.session_state` bị thay bằng đối tượng
+  cấm truy cập — test đỏ ngay nếu worker chạm vào.
+- Callback ném exception: 3/3 video vẫn `completed`, kết quả vẫn còn.
+- Guard cấu trúc bỏ bình luận/chuỗi bằng `tokenize` nên không bắt nhầm chính phần
+  docstring giải thích, và có test khẳng định guard bắt được vi phạm thật.

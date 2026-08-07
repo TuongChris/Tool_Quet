@@ -286,3 +286,41 @@ incremental delivery, số lần append tăng từ 1/batch lên 1/video nên đi
 
 Test mới: `tests/test_scan_streaming.py` (12), `tests/test_sheet_delivery.py` (14),
 `tests/test_sheets_session.py` (15), `tests/test_app_scan_progress.py` (1).
+
+### Sửa ranh giới thread và schema bảng trạng thái
+
+Hai lỗi do chính vòng Scan Pipeline V2 gây ra, lộ ra khi chạy thật.
+
+**`missing ScriptRunContext` + `KeyError: sheet_link`.** `sheet_link` **không** thiếu
+khởi tạo (`cau_hinh.py:17` + `app.py:44-47` đã tạo sẵn). Root cause là thread nền
+không có `ScriptRunContext`, nên `st.session_state` đọc từ đó trả về proxy **rỗng** —
+key có ở main thread vẫn báo thiếu. Hai chỗ vi phạm, đều là code vòng trước:
+`chay_quet.sau_moi_video` → `lay_sheets()`, và `sender` của `SheetDeliveryWorker`.
+
+- `scan_jobs.ScanLaunchConfig` (mới): ảnh chụp bất biến `auto_sheet`/`sheet_link`/
+  `dang_ngang`, chụp trên main thread lúc bấm Bắt đầu quét. Kèm lợi ích nghiệp vụ:
+  đổi link Sheet giữa batch không làm batch đang chạy bắn sang bảng khác.
+- `app.tao_sheets_exporter(sheet_link)` (mới): hàm thuần. `lay_sheets()` giữ lại
+  nhưng chỉ là bản tiện dụng cho main thread.
+- `SheetDelivery.sheet_link` (mới) và `sender(sheet_link, header, rows)`: công việc tự
+  mang đích đến nên thread giao hàng không phải hỏi lại UI.
+
+**`ArrowInvalid` lặp mỗi lần render.** Bảng trạng thái dựng bằng
+`"—" if v.matches is None else v.matches` → cột `object` trộn `int`/`str`; PyArrow ném
+exception rồi Streamlit mới sửa dtype — mỗi lần vẽ lại một exception, suốt lượt quét.
+Gốc rễ là **bảng UI không có schema**.
+
+- `scan_ui.py` (mới): `build_scan_status_dataframe()` khai báo dtype tường minh cho
+  cả năm cột (kể cả khung rỗng), tách khỏi `app.py` nên test được bằng
+  `pa.Table.from_pandas` mà không cần chạy Streamlit.
+- Cột `Đoạn` là `string`: cần phân biệt ba trạng thái — chưa quét (`—`), quét xong 0
+  đoạn (`0`), quét xong N đoạn. `Int64` + `pd.NA` sẽ hiển thị "chưa quét" thành ô
+  trống, khó phân biệt với 0.
+
+Đã đối chứng: cách cũ `dtype=object` → `ArrowInvalid`; cách mới `dtype=string` →
+chuyển Arrow thành công, giá trị `['3', '0', '—']`.
+
+Test mới: `tests/test_scan_ui_schema.py` (9), `tests/test_scan_thread_boundary.py` (10),
+`tests/test_app_scan_no_warnings.py` (1). Có guard cấu trúc dùng `tokenize` để chặn
+`scan_jobs.py`/`sheet_delivery.py`/`scan_ui.py` chạm Streamlit — và một test tự kiểm
+tra guard đó thật sự bắt được vi phạm.

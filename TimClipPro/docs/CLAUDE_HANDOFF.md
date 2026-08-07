@@ -65,3 +65,28 @@ Người dùng thấy kết quả sớm hơn **15 giây (83 %)**. Sheets chạy 
 - `_cut_chunks`/`_match_chunks` giữ nhánh cũ khi gọi không kèm `workspace` để tương
   thích ngược; mọi call site trong repo đều đã dùng workspace riêng.
 - Chưa đo pipeline concurrency; quét vẫn tuần tự từng video.
+
+
+---
+
+## Vòng sửa thread boundary + Arrow schema (2026-08-07, sau `6cad9d9`)
+
+Hai lỗi do chính vòng Scan Pipeline V2 gây ra. Chi tiết:
+[SCAN_THREADING_AND_STATE.md](SCAN_THREADING_AND_STATE.md).
+
+| Root cause | Kết luận |
+| --- | --- |
+| `sheet_link` thiếu khởi tạo? | **KHÔNG** — đã có sẵn. Chỉ là triệu chứng. |
+| Thật sự là gì? | Thread nền không có `ScriptRunContext` ⇒ `st.session_state` là proxy rỗng |
+| `ArrowInvalid` | Bảng UI không có schema: cột `Đoạn` trộn `int`/`str` |
+
+Đã sửa: `ScanLaunchConfig` snapshot, `tao_sheets_exporter()` thuần,
+`SheetDelivery.sheet_link`, `sender(sheet_link, header, rows)`, `scan_ui.py` với dtype
+tường minh.
+
+**470 passed, 1 skipped.** Streamlit thật: terminal sạch.
+
+### Còn lại
+1. Smoke với video YouTube thật (chưa chạy — chờ hết chặn chống bot).
+2. Outbox bền vững cho hàng đợi Sheets (hiện trong RAM).
+3. Benchmark concurrency download/matcher — chưa có bằng chứng nên chưa làm.

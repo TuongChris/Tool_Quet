@@ -74,7 +74,7 @@ def test_khoa_on_dinh_va_phan_biet_dung_ngu_nghia():
 
 def test_khong_gui_hai_lan_cung_mot_khoa():
     goi = []
-    worker = SheetDeliveryWorker(lambda h, r: goi.append(r) or len(r))
+    worker = SheetDeliveryWorker(lambda s, h, r: goi.append(r) or len(r))
     worker.start()
 
     assert worker.enqueue(_viec("same")) is True
@@ -91,7 +91,7 @@ def test_khong_gui_hai_lan_cung_mot_khoa():
 def test_thu_lai_loi_tam_thoi_roi_thanh_cong():
     lan = {"n": 0}
 
-    def sender(header, rows):
+    def sender(sheet_link, header, rows):
         lan["n"] += 1
         if lan["n"] < 3:
             raise RuntimeError("503 Service Unavailable")
@@ -109,7 +109,7 @@ def test_thu_lai_loi_tam_thoi_roi_thanh_cong():
 def test_loi_vinh_vien_khong_thu_lai():
     lan = {"n": 0}
 
-    def sender(header, rows):
+    def sender(sheet_link, header, rows):
         lan["n"] += 1
         raise RuntimeError("PERMISSION_DENIED")
 
@@ -125,7 +125,7 @@ def test_loi_vinh_vien_khong_thu_lai():
 def test_het_so_lan_thu_thi_dung_lai():
     lan = {"n": 0}
 
-    def sender(header, rows):
+    def sender(sheet_link, header, rows):
         lan["n"] += 1
         raise RuntimeError("timeout")
 
@@ -145,7 +145,7 @@ def test_het_so_lan_thu_thi_dung_lai():
 
 def test_sheets_cham_khong_lam_cham_luot_quet():
     """Sheets 0.3s/lần × 5 video = 1.5s nếu đồng bộ. enqueue phải ~tức thì."""
-    def sender_cham(header, rows):
+    def sender_cham(sheet_link, header, rows):
         time.sleep(0.3)
         return len(rows)
 
@@ -166,7 +166,7 @@ def test_sheets_cham_khong_lam_cham_luot_quet():
 
 def test_sheets_sap_hoan_toan_van_khong_chan_va_khong_mat_trang_thai():
     worker = SheetDeliveryWorker(
-        lambda h, r: (_ for _ in ()).throw(RuntimeError("connection reset")),
+        lambda s, h, r: (_ for _ in ()).throw(RuntimeError("connection reset")),
         max_attempts=2, sleep_fn=lambda s: None,
     )
     worker.start()
@@ -184,7 +184,7 @@ def test_worker_khong_chet_vi_mot_viec_loi_la():
     """Sender ném BaseException lạ cũng không được làm chết thread."""
     lan = {"n": 0}
 
-    def sender(header, rows):
+    def sender(sheet_link, header, rows):
         lan["n"] += 1
         if lan["n"] == 1:
             raise KeyError("lỗi lạ")
@@ -201,7 +201,7 @@ def test_worker_khong_chet_vi_mot_viec_loi_la():
 
 def test_gui_dung_du_lieu_duoc_truyen():
     nhan = []
-    worker = SheetDeliveryWorker(lambda h, r: nhan.append((h, r)) or len(r))
+    worker = SheetDeliveryWorker(lambda s, h, r: nhan.append((h, r)) or len(r))
     worker.start()
     worker.enqueue(_viec())
     _chay_xong(worker)
@@ -210,7 +210,7 @@ def test_gui_dung_du_lieu_duoc_truyen():
 
 
 def test_stop_khong_treo_khi_khong_co_viec():
-    worker = SheetDeliveryWorker(lambda h, r: len(r))
+    worker = SheetDeliveryWorker(lambda s, h, r: len(r))
     worker.start()
     bat_dau = time.monotonic()
     worker.stop()
@@ -218,7 +218,7 @@ def test_stop_khong_treo_khi_khong_co_viec():
 
 
 def test_enqueue_an_toan_tu_nhieu_thread():
-    worker = SheetDeliveryWorker(lambda h, r: len(r))
+    worker = SheetDeliveryWorker(lambda s, h, r: len(r))
     worker.start()
 
     def them(i):
