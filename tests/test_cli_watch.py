@@ -16,7 +16,9 @@ class _EngineGia:
 
 
 class _ChannelSyncGia:
-    ket_qua = {"tong": 2, "da_va": 1, "bo_qua": 1, "loi": []}
+    ket_qua = {
+        "tong": 2, "da_va": 1, "bo_qua": 1, "da_them_tu_dia": 1, "loi": [],
+    }
     kho = ""
 
     def __init__(self, kho):
@@ -168,4 +170,6 @@ def test_cli_vameta_goi_dung_thu_muc_va_in_tom_tat(monkeypatch, capsys):
     cli.main()
 
     assert _ChannelSyncGia.kho == "D:/KhoClipGoc"
-    assert "đã vá 1/2 mục metadata" in capsys.readouterr().out
+    ra = capsys.readouterr().out
+    assert "đã vá 1/2 mục metadata" in ra
+    assert "bổ sung 1 mục lấy từ tên file trên đĩa" in ra

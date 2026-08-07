@@ -3,6 +3,7 @@
 
 from conftest import M
 
+from clip_metadata import ClipMetadataResolver
 from dossier import dung_ho_so, render_markdown
 from engine import ScanResult
 
@@ -48,7 +49,11 @@ def test_dung_day_du_ho_so_va_meta():
     )
 
     h = dung_ho_so(kq, {
-        "clip.mp4": {"title": "Video gốc", "url": "https://youtu.be/goc"},
+        "clip.mp4": {
+            "id": "goc12345678",
+            "title": "Video gốc",
+            "url": "https://youtu.be/goc12345678",
+        },
     })
 
     assert h.tieu_de_vi_pham == "Video vi phạm"
@@ -58,7 +63,7 @@ def test_dung_day_du_ho_so_va_meta():
     assert h.ty_le_video == 11.0
     assert len(h.muc) == 1
     assert h.muc[0].tieu_de_goc == "Video gốc"
-    assert h.muc[0].link_goc == "https://youtu.be/goc"
+    assert h.muc[0].link_goc == "https://youtu.be/goc12345678"
     assert h.muc[0].tu_hhmmss == "00:01:05"
     assert h.muc[0].den_hhmmss == "00:01:16"
     assert h.muc[0].link_moc == "https://youtu.be/abc?t=65"
@@ -83,14 +88,14 @@ def test_status_loi_luon_tra_ho_so_rong():
     assert h.ty_le_video == 0.0
 
 
-def test_meta_thieu_clip_dung_chuoi_rong():
+def test_meta_thieu_clip_dung_basename_de_khong_bien_mat():
     h = dung_ho_so(ScanResult(
         source_name="v",
         duration_s=100,
         matches=[M("khong-co-meta.mp4")],
     ))
 
-    assert h.muc[0].tieu_de_goc == ""
+    assert h.muc[0].tieu_de_goc == "khong-co-meta.mp4"
     assert h.muc[0].link_goc == ""
 
 
@@ -158,17 +163,18 @@ def test_export_ho_so_tao_dung_so_file(engine, tmp_path, monkeypatch):
     engine.out_dir = str(tmp_path)
     so_lan_doc_meta = 0
 
-    def clip_meta():
+    def metadata_resolver():
         nonlocal so_lan_doc_meta
         so_lan_doc_meta += 1
-        return {
+        return ClipMetadataResolver.from_mapping({
             "clip.mp4": {
+                "id": "goc12345678",
                 "title": "Tiêu đề tiếng Việt",
-                "url": "https://youtu.be/goc",
+                "url": "https://youtu.be/goc12345678",
             },
-        }
+        })
 
-    monkeypatch.setattr(engine, "clip_meta", clip_meta)
+    monkeypatch.setattr(engine, "clip_metadata_resolver", metadata_resolver)
     co_ket_qua = ScanResult(
         source_name='Video: vi phạm?',
         source_id="abc",

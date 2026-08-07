@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from clip_metadata import ClipMetadataResolver
 import engine
 
 
@@ -37,19 +38,23 @@ class HoSo:
     muc: list = field(default_factory=list)
 
 
-def dung_ho_so(kq: engine.ScanResult, meta: dict | None = None) -> HoSo:
+def dung_ho_so(
+    kq: engine.ScanResult,
+    meta: dict | None = None,
+    *,
+    resolver: ClipMetadataResolver | None = None,
+) -> HoSo:
     """Dựng HoSo từ một ScanResult. Hàm thuần — không đọc/ghi file."""
-    if meta is None:
-        meta = {}
+    resolver = resolver or ClipMetadataResolver.from_mapping(meta or {})
 
     cac_muc = []
     if kq.status == "ok":
         for m in kq.matches:
-            thong_tin = meta.get(m.clip, {})
+            thong_tin = resolver.resolve(m.clip)
             cac_muc.append(MucViPham(
                 ten_clip_goc=m.clip,
-                tieu_de_goc=thong_tin.get("title", ""),
-                link_goc=thong_tin.get("url", ""),
+                tieu_de_goc=thong_tin.title,
+                link_goc=thong_tin.url,
                 tu_hhmmss=m.start_hhmmss,
                 den_hhmmss=m.end_hhmmss,
                 link_moc=engine.Engine.link_moc(

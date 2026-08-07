@@ -26,6 +26,8 @@ import contextlib
 import csv
 import glob
 import io
+import json
+import logging
 import math
 import os
 import re
@@ -35,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable, Iterable, Optional
@@ -42,8 +45,31 @@ from typing import Callable, Iterable, Optional
 import channel
 import cau_hinh
 import dossier
+from clip_metadata import (
+    ClipMetadataResolver,
+    MetadataAudit,
+    MetadataRepairResult,
+    basename_compatible,
+    load_metadata_strict,
+    source_from_mapping,
+)
+from fingerprint_progress import (
+    dong_fingerprint_logger,
+    FingerprintProgress,
+    FingerprintProgressTracker,
+    tao_fingerprint_logger,
+    ten_file_an_toan,
+)
 from khoa import KhoaTienTrinh
 from luu_tru import LoiDuLieu, doc_json_an_toan, ghi_json_an_toan
+from process_runner import ProcessSnapshot, run_observed_process
+
+
+LOGGER_METADATA = logging.getLogger("clip_metadata")
+
+# Phase mà wrapper audfprint được phép áp cho một clip đang chạy. Danh sách hẹp để
+# một dòng stdout bị hỏng không đẩy job sang trạng thái kết thúc giả.
+PHASES_FINGERPRINT = frozenset({"decoding", "fingerprinting", "probing"})
 
 # =====================================================================
 #  Kiểu dữ liệu
@@ -269,6 +295,9 @@ class Engine:
         self.cancel_event = threading.Event()
         self._cache_khoa = None
         self._cache_clips = []
+        self._metadata_cache_key = None
+        self._metadata_resolver_cache: Optional[ClipMetadataResolver] = None
+        self.canh_bao_metadata: list[str] = []
         self._nap_cau_hinh()
         self._init_sqlite()
         self._init_kho()
@@ -394,6 +423,13 @@ class Engine:
         self.kho_dang_dung = kho["ten"] if kho else ""
         self.kho_thu_muc = kho.get("thu_muc", "") if kho else ""
         self._cache_khoa = None   # đổi kho -> đọc lại danh sách clip
+        self._invalidate_metadata_cache()
+
+    def _invalidate_metadata_cache(self) -> None:
+        """Buộc dựng lại metadata index ở lần đọc kế tiếp."""
+        self._metadata_cache_key = None
+        self._metadata_resolver_cache = None
+        self.canh_bao_metadata = []
 
     def list_khos(self) -> list:
         """Danh sách các kho + trạng thái (đã có vân tay chưa, bao nhiêu clip)."""
@@ -502,7 +538,17 @@ class Engine:
         if self.cancel_event.is_set():
             raise Cancelled()
 
-    def _run_stream(self, lenh: list, on_line: Optional[Callable] = None) -> tuple:
+    def _run_stream(
+        self,
+        lenh: list,
+        on_line: Optional[Callable] = None,
+        *,
+        on_heartbeat: Optional[Callable[[ProcessSnapshot], None]] = None,
+        logger=None,
+        process_name: str = "audfprint",
+        include_in_tail: Optional[Callable[[str], bool]] = None,
+        heartbeat_seconds: float = 10.0,
+    ) -> tuple:
         """
         Chạy lệnh con, đọc stdout từng dòng (để báo tiến độ), hỗ trợ hủy giữa chừng.
         Trả về (return_code, 30 dòng cuối) — dòng cuối dùng để báo lỗi cho ra hồn.
@@ -519,26 +565,21 @@ class Engine:
         env["PYTHONIOENCODING"] = "utf-8"  # in tên file tiếng Việt không lỗi
         env["PYTHONUNBUFFERED"] = "1"     # đẩy tiến độ ra ngay, không đệm
 
-        p = subprocess.Popen(lenh, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, encoding="utf-8", errors="replace",
-                             bufsize=1, env=env)
-        duoi = []
-        try:
-            for dong in p.stdout:
-                dong = dong.rstrip("\n")
-                duoi.append(dong)
-                if len(duoi) > 30:
-                    duoi.pop(0)
-                if on_line:
-                    on_line(dong)
-                if self.cancel_event.is_set():
-                    p.terminate()
-                    raise Cancelled()
-        finally:
-            with contextlib.suppress(Exception):
-                p.stdout.close()
-            p.wait()
-        return p.returncode, duoi
+        result = run_observed_process(
+            lenh,
+            on_line=on_line,
+            on_heartbeat=on_heartbeat,
+            cancel_event=self.cancel_event,
+            logger=logger,
+            process_name=process_name,
+            heartbeat_seconds=heartbeat_seconds,
+            slow_warning_seconds=120.0,
+            include_in_tail=include_in_tail,
+            env=env,
+        )
+        if result.cancelled:
+            raise Cancelled()
+        return result.returncode, list(result.tail)
 
     # ---------- kiểm tra môi trường ----------
 
@@ -663,61 +704,691 @@ class Engine:
                 return False
         return not os.path.exists(path)
 
-    def clip_meta(self) -> dict:
-        """
-        Đọc clips_meta.json (do channel.py ghi khi đồng bộ kênh) để báo cáo hiển thị
-        ĐÚNG TÊN video trên YouTube + link gốc, thay vì chỉ tên file.
-        Tự tìm trong các thư mục chứa clip đang có trong kho vân tay.
-        """
-        import json
-        meta = {}
-        thu_muc = {os.path.dirname(c["duong_dan"]) for c in self.db_clips()}
-        thu_muc.add(self.data_dir)
-        for d in thu_muc:
-            f = os.path.join(d, "clips_meta.json")
-            if os.path.isfile(f):
-                try:
-                    with open(f, encoding="utf-8") as fh:
-                        meta.update(json.load(fh))
-                except Exception:
-                    pass
-        return meta
+    def _metadata_snapshot_path(self) -> str:
+        """Đường dẫn snapshot riêng, ổn định và không thể thoát khỏi data_dir."""
+        dinh_danh = self.kho_dang_dung or os.path.splitext(
+            os.path.basename(self.db_file)
+        )[0]
+        ten_file = f"kho_{self._slug(dinh_danh or 'mac_dinh')}.json"
+        thu_muc = os.path.abspath(os.path.join(self.data_dir, "metadata"))
+        duong_dan = os.path.abspath(os.path.join(thu_muc, ten_file))
+        try:
+            hop_le = os.path.commonpath([thu_muc, duong_dan]) == thu_muc
+        except ValueError:
+            hop_le = False
+        if not hop_le:
+            raise LoiDuLieu("Đường dẫn snapshot metadata thoát khỏi thư mục data.")
+        return duong_dan
 
-    def _audfprint_cmd(self, sub: str, *them: str) -> list:
+    @staticmethod
+    def _metadata_file_signature(path: str) -> tuple:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            return os.path.normcase(os.path.abspath(path)), False, 0, 0
+        return (
+            os.path.normcase(os.path.abspath(path)),
+            True,
+            stat.st_mtime_ns,
+            stat.st_size,
+        )
+
+    def _metadata_source_candidates(self, clips: list[dict]) -> list[tuple[str, str, int]]:
+        """Nguồn chỉ thuộc kho active, theo thứ tự xác định; không dùng set last-wins."""
+        candidates: list[tuple[str, str, int]] = []
+        seen: set[str] = set()
+
+        def add(path: str, kind: str, priority: int) -> None:
+            absolute = os.path.abspath(path)
+            key = os.path.normcase(absolute)
+            if key not in seen:
+                seen.add(key)
+                candidates.append((absolute, kind, priority))
+
+        if self.kho_dang_dung:
+            add(self._metadata_snapshot_path(), "snapshot", 0)
+        if self.kho_thu_muc:
+            add(os.path.join(self.kho_thu_muc, "clips_meta.json"), "live", 10)
+
+        # Legacy fallback: chỉ các directory thực sự được tham chiếu bởi DB active.
+        thu_muc_db = sorted({
+            os.path.abspath(os.path.dirname(str(clip.get("duong_dan") or "")))
+            for clip in clips
+            if os.path.dirname(str(clip.get("duong_dan") or ""))
+        }, key=os.path.normcase)
+        for index, folder in enumerate(thu_muc_db, start=20):
+            add(os.path.join(folder, "clips_meta.json"), "legacy_db_folder", index)
+
+        # Chỉ kho mặc định kiểu cũ mới được phép đọc metadata ở data_dir. Không
+        # áp dụng vô điều kiện vì sẽ trộn metadata giữa nhiều kho.
+        if self.kho_dang_dung in {"", "Kho mặc định"}:
+            add(os.path.join(self.data_dir, "clips_meta.json"), "legacy_data", 100)
+        return candidates
+
+    def _metadata_cache_signature(
+        self,
+        candidates: list[tuple[str, str, int]],
+    ) -> tuple:
+        db_signature = self._metadata_file_signature(self.db_file)
+        source_signatures = tuple(
+            (
+                kind,
+                priority,
+                self._metadata_file_signature(path),
+                self._metadata_file_signature(path + ".bak"),
+            )
+            for path, kind, priority in candidates
+        )
+        return (
+            self.kho_dang_dung,
+            os.path.normcase(os.path.abspath(self.kho_thu_muc))
+            if self.kho_thu_muc else "",
+            db_signature,
+            source_signatures,
+        )
+
+    def clip_metadata_resolver(self, bo_cache: bool = False) -> ClipMetadataResolver:
+        """Dựng/cached index exact, canonical và YouTube-ID của đúng kho active."""
+        clips = self.db_clips()
+        candidates = self._metadata_source_candidates(clips)
+        cache_key = self._metadata_cache_signature(candidates)
+        if (
+            not bo_cache
+            and self._metadata_cache_key == cache_key
+            and self._metadata_resolver_cache is not None
+        ):
+            return self._metadata_resolver_cache
+
+        sources = []
+        for path, kind, priority in candidates:
+            expected = self.kho_dang_dung if kind == "snapshot" else ""
+            source = load_metadata_strict(
+                path,
+                kind=kind,
+                priority=priority,
+                expected_warehouse=expected,
+            )
+            sources.append(source)
+            # Backup chỉ là fallback đọc; tuyệt đối không phục hồi/rename file chính.
+            bi_loi = bool(source.warnings) and not source.entries
+            if (bi_loi or not source.exists) and os.path.isfile(path + ".bak"):
+                backup = load_metadata_strict(
+                    path + ".bak",
+                    kind=kind + "_backup",
+                    priority=priority + 1,
+                    expected_warehouse=expected,
+                )
+                if backup.entries:
+                    sources.append(backup)
+
+        resolver = ClipMetadataResolver(sources, windows_semantics=os.name == "nt")
+        audit = resolver.audit(
+            clips,
+            warehouse=self.kho_dang_dung,
+            database_file=self.db_file,
+            warehouse_folder=self.kho_thu_muc,
+            sample_limit=0,
+        )
+        warnings = []
+        for source in sources:
+            for warning in source.warnings:
+                warnings.append(
+                    f"{os.path.basename(source.path) or source.kind}: {warning}"
+                )
+        if resolver.conflicts:
+            warnings.append(
+                f"Phát hiện {len(set(resolver.conflicts))} xung đột metadata; "
+                "các ánh xạ mơ hồ không được tự động chọn."
+            )
+        if audit.total_db_clips and audit.complete < audit.total_db_clips:
+            warnings.append(
+                f"Metadata kho chưa đầy đủ: {audit.complete}/{audit.total_db_clips} "
+                "clip có đủ ID, title, URL, ngày đăng và thời lượng."
+            )
+        self.canh_bao_metadata = list(dict.fromkeys(warnings))
+        self._metadata_cache_key = cache_key
+        self._metadata_resolver_cache = resolver
+
+        LOGGER_METADATA.info(
+            "event=metadata.index warehouse=%r db_clips=%d metadata_entries=%d "
+            "complete=%d partial=%d fallback=%d unresolved=%d ambiguous=%d",
+            self.kho_dang_dung,
+            audit.total_db_clips,
+            audit.metadata_entries,
+            audit.complete,
+            audit.partial,
+            audit.filename_fallbacks,
+            audit.missing,
+            audit.ambiguous,
+        )
+        if self.canh_bao_metadata:
+            LOGGER_METADATA.warning(
+                "event=metadata.coverage warehouse=%r warnings=%d complete=%d total=%d",
+                self.kho_dang_dung,
+                len(self.canh_bao_metadata),
+                audit.complete,
+                audit.total_db_clips,
+            )
+        return resolver
+
+    def clip_meta(self) -> dict:
+        """Compatibility mapping đã validate; call site báo cáo dùng resolver trực tiếp."""
+        return self.clip_metadata_resolver().compatibility_mapping()
+
+    def resolve_metadata_for_matches(self, matches: Iterable) -> tuple:
+        """Resolve một batch đúng thứ tự và giữ duplicate đoạn ↔ clip."""
+        resolver = self.clip_metadata_resolver()
+        return tuple(resolver.resolve(str(match.clip)) for match in matches)
+
+    def metadata_coverage(self, matches: Iterable):
+        names = [
+            str(item.clip) if hasattr(item, "clip") else str(item)
+            for item in matches
+        ]
+        return self.clip_metadata_resolver().coverage(names)
+
+    def kiem_tra_metadata_kho(self, sample_limit: int = 20) -> MetadataAudit:
+        """Audit chỉ đọc; không sửa clips_meta, snapshot hay database fingerprint."""
+        resolver = self.clip_metadata_resolver(bo_cache=True)
+        audit = resolver.audit(
+            self.db_clips(),
+            warehouse=self.kho_dang_dung,
+            database_file=self.db_file,
+            warehouse_folder=self.kho_thu_muc,
+            sample_limit=max(0, min(int(sample_limit), 20)),
+        )
+        LOGGER_METADATA.info(
+            "event=metadata.audit warehouse=%r db_clips=%d metadata_entries=%d "
+            "exact=%d normalized=%d id=%d fallback=%d missing=%d ambiguous=%d",
+            self.kho_dang_dung,
+            audit.total_db_clips,
+            audit.metadata_entries,
+            audit.exact_matches + audit.exact_basename_matches,
+            audit.normalized_matches,
+            audit.id_matches,
+            audit.filename_fallbacks,
+            audit.missing,
+            audit.ambiguous,
+        )
+        return audit
+
+    @staticmethod
+    def _snapshot_entry(item) -> dict:
+        entry = item.public_dict()
+        entry["resolution_method"] = item.resolution_method
+        return entry
+
+    def _khoi_phuc_metadata_offline_da_khoa(
+        self,
+        *,
+        dry_run: bool,
+        preserve_existing: bool = True,
+    ) -> MetadataRepairResult:
+        clips = self.db_clips(bo_cache=True)
+        resolver = self.clip_metadata_resolver(bo_cache=True)
+        audit = resolver.audit(
+            clips,
+            warehouse=self.kho_dang_dung,
+            database_file=self.db_file,
+            warehouse_folder=self.kho_thu_muc,
+            sample_limit=20,
+        )
+        snapshot_path = self._metadata_snapshot_path()
+        existing_source = load_metadata_strict(
+            snapshot_path,
+            kind="snapshot",
+            priority=0,
+            expected_warehouse=self.kho_dang_dung,
+        )
+        backup_source = None
+        if not existing_source.exists and os.path.isfile(snapshot_path + ".bak"):
+            backup_source = load_metadata_strict(
+                snapshot_path + ".bak",
+                kind="snapshot_backup",
+                priority=1,
+                expected_warehouse=self.kho_dang_dung,
+            )
+        seed_source = backup_source if backup_source and backup_source.entries else existing_source
+        existing = {
+            entry.key: {
+                **entry.public_dict(),
+                "resolution_method": entry.origin_method or "exact",
+            }
+            for entry in seed_source.entries
+        }
+        output = dict(existing) if preserve_existing else {}
+        updated = unchanged = skipped_ambiguous = unresolved = 0
+        errors: list[str] = []
+
+        if not os.path.isfile(self.db_file):
+            errors.append("Database fingerprint của kho không tồn tại; không ghi snapshot.")
+        elif not clips:
+            errors.append(
+                "Database tồn tại nhưng API không đọc được clip; không ghi snapshot rỗng."
+            )
+        if existing_source.exists and existing_source.warnings and not existing_source.entries:
+            errors.append(
+                "Snapshot chính hiện có nhưng không hợp lệ; từ chối ghi để không phá "
+                "bản chính hoặc .bak. Hãy kiểm tra/chuyển file lỗi thủ công trước."
+            )
+
+        for clip in clips:
+            name = str(clip.get("ten") or basename_compatible(clip.get("duong_dan")))
+            path = str(clip.get("duong_dan") or "")
+            item = resolver.resolve(name, path)
+            if item.status == "ambiguous":
+                skipped_ambiguous += 1
+                continue
+            if item.status == "unresolved":
+                unresolved += 1
+                continue
+            candidate = self._snapshot_entry(item)
+            if output.get(name) == candidate:
+                unchanged += 1
+            else:
+                output[name] = candidate
+                updated += 1
+
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        payload = {
+            "schema_version": 1,
+            "warehouse": self.kho_dang_dung,
+            "warehouse_id": self._slug(self.kho_dang_dung or "mac_dinh"),
+            "database": os.path.basename(self.db_file),
+            "updated_at": now,
+            "sources": [
+                {"kind": source.kind, "file": os.path.basename(source.path)}
+                for source in resolver.sources
+                if source.entries and not source.kind.startswith("snapshot")
+            ],
+            "stats": {
+                "database_clips": len(clips),
+                "complete": audit.complete,
+                "partial": audit.partial,
+                "filename_fallbacks": audit.filename_fallbacks,
+                "unresolved": unresolved,
+                "ambiguous": skipped_ambiguous,
+            },
+            "clips": output,
+        }
+        validated = source_from_mapping(
+            payload["clips"],
+            path=snapshot_path,
+            kind="snapshot",
+            priority=0,
+        )
+        if validated.invalid_entries:
+            errors.append(
+                f"Snapshot mới có {validated.invalid_entries} entry sai schema."
+            )
+
+        if not dry_run and not errors:
+            try:
+                ghi_json_an_toan(snapshot_path, payload)
+                self._invalidate_metadata_cache()
+                LOGGER_METADATA.info(
+                    "event=metadata.snapshot_write warehouse=%r entries=%d updated=%d",
+                    self.kho_dang_dung,
+                    len(output),
+                    updated,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                errors.append(f"Không ghi được snapshot: {type(exc).__name__}: {exc}")
+                LOGGER_METADATA.exception(
+                    "event=metadata.snapshot_error warehouse=%r category=%s",
+                    self.kho_dang_dung,
+                    type(exc).__name__,
+                )
+
+        return MetadataRepairResult(
+            dry_run=dry_run,
+            snapshot_path=snapshot_path,
+            total_db_clips=len(clips),
+            updated=updated,
+            unchanged=unchanged,
+            skipped_ambiguous=skipped_ambiguous,
+            unresolved=unresolved,
+            errors=tuple(errors),
+            audit=audit,
+        )
+
+    def khoi_phuc_metadata_offline(
+        self,
+        *,
+        dry_run: bool = True,
+    ) -> MetadataRepairResult:
+        """Tạo/merge snapshot từ dữ liệu local; mặc định dry-run và không gọi mạng."""
+        if dry_run:
+            return self._khoi_phuc_metadata_offline_da_khoa(dry_run=True)
+        with KhoaTienTrinh(
+            os.path.join(self.data_dir, "tool.lock"),
+            "khôi phục metadata offline",
+        ):
+            return self._khoi_phuc_metadata_offline_da_khoa(dry_run=False)
+
+    def _cap_nhat_snapshot_sau_build(self, mode: str) -> list[str]:
+        """Snapshot là hậu xử lý best-effort sau khi DB fingerprint đã an toàn."""
+        try:
+            result = self._khoi_phuc_metadata_offline_da_khoa(
+                dry_run=False,
+                preserve_existing=mode != "new",
+            )
+        except Exception as exc:  # noqa: BLE001 - DB đã commit, chỉ hạ snapshot thành warning
+            LOGGER_METADATA.exception(
+                "event=metadata.snapshot_after_build_error warehouse=%r category=%s",
+                self.kho_dang_dung,
+                type(exc).__name__,
+            )
+            return [
+                "Kho vân tay đã ghi thành công nhưng snapshot metadata chưa cập nhật: "
+                f"{exc}"
+            ]
+        return list(result.errors)
+
+    def va_metadata_thieu(
+        self,
+        progress: Optional[Callable] = None,
+        *,
+        fetcher: Optional[Callable[[str], dict]] = None,
+        max_retries: int = 3,
+    ) -> dict:
+        """Vá field thiếu vào snapshot; chỉ caller rõ ràng mới kích hoạt I/O mạng."""
+        max_retries = max(1, min(int(max_retries), 5))
+        prepared = self.khoi_phuc_metadata_offline(dry_run=False)
+        if prepared.errors:
+            raise RuntimeError("; ".join(prepared.errors))
+
+        if fetcher is None:
+            def fetcher(video_id: str) -> dict:
+                import yt_dlp
+
+                options = {
+                    "quiet": True,
+                    "no_warnings": True,
+                    "skip_download": True,
+                    "noplaylist": True,
+                    "socket_timeout": self.config.network_timeout_s,
+                    "retries": 2,
+                }
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    info = ydl.extract_info(
+                        f"https://youtu.be/{video_id}",
+                        download=False,
+                    )
+                return {
+                    "id": info.get("id") or video_id,
+                    "title": info.get("title") or "",
+                    "url": info.get("webpage_url") or f"https://youtu.be/{video_id}",
+                    # Dùng chung cách rút ngày với channel.list_channel/sync để
+                    # ba đường lấy metadata không hiểu khác nhau.
+                    "upload_date": channel.ngay_dang_tu_info(info),
+                    "duration": info.get("duration"),
+                }
+
+        with KhoaTienTrinh(
+            os.path.join(self.data_dir, "tool.lock"),
+            "vá metadata thiếu từ YouTube",
+        ):
+            snapshot_path = self._metadata_snapshot_path()
+            source = load_metadata_strict(
+                snapshot_path,
+                kind="snapshot",
+                priority=0,
+                expected_warehouse=self.kho_dang_dung,
+            )
+            if source.warnings or not source.entries:
+                raise RuntimeError(
+                    "Snapshot metadata chưa hợp lệ; hãy audit/khôi phục offline trước."
+                )
+            records = {
+                entry.key: {
+                    **entry.public_dict(),
+                    "resolution_method": entry.origin_method or "exact",
+                }
+                for entry in source.entries
+            }
+            resolver = self.clip_metadata_resolver(bo_cache=True)
+            candidates = []
+            for clip in self.db_clips():
+                name = str(
+                    clip.get("ten") or basename_compatible(clip.get("duong_dan"))
+                )
+                item = resolver.resolve(name, str(clip.get("duong_dan") or ""))
+                if item.video_id and not item.complete and item.status != "ambiguous":
+                    candidates.append((name, item))
+
+            total = len(candidates)
+            updated = unchanged = 0
+            errors: list[str] = []
+            for index, (name, current) in enumerate(candidates, start=1):
+                self._check_cancel()
+                fetched = None
+                last_error = None
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        fetched = fetcher(current.video_id)
+                        break
+                    except Exception as exc:  # noqa: BLE001 - retry có giới hạn
+                        last_error = exc
+                        if attempt < max_retries:
+                            time.sleep(min(2.0, 0.5 * (2 ** (attempt - 1))))
+                if fetched is None:
+                    errors.append(
+                        f"{basename_compatible(name)}: "
+                        f"{type(last_error).__name__ if last_error else 'UnknownError'}: "
+                        f"{last_error or 'không có dữ liệu'}"
+                    )
+                    LOGGER_METADATA.warning(
+                        "event=metadata.network_patch_failed warehouse=%r clip=%r "
+                        "video_id=%s category=%s",
+                        self.kho_dang_dung,
+                        basename_compatible(name),
+                        current.video_id,
+                        type(last_error).__name__ if last_error else "UnknownError",
+                    )
+                elif not isinstance(fetched, dict):
+                    errors.append(f"{basename_compatible(name)}: response không phải object.")
+                else:
+                    raw = {
+                        "id": fetched.get("id") or current.video_id,
+                        "title": fetched.get("title") or "",
+                        "url": fetched.get("url") or f"https://youtu.be/{current.video_id}",
+                        "upload_date": str(fetched.get("upload_date") or ""),
+                        "duration": fetched.get("duration"),
+                    }
+                    validated = source_from_mapping(
+                        {name: raw},
+                        kind="network_patch",
+                        priority=0,
+                    )
+                    entry = validated.entries[0] if validated.entries else None
+                    if entry is None or entry.video_id != current.video_id:
+                        errors.append(
+                            f"{basename_compatible(name)}: metadata trả về sai identity/schema."
+                        )
+                    else:
+                        old = dict(records.get(name) or current.public_dict())
+                        patched = dict(old)
+                        official = entry.public_dict()
+                        replace_inferred = current.resolution_method == "filename_fallback"
+                        for field in ("id", "title", "url", "upload_date", "duration"):
+                            value = official.get(field)
+                            if value not in ("", None) and (
+                                replace_inferred or patched.get(field) in ("", None)
+                            ):
+                                patched[field] = value
+                        patched["resolution_method"] = (
+                            "video_id"
+                            if all(
+                                patched.get(field) not in ("", None)
+                                for field in ("id", "title", "url", "upload_date", "duration")
+                            )
+                            else current.resolution_method
+                        )
+                        if patched == old:
+                            unchanged += 1
+                        else:
+                            records[name] = patched
+                            updated += 1
+                            payload = {
+                                "schema_version": 1,
+                                "warehouse": self.kho_dang_dung,
+                                "warehouse_id": self._slug(
+                                    self.kho_dang_dung or "mac_dinh"
+                                ),
+                                "database": os.path.basename(self.db_file),
+                                "updated_at": datetime.now().astimezone().isoformat(
+                                    timespec="seconds"
+                                ),
+                                "sources": [{
+                                    "kind": "explicit_network_patch",
+                                    "file": "YouTube metadata API via yt-dlp",
+                                }],
+                                "stats": {
+                                    "database_clips": len(self.db_clips()),
+                                    "network_updated": updated,
+                                    "network_errors": len(errors),
+                                },
+                                "clips": records,
+                            }
+                            ghi_json_an_toan(snapshot_path, payload)
+                if progress:
+                    progress(
+                        index / total if total else 1.0,
+                        f"[{index}/{total}] Metadata: {basename_compatible(name)}",
+                    )
+
+        self._invalidate_metadata_cache()
+        LOGGER_METADATA.info(
+            "event=metadata.network_patch_complete warehouse=%r total=%d "
+            "updated=%d unchanged=%d errors=%d",
+            self.kho_dang_dung,
+            total,
+            updated,
+            unchanged,
+            len(errors),
+        )
+        return {
+            "tong": total,
+            "da_va": updated,
+            "bo_qua": unchanged,
+            "loi": errors,
+            "snapshot_path": snapshot_path,
+        }
+
+    def _audfprint_cmd(
+        self,
+        sub: str,
+        *them: str,
+        db_file: Optional[str] = None,
+    ) -> list:
         ncores = self.config.ncores
         if ncores <= 0:
             ncores = so_nhan_nen_dung()
-        return [sys.executable, "-u", self.audfprint, sub, "--dbase", self.db_file,
+        return [sys.executable, "-u", self.audfprint, sub, "--dbase", db_file or self.db_file,
                 "--ncores", str(ncores), "--continue-on-error", *them]
 
-    def build_database(self, thumuc: str, mode: str = "new",
-                       progress: Optional[Callable] = None) -> dict:
-        """Tạo hoặc bổ sung kho vân tay trong khóa độc quyền liên tiến trình."""
-        with KhoaTienTrinh(
-            os.path.join(self.data_dir, "tool.lock"),
-            "dựng kho vân tay",
-        ):
-            return self._build_database_da_khoa(
-                thumuc,
-                mode=mode,
-                progress=progress,
+    def _audfprint_build_cmd(
+        self,
+        sub: str,
+        *them: str,
+        db_file: str,
+    ) -> list:
+        """Bọc audfprint để nhận event per-file, không sửa code vendored."""
+        lenh_goc = self._audfprint_cmd(sub, *them, db_file=db_file)
+        wrapper = os.path.join(self.root, "audfprint_progress_runner.py")
+        return [sys.executable, "-u", wrapper, self.audfprint, *lenh_goc[3:]]
+
+    def build_database(
+        self,
+        thumuc: str,
+        mode: str = "new",
+        progress: Optional[Callable] = None,
+        progress_event: Optional[Callable[[FingerprintProgress], None]] = None,
+        job_id: Optional[str] = None,
+    ) -> dict:
+        """Tạo/bổ sung vân tay với progress event thật và khóa liên tiến trình."""
+        # Reset trước khi chờ khóa. Nếu người dùng bấm Dừng trong lúc chờ khóa,
+        # _build_database_da_khoa phải nhìn thấy cờ đó thay vì xóa mất yêu cầu.
+        self.cancel_event.clear()
+        job_id = job_id or uuid.uuid4().hex
+        tracker = FingerprintProgressTracker(
+            job_id,
+            callback=progress_event,
+            legacy_callback=progress,
+            logger=tao_fingerprint_logger(self.out_dir),
+        )
+        tracker.discovering()
+        try:
+            with KhoaTienTrinh(
+                os.path.join(self.data_dir, "tool.lock"),
+                "dựng kho vân tay",
+            ):
+                return self._build_database_da_khoa(
+                    thumuc,
+                    mode=mode,
+                    progress=progress,
+                    tracker=tracker,
+                )
+        except Cancelled:
+            tracker.cancelled(
+                "Đã dừng. Kho vân tay trước job vẫn nguyên; phần chưa ghi không được tính."
             )
+            state = tracker.state
+            return {
+                "so_clip": state.total,
+                "da_xu_ly": state.processed_count,
+                "thanh_cong": 0,
+                "da_tinh_xong_chua_ghi": state.success_count,
+                "bo_qua": state.skipped_count,
+                "that_bai": state.failed_count,
+                "da_huy": True,
+                "loi_file": [x["message"] for x in tracker.errors],
+                "giay": state.elapsed_seconds,
+                "canh_bao": [
+                    f"{state.success_count} clip đã tính xong trong workspace tạm nhưng "
+                    "chưa commit khi hủy; kho trước job vẫn nguyên."
+                ],
+            }
+        except Exception as exc:
+            tracker.logger.exception(
+                "job_id=%s event=job_exception category=%s",
+                job_id,
+                type(exc).__name__,
+            )
+            if tracker.state.status != "failed":
+                tracker.failed(
+                    f"Không thể hoàn tất tạo vân tay: {exc}",
+                    type(exc).__name__,
+                )
+            raise
+        finally:
+            dong_fingerprint_logger(tracker.logger)
 
     def _build_database_da_khoa(
         self,
         thumuc: str,
         mode: str = "new",
         progress: Optional[Callable] = None,
+        tracker: Optional[FingerprintProgressTracker] = None,
     ) -> dict:
         """
         Tạo (mode='new') hoặc bổ sung (mode='add') kho vân tay từ thư mục clip gốc.
         Trả về {'so_clip': n, 'giay': t}.
         """
+        tracker = tracker or FingerprintProgressTracker(
+            uuid.uuid4().hex,
+            legacy_callback=progress,
+            logger=tao_fingerprint_logger(self.out_dir),
+        )
+        if mode not in {"new", "add"}:
+            raise ValueError("mode tạo vân tay phải là 'new' hoặc 'add'.")
         self.require()
-        self.cancel_event.clear()
+        self._check_cancel()
         if not os.path.isdir(thumuc):
             raise RuntimeError(f"Không tìm thấy thư mục: {thumuc}")
         files = liet_ke_media(thumuc)
+        tracker.set_files(files)
         if not files:
             raise RuntimeError(f"Thư mục không có file media nào: {thumuc}")
 
@@ -745,74 +1416,184 @@ class Engine:
                 f"shifts={shifts_kho}. Nên tạo lại kho từ đầu để đồng bộ."
             )
 
-        listfile = os.path.join(self.data_dir, "_ds_clip.txt")
-        with open(listfile, "w", encoding="utf-8") as f:
-            f.write("\n".join(files))
-
-        if mode == "new" and os.path.exists(self.db_file):
-            self._cache_khoa = None          # bỏ cache, thả mọi tham chiếu
-            if not self._xoa_an_toan(self.db_file):
-                # Windows vẫn khoá file (thường do phần mềm diệt virus quét file
-                # vừa ghi). Không đầu hàng: chuyển hẳn sang file vân tay MỚI và
-                # cập nhật đăng ký kho — người dùng không phải làm gì cả.
-                import uuid
-                ten_moi = f"kho_{self._slug(self.kho_dang_dung or 'kho')}_" \
-                          f"{uuid.uuid4().hex[:6]}.pklz"
-                d = self._doc_khos()
-                for k in d["danh_sach"]:
-                    if k["ten"] == self.kho_dang_dung:
-                        k["db_cu"] = k["db"]
-                        k["db"] = ten_moi
-                self._ghi_khos(d)
-                self._ap_dung_kho(self.kho_dang_dung, d)
-                self._bao(progress, 0.0,
-                          "File vân tay cũ đang bị khoá — đã tự chuyển sang file mới.")
-        sub = "new" if (mode == "new" or not os.path.exists(self.db_file)) else "add"
-
         tong = len(files)
-        dem = {"n": 0, "don": 0, "song_song": 0}
-        self._bao(progress, 0.0, f"Bắt đầu tạo vân tay cho {tong} clip gốc...")
+        da_co = set()
+        if mode != "new" and os.path.exists(self.db_file):
+            da_co = {
+                os.path.normcase(os.path.abspath(clip["duong_dan"]))
+                for clip in self.db_clips(bo_cache=True)
+                if int(clip.get("so_hash", 0)) > 0
+            }
+        can_xu_ly = []
+        for path in files:
+            if os.path.normcase(os.path.abspath(path)) in da_co:
+                tracker.skipped(path)
+            else:
+                can_xu_ly.append(path)
+
+        if not can_xu_ly:
+            tracker.saving()
+            canh_bao.extend(self._cap_nhat_snapshot_sau_build(mode))
+            tracker.completed("Mọi clip đều đã có vân tay; không cần ghi lại kho.", db_written=False)
+            state = tracker.state
+            return {
+                "so_clip": tong,
+                "da_xu_ly": state.processed_count,
+                "thanh_cong": state.success_count,
+                "bo_qua": state.skipped_count,
+                "that_bai": state.failed_count,
+                "da_huy": False,
+                "loi_file": [],
+                "giay": state.elapsed_seconds,
+                "canh_bao": canh_bao,
+            }
+
+        workspace = os.path.join(self.data_dir, "fingerprint_jobs", tracker.job_id)
+        os.makedirs(workspace, exist_ok=True)
+        listfile = os.path.join(workspace, "clips.txt")
+        db_tam = os.path.join(workspace, "database.pklz")
+        with open(listfile, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(can_xu_ly))
+        sub = "new"
+        if mode != "new" and os.path.exists(self.db_file):
+            tracker.phase("validating", "Đang tạo bản làm việc an toàn của kho hiện có...")
+            with open(self.db_file, "rb") as nguon, open(db_tam, "xb") as dich:
+                while True:
+                    self._check_cancel()
+                    khoi = nguon.read(8 * 1024 * 1024)
+                    if not khoi:
+                        break
+                    dich.write(khoi)
+                dich.flush()
+                os.fsync(dich.fileno())
+            shutil.copystat(self.db_file, db_tam)
+            sub = "add"
 
         loi_file = []
+        structured_seen = False
+        started_paths: set[str] = set()
+
+        def key(path: str) -> str:
+            return os.path.normcase(os.path.abspath(path))
 
         def on_line(dong: str):
-            if "ingesting #" in dong:
-                dem["don"] += 1
-                dem["n"] = max(dem["don"], dem["song_song"])
+            nonlocal structured_seen
+            if dong.startswith("TIMCLIP_FINGERPRINT_EVENT "):
+                structured_seen = True
+                try:
+                    event = json.loads(dong.split(" ", 1)[1])
+                    path = str(event.get("file") or "")
+                    if event.get("event") == "clip_started" and path:
+                        started_paths.add(key(path))
+                        tracker.clip_started(path, int(event.get("process_pid") or 0) or None)
+                    elif event.get("event") == "clip_phase" and path:
+                        # Phase thật do chính tiến trình đang giải mã phát ra, không
+                        # phải suy đoán từ việc bắt gặp tiến trình ffmpeg khi lấy mẫu.
+                        phase = str(event.get("phase") or "")
+                        if phase in PHASES_FINGERPRINT:
+                            tracker.phase(
+                                phase,
+                                (
+                                    f"Đang giải mã audio: {ten_file_an_toan(path)}"
+                                    if phase == "decoding"
+                                    else f"Đang tạo vân tay: {ten_file_an_toan(path)}"
+                                ),
+                                path,
+                                int(event.get("process_pid") or 0) or None,
+                            )
+                    elif event.get("event") == "clip_finished" and path:
+                        tracker.clip_finished(
+                            path,
+                            success=event.get("status") == "success",
+                            elapsed=float(event.get("elapsed_seconds") or 0.0),
+                            error_category=str(event.get("category") or ""),
+                            message=str(event.get("message") or ""),
+                        )
+                        if tracker.state.processed_count >= tong:
+                            tracker.saving(tracker.state.active_subprocess_pid)
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    loi_file.append(f"Progress event không hợp lệ: {exc}")
+                return
+            if "ingesting #" in dong and not structured_seen:
                 ten = dong.split(":", 1)[-1].replace("...", "").strip()
-                self._bao(progress, dem["n"] / max(1, tong),
-                          f"[{dem['n']}/{tong}] {os.path.basename(ten)}")
-            else:
-                da_xu_ly_song_song = re.search(
-                    r"hash_table\s+\d+\s+has\s+(\d+)\s+files",
-                    dong,
-                )
-                if da_xu_ly_song_song:
-                    dem["song_song"] += int(da_xu_ly_song_song.group(1))
-                    dem["n"] = max(dem["don"], dem["song_song"])
-                    self._bao(
-                        progress,
-                        dem["n"] / max(1, tong),
-                        f"Đã xử lý song song {dem['n']}/{tong} clip...",
-                    )
+                started_paths.add(key(ten))
+                tracker.clip_started(ten)
+            if "Saved fprints for" in dong:
+                tracker.saving(tracker.state.active_subprocess_pid)
             if any(k in dong for k in ("Error", "error", "Traceback", "Failed", "Cannot")):
                 loi_file.append(dong)
-                # Vẫn báo ra giao diện để người dùng thấy có chuyện gì đang xảy ra
-                self._bao(progress, dem["n"] / max(1, tong), f"⚠️ {dong[:80]}")
 
-        t0 = time.time()
+        def on_heartbeat(snapshot: ProcessSnapshot) -> None:
+            ffmpeg = [child for child in snapshot.children if "ffmpeg" in child.name]
+            workers = [child for child in snapshot.children if "python" in child.name]
+            phase = (
+                "saving"
+                if tracker.state.phase == "saving"
+                else ("decoding" if ffmpeg else "fingerprinting")
+            )
+            detail = (
+                f"Job vẫn hoạt động — audfprint PID {snapshot.pid}, "
+                f"worker {len(workers)}, FFmpeg {len(ffmpeg)}, "
+                f"im lặng {snapshot.silent_seconds:.0f} giây."
+            )
+            tracker.heartbeat(snapshot.pid, detail, phase=phase)
+
         # --maxtimebits 16: cho phép clip gốc dài tới ~25 phút vẫn định vị đúng mốc thời gian
         tham_so = ["--maxtimebits", "16"]
         if shifts_kho > 0:
             tham_so.extend(["--shifts", str(shifts_kho)])
         tham_so.extend(["--list", listfile])
-        rc, duoi = self._run_stream(
-            self._audfprint_cmd(sub, *tham_so), on_line)
-        if rc != 0 or dem["n"] == 0:
-            chi_tiet = "\n".join(duoi[-12:]) or "(không có thông báo nào)"
-            raise RuntimeError(
-                f"audfprint không xử lý được file nào (mã lỗi {rc}).\n\n"
-                f"Thông báo cuối cùng:\n{chi_tiet}")
+        try:
+            rc, duoi = self._run_stream(
+                self._audfprint_build_cmd(sub, *tham_so, db_file=db_tam),
+                on_line,
+                on_heartbeat=on_heartbeat,
+                logger=tracker.logger,
+                process_name="audfprint-build",
+                include_in_tail=lambda line: not line.startswith(
+                    "TIMCLIP_FINGERPRINT_EVENT "
+                ),
+            )
+            if rc != 0:
+                chi_tiet = "\n".join(duoi[-12:]) or "(không có thông báo nào)"
+                raise RuntimeError(
+                    f"audfprint kết thúc với mã lỗi {rc}.\n\n"
+                    f"Thông báo cuối cùng:\n{chi_tiet}"
+                )
+
+            # Tương thích adapter/test cũ: nếu không có structured event nhưng process
+            # thành công, chỉ lúc này mới đánh dấu các file còn lại thành công.
+            if not structured_seen:
+                for path in can_xu_ly:
+                    if key(path) not in started_paths:
+                        tracker.clip_started(path)
+                    tracker.clip_finished(path, success=True, elapsed=0.0)
+
+            if not os.path.isfile(db_tam):
+                raise RuntimeError("audfprint báo thành công nhưng không tạo database tạm.")
+            tracker.saving(tracker.state.active_subprocess_pid)
+            self._cache_khoa = None
+            try:
+                os.replace(db_tam, self.db_file)
+            except PermissionError:
+                ten_moi = (
+                    f"kho_{self._slug(self.kho_dang_dung or 'kho')}_"
+                    f"{uuid.uuid4().hex[:6]}.pklz"
+                )
+                db_moi = os.path.join(self.data_dir, ten_moi)
+                os.replace(db_tam, db_moi)
+                dang_ky = self._doc_khos()
+                for kho in dang_ky["danh_sach"]:
+                    if kho["ten"] == self.kho_dang_dung:
+                        kho["db_cu"] = kho["db"]
+                        kho["db"] = ten_moi
+                self._ghi_khos(dang_ky)
+                self._ap_dung_kho(self.kho_dang_dung, dang_ky)
+                canh_bao.append(
+                    "File vân tay cũ đang bị khóa; đã ghi kết quả vào file mới an toàn."
+                )
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)
 
         # Chỉ đổi metadata khi toàn bộ kho vừa được tạo mới, hoặc khi phần bổ sung
         # dùng đúng shifts cũ. Kho add lệch shifts phải tiếp tục mang metadata cũ
@@ -825,9 +1606,20 @@ class Engine:
                     break
             self._ghi_khos(dang_ky)
 
-        self._bao(progress, 1.0, "Hoàn tất.")
-        return {"so_clip": tong, "da_xu_ly": dem["n"], "loi_file": loi_file,
-                "giay": time.time() - t0, "canh_bao": canh_bao}
+        canh_bao.extend(self._cap_nhat_snapshot_sau_build(mode))
+        tracker.completed()
+        state = tracker.state
+        return {
+            "so_clip": tong,
+            "da_xu_ly": state.processed_count,
+            "thanh_cong": state.success_count,
+            "bo_qua": state.skipped_count,
+            "that_bai": state.failed_count,
+            "da_huy": False,
+            "loi_file": [*loi_file, *[x["message"] for x in tracker.errors]],
+            "giay": state.elapsed_seconds,
+            "canh_bao": canh_bao,
+        }
 
     # =================================================================
     #  2) TẢI AUDIO TỪ YOUTUBE (dùng yt-dlp như một THƯ VIỆN)
@@ -1392,7 +2184,7 @@ class Engine:
 
     def to_rows(self, ket: Iterable) -> list:
         """Chuyển danh sách ScanResult thành các dòng phẳng để xuất CSV / hiện bảng."""
-        meta = self.clip_meta()
+        resolver = self.clip_metadata_resolver()
         luc = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rows = []
         for kq in ket:
@@ -1405,9 +2197,9 @@ class Engine:
                 rows.append(dau + [gc] + [""] * 12)
             else:
                 for m in kq.matches:
-                    mt = meta.get(m.clip, {})
+                    mt = resolver.resolve(m.clip)
                     rows.append(dau + [
-                        m.clip, mt.get("title", ""), mt.get("url", ""),
+                        m.clip, mt.title, mt.url,
                         m.vung, m.start_hhmmss, hhmmss(m.vung_khop_s),
                         m.end_hhmmss,
                         Engine.link_moc(kq.source_id, kq.source_ref, m.start_s),
@@ -1435,9 +2227,9 @@ class Engine:
         """Mỗi ScanResult -> đúng 1 dòng 34 cột. Bỏ qua kết quả status != 'ok'."""
         import bang_ngang
 
-        meta = self.clip_meta()
+        resolver = self.clip_metadata_resolver()
         return [
-            bang_ngang.dung_dong_ngang(kq, meta)
+            bang_ngang.dung_dong_ngang(kq, resolver=resolver)
             for kq in ket
             if kq.status == "ok" and kq.matches
         ]
@@ -1469,14 +2261,14 @@ class Engine:
     def export_ho_so(self, ket: Iterable, ten_file: Optional[str] = None) -> list:
         """Xuất mỗi ScanResult thành một file .md. Trả về danh sách đường dẫn đã tạo."""
         os.makedirs(self.out_dir, exist_ok=True)
-        meta = self.clip_meta()
+        resolver = self.clip_metadata_resolver()
         duong_dan_da_tao = []
 
         for kq in ket:
             if kq.status != "ok" or not kq.matches:
                 continue
 
-            ho_so = dossier.dung_ho_so(kq, meta)
+            ho_so = dossier.dung_ho_so(kq, resolver=resolver)
             noi_dung = dossier.render_markdown(ho_so)
             if ten_file:
                 goc_ten, _ = os.path.splitext(ten_file)

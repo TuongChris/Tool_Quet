@@ -21,8 +21,10 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import Callable, Optional
+from datetime import datetime, timezone
+from typing import Callable, Mapping, Optional
 
+from clip_metadata import filename_fallback_parts, valid_upload_date
 from luu_tru import doc_json_an_toan, ghi_json_an_toan
 
 # Ký tự Windows không cho phép đặt trong tên file
@@ -52,6 +54,58 @@ def lam_sach_ten(s: str, max_len: int = 80) -> str:
     return s[:max_len].rstrip(". ") or "khong_ten"
 
 
+def _ngay_tu_timestamp(gia_tri: object) -> str:
+    """Epoch giây → ``YYYYMMDD`` theo UTC, đúng múi giờ yt-dlp dùng cho upload_date."""
+    try:
+        moc = float(gia_tri)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    if moc <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(moc, tz=timezone.utc).strftime("%Y%m%d")
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def ngay_dang_tu_info(info: Mapping | None) -> str:
+    """Rút ngày đăng từ info của yt-dlp, chấp nhận nhiều tên trường.
+
+    Ở chế độ ``extract_flat`` YouTube thường không trả ``upload_date``, nhưng một số
+    entry (premiere, livestream đã kết thúc) có ``release_timestamp``/``timestamp``.
+    Lấy được cái nào thì dùng cái đó; không suy đoán.
+    """
+    info = info or {}
+    ngay = valid_upload_date(info.get("upload_date"))
+    if ngay:
+        return ngay
+    for khoa in ("release_timestamp", "timestamp"):
+        ngay = _ngay_tu_timestamp(info.get(khoa))
+        if ngay:
+            return ngay
+    return ""
+
+
+def bo_sung_video_info(v: VideoInfo, info: Mapping | None) -> VideoInfo:
+    """Trả về VideoInfo đã điền bằng metadata THẬT từ yt-dlp.
+
+    Chỉ ghi đè khi giá trị mới thực sự có; không bao giờ thay dữ liệu tốt bằng rỗng.
+    """
+    info = info or {}
+    ngay = ngay_dang_tu_info(info)
+    try:
+        thoi_luong = float(info.get("duration") or 0)
+    except (TypeError, ValueError):
+        thoi_luong = 0.0
+    return VideoInfo(
+        id=str(info.get("id") or v.id),
+        title=str(info.get("title") or v.title),
+        upload_date=ngay or v.upload_date,
+        duration=thoi_luong if thoi_luong > 0 else v.duration,
+        url=v.url,
+    )
+
+
 class ChannelSync:
     """Đồng bộ kênh YouTube về thư mục kho clip gốc."""
 
@@ -74,6 +128,38 @@ class ChannelSync:
     def save_meta(self, meta: dict) -> None:
         ghi_json_an_toan(self.meta_file, meta)
 
+    def seed_meta_tu_dia(self) -> tuple[dict, int]:
+        """Tạo entry rỗng cho clip đã có trên đĩa nhưng chưa có trong clips_meta.json.
+
+        Kho tải từ trước khi có tính năng metadata chỉ còn bằng chứng duy nhất là
+        tên file ``<ngày> - <tiêu đề> [<VIDEO_ID>].opus``. Không có bước này thì
+        ``va_metadata()`` chỉ lặp qua các key sẵn có nên những clip đó không bao giờ
+        vá được ngày đăng/thời lượng. Chỉ điền dữ liệu suy ra được từ chính tên file;
+        ``upload_date``/``duration`` để trống cho fetcher điền bằng dữ liệu thật.
+        """
+        meta = self.load_meta()
+        them = 0
+        if not os.path.isdir(self.dest):
+            return meta, 0
+        for ten_file in sorted(os.listdir(self.dest)):
+            if not ten_file.lower().endswith("." + AUDIO_EXT):
+                continue
+            if ten_file in meta:
+                continue
+            phan = filename_fallback_parts(ten_file)
+            video_id = str(phan.get("video_id") or "")
+            if not video_id:
+                continue        # không có ID thì không thể tra lại, đừng tạo rác
+            meta[ten_file] = {
+                "id": video_id,
+                "title": str(phan.get("title") or ""),
+                "url": str(phan.get("url") or ""),
+                "upload_date": str(phan.get("upload_date") or ""),
+                "duration": None,
+            }
+            them += 1
+        return meta, them
+
     def va_metadata(
         self,
         progress: Optional[Callable] = None,
@@ -84,29 +170,27 @@ class ChannelSync:
         Bổ sung upload_date / duration còn thiếu trong clips_meta.json.
         KHÔNG tải lại video, chỉ lấy metadata.
         fetcher: hàm (video_id) -> dict, None thì dùng yt_dlp. Cho phép test offline.
-        Trả về {"tong": n, "da_va": n, "bo_qua": n, "loi": [...]}.
+        Trả về {"tong": n, "da_va": n, "bo_qua": n, "da_them_tu_dia": n, "loi": [...]}.
         """
-        meta = self.load_meta()
+        meta, da_them_tu_dia = self.seed_meta_tu_dia()
+        if da_them_tu_dia:
+            self.save_meta(meta)
         if not meta:
-            return {"tong": 0, "da_va": 0, "bo_qua": 0, "loi": []}
+            return {
+                "tong": 0,
+                "da_va": 0,
+                "bo_qua": 0,
+                "da_them_tu_dia": 0,
+                "loi": [],
+            }
 
         if fetcher is None:
             def fetcher(video_id: str) -> dict:
-                import yt_dlp
-
-                opts = {
-                    "quiet": True,
-                    "no_warnings": True,
-                    "skip_download": True,
-                    "socket_timeout": self.network_timeout_s,
-                }
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(
-                        f"https://youtu.be/{video_id}",
-                        download=False,
-                    )
+                info = ChannelSync.lay_info_video(video_id, self.network_timeout_s)
                 return {
-                    "upload_date": info.get("upload_date"),
+                    # Dùng chung cách rút ngày với list_channel/sync để ba đường
+                    # không hiểu khác nhau (kể cả trường hợp chỉ có timestamp).
+                    "upload_date": ngay_dang_tu_info(info),
                     "duration": info.get("duration"),
                 }
 
@@ -130,32 +214,45 @@ class ChannelSync:
         loi = []
         tong_can_va = len(can_va)
 
-        for i, (ten_file, thong_tin) in enumerate(can_va, start=1):
-            video_id = thong_tin.get("id") or ""
-            try:
-                if not video_id:
-                    raise RuntimeError("Thiếu ID video.")
-                moi = fetcher(video_id)
-                upload_date = moi.get("upload_date")
-                duration = moi.get("duration")
-                if upload_date and upload_date != "00000000":
-                    thong_tin["upload_date"] = str(upload_date)
-                if duration:
-                    thong_tin["duration"] = duration
+        # Ghi theo lô: kho lớn có thể cần vá hàng nghìn entry, ghi lại cả file sau
+        # mỗi clip là O(n²) I/O. Vẫn ghi định kỳ + ở finally để crash giữa chừng
+        # không mất phần đã lấy được.
+        CHU_KY_GHI = 25
+        chua_ghi = 0
+        try:
+            for i, (ten_file, thong_tin) in enumerate(can_va, start=1):
+                video_id = thong_tin.get("id") or ""
+                try:
+                    if not video_id:
+                        raise RuntimeError("Thiếu ID video.")
+                    moi = fetcher(video_id)
+                    upload_date = moi.get("upload_date")
+                    duration = moi.get("duration")
+                    if upload_date and upload_date != "00000000":
+                        thong_tin["upload_date"] = str(upload_date)
+                    if duration:
+                        thong_tin["duration"] = duration
+                    chua_ghi += 1
+                    if chua_ghi >= CHU_KY_GHI:
+                        self.save_meta(meta)
+                        chua_ghi = 0
+                    da_va += 1
+                except Exception as e:  # noqa: BLE001
+                    loi.append(f"{ten_file}: {e}")
+                if progress:
+                    progress(
+                        i / tong_can_va,
+                        f"[{i}/{tong_can_va}] Đã xử lý metadata: {ten_file}",
+                    )
+        finally:
+            if chua_ghi:
                 self.save_meta(meta)
-                da_va += 1
-            except Exception as e:  # noqa: BLE001
-                loi.append(f"{ten_file}: {e}")
-            if progress:
-                progress(
-                    i / tong_can_va,
-                    f"[{i}/{tong_can_va}] Đã xử lý metadata: {ten_file}",
-                )
 
         return {
             "tong": tong,
             "da_va": da_va,
             "bo_qua": bo_qua,
+            "da_them_tu_dia": da_them_tu_dia,
             "loi": loi,
         }
 
@@ -177,10 +274,50 @@ class ChannelSync:
     # ---------- liệt kê kênh ----------
 
     @staticmethod
-    def list_channel(url: str, limit: Optional[int] = None) -> list:
+    def lay_info_video(
+        video_id: str,
+        network_timeout_s: int = NETWORK_TIMEOUT_S,
+    ) -> dict:
+        """Trích xuất ĐẦY ĐỦ một video (có upload_date/duration). Không tải file."""
+        import yt_dlp
+
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "socket_timeout": network_timeout_s,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(f"https://youtu.be/{video_id}", download=False) or {}
+
+    @staticmethod
+    def list_channel(
+        url: str,
+        limit: Optional[int] = None,
+        *,
+        lay_ngay_dang: bool = False,
+        chi_tiet: Optional[Callable[[str], dict]] = None,
+        progress: Optional[Callable] = None,
+    ) -> list:
         """
-        Lấy danh sách video của kênh mà CHƯA tải gì (rất nhanh, dùng extract_flat).
+        Lấy danh sách video của kênh mà CHƯA tải gì.
         Chấp nhận link dạng @TenKenh, /channel/UC..., /playlist?list=...
+
+        Mặc định dùng ``extract_flat``: **một** request cho cả kênh nên rất nhanh,
+        nhưng yt-dlp ở chế độ này KHÔNG trả ``upload_date`` cho entry của kênh /
+        playlist — đó là lý do kho cũ có toàn tên file ``00000000 - ...``. Khi entry
+        có sẵn ``release_timestamp``/``timestamp`` (premiere, livestream đã kết thúc)
+        thì ngày đăng vẫn được lấy đúng, miễn phí.
+
+        ``lay_ngay_dang=True`` bổ sung ngày đăng/thời lượng bằng **một request mỗi
+        video còn thiếu** — chính xác nhưng chậm tỉ lệ với số video; đừng bật cho kênh
+        hàng nghìn video.
+
+        ``sync()`` KHÔNG cần bật cờ này: ``_tai_va_nen()`` lấy metadata thật ngay
+        trong lượt tải, không tốn thêm request nào.
+
+        ``chi_tiet``: hàm ``(video_id) -> dict`` để test offline.
         """
         import yt_dlp
 
@@ -203,16 +340,36 @@ class ChannelSync:
             ds.append(VideoInfo(
                 id=e["id"],
                 title=e.get("title") or e["id"],
-                upload_date=str(e.get("upload_date") or ""),
+                upload_date=ngay_dang_tu_info(e),
                 duration=float(e.get("duration") or 0),
                 url=e.get("url") or f"https://www.youtube.com/watch?v={e['id']}",
             ))
+
+        if not lay_ngay_dang:
+            return ds
+
+        lay = chi_tiet or ChannelSync.lay_info_video
+        con_thieu = [i for i, v in enumerate(ds) if not v.upload_date]
+        for thu_tu, i in enumerate(con_thieu, start=1):
+            if progress:
+                progress(
+                    thu_tu / len(con_thieu),
+                    f"[{thu_tu}/{len(con_thieu)}] Lấy ngày đăng: {ds[i].title[:50]}",
+                )
+            try:
+                ds[i] = bo_sung_video_info(ds[i], lay(ds[i].id))
+            except Exception:  # noqa: BLE001
+                # Một video bị xoá/riêng tư không được làm hỏng cả danh sách; mục đó
+                # giữ ngày rỗng và sẽ hiện là thiếu chứ không bị bịa.
+                continue
         return ds
 
     # ---------- tải + nén một video ----------
 
     def _ten_file(self, v: VideoInfo) -> str:
-        ngay = v.upload_date or "00000000"
+        # "00000000" chỉ dùng khi thật sự không có ngày đăng. Không bịa ngày hôm nay:
+        # tên file là bằng chứng offline duy nhất còn lại nếu clips_meta.json mất.
+        ngay = valid_upload_date(v.upload_date) or "00000000"
         return f"{ngay} - {lam_sach_ten(v.title)} [{v.id}].{AUDIO_EXT}"
 
     def _tim_file_cua(self, vid: str) -> Optional[str]:
@@ -221,8 +378,14 @@ class ChannelSync:
                 return os.path.join(self.dest, f)
         return None
 
-    def _tai_va_nen(self, v: VideoInfo) -> str:
-        """Tải bestaudio rồi nén sang opus mono. Trả về đường dẫn file cuối cùng."""
+    def _tai_va_nen(self, v: VideoInfo) -> tuple:
+        """Tải bestaudio rồi nén sang opus mono.
+
+        Trả về ``(duong_dan, VideoInfo đã bổ sung)``. Lượt tải này vốn đã trích xuất
+        đầy đủ trang video, nên ``upload_date``/``duration``/``title`` thật lấy được
+        **miễn phí** — không tốn thêm request nào. Đây là lý do ``sync()`` không cần
+        bật ``list_channel(lay_ngay_dang=True)``.
+        """
         import yt_dlp
 
         os.makedirs(self.tmp_dir, exist_ok=True)
@@ -234,7 +397,8 @@ class ChannelSync:
             "socket_timeout": self.network_timeout_s,
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([v.url])
+            info = ydl.extract_info(v.url, download=True)
+        v = bo_sung_video_info(v, info if isinstance(info, Mapping) else None)
 
         tho = [os.path.join(self.tmp_dir, f) for f in os.listdir(self.tmp_dir)
                if f.startswith(v.id + ".") and not f.endswith((".part", ".ytdl"))]
@@ -252,7 +416,7 @@ class ChannelSync:
             raise RuntimeError(f"Nén audio thất bại: {r.stderr.strip()[:200]}")
 
         os.remove(nguon)
-        return dich
+        return dich, v
 
     # ---------- đồng bộ cả kênh ----------
 
@@ -289,9 +453,10 @@ class ChannelSync:
             bao(0.02 + 0.96 * i / max(1, len(can_tai)),
                 f"[{i+1}/{len(can_tai)}] {v.title[:60]}")
             try:
-                f = self._tai_va_nen(v)
+                f, v = self._tai_va_nen(v)
                 meta[os.path.basename(f)] = {
-                    "id": v.id, "title": v.title, "upload_date": v.upload_date,
+                    "id": v.id, "title": v.title,
+                    "upload_date": valid_upload_date(v.upload_date),
                     "duration": v.duration, "url": f"https://youtu.be/{v.id}",
                 }
                 self.save_meta(meta)

@@ -2,6 +2,32 @@
 
 Ngày: 2026-08-06.
 
+## Vòng observability tạo vân tay — 2026-08-06
+
+| File | Nội dung và lý do | Rủi ro | Test xác minh | Trước → Sau |
+|---|---|---|---|---|
+| `fingerprint_progress.py` | Event immutable, tracker invariant/ETA, terminal + rotating file logger, một worker/controller và queue bounded | Medium | Progress/controller unit + Unicode/queue/cancel | Callback phần trăm nghèo, shared dict → event thật, snapshot, queue 256/recent 50 |
+| `process_runner.py` | Reader/poll loop, heartbeat, child PID, tail bounded, timeout/cancel đúng process tree | Medium | Output-live/silent/nonzero/timeout/cancel tests | Block trên stdout và terminate parent → poll được khi im lặng, dọn root + descendants |
+| `audfprint_progress_runner.py` | Instrument trước/sau từng `wavfile2hashes` mà không sửa vendor/thuật toán/DB format | Medium | Multi-core integration thật | Parent chỉ report sau cả core-list → JSON event per-file ngay khi worker chạy |
+| `engine.py` | Nối event, skip positive hash/retry zero-hash, workspace per job, atomic DB replace, summary success/skip/fail/cancel | Medium | Engine regressions + real audfprint smoke | Một subprocess ghi thẳng DB, progress cuối batch → per-file + DB cũ sống qua cancel/failure |
+| `app.py` | Controller trong session, placeholder cố định, phase/clip/count/elapsed/rate/ETA/PID/heartbeat/recent log, duplicate guard | Low–medium | App tests + browser smoke 6 fixture | UI gần như im lặng → cập nhật sau 250 ms và trong lúc job còn chạy |
+| `cli.py` | Summary tạo mới/skip/lỗi/cancel theo result mới | Low | Full fast suite | Chỉ tổng clip/thời gian → outcome rõ |
+| `tests/test_fingerprint_progress.py` | Contract, invariant, ETA, Unicode, queue, duplicate, cancel | Low | 6 tests pass | Không có → regression coverage |
+| `tests/test_process_runner.py` | Output tức thời, silent heartbeat, nonzero, timeout/cancel tree | Low | 5 tests pass | Không có → chứng minh không chờ process kết thúc/deadlock |
+| `tests/test_fingerprint_engine_progress.py` | Parse event, skip/retry, atomic DB, Windows logger handle | Low | 4 tests pass | Không có → regression storage/process boundary |
+| `tests/test_audfprint_progress_integration.py` | FFmpeg + audfprint multi-core thật trên WAV tạm | Low | 1 slow test pass | Không có → event phải đến trước commit được chứng minh |
+| `tests/test_app.py`, `tests/test_shifts.py`, `tests/test_tang_toc.py` | Cập nhật fake/signature theo API additive và DB temp | Low | Full fast suite | Fake cũ không phản ánh staging → test tương thích |
+
+Hành vi ảnh hưởng người dùng: màn hình tạo vân tay có trạng thái chi tiết và nút dừng chính xác hơn;
+CLI có thêm outcome; mode add cần dung lượng tạm xấp xỉ kích thước DB hiện có để đảm bảo atomic.
+API cũ `build_database(..., progress=...)` vẫn được giữ; event/job ID là tham số tùy chọn mới.
+
+Không thay đổi: audfprint vendored, Analyzer/HashTable, `_merge`, threshold, top-N, shifts, schema
+SQLite, fingerprint format, dữ liệu/credential production.
+
+Vấn đề còn lại: chưa nghiệm thu 1.717 clip thật; chưa resume phần staged sau cancel; chưa nhận biết
+file cùng path đổi nội dung; progress structured chưa mở rộng sang toàn bộ scan/channel.
+
 ## Thay đổi source/runtime
 
 | File | Nội dung và lý do | Rủi ro | Test xác minh | Trước → Sau |
@@ -79,9 +105,108 @@ Kết quả: fast suite tăng từ 248 pass lên 283 pass; không có test fail.
 
 ## Vấn đề còn tồn tại
 
-- Cancellation process tree/FFmpeg giữa chunk.
+- Cancellation process tree của scan/channel và soak test database fingerprint rất lớn; fingerprint flow cơ bản đã triển khai/test.
 - Lock và temp workspace riêng cho scan tương tác.
 - Timeout/backoff riêng cho Google API và hành vi mạng thật.
-- Structured logging/redaction/size rotation.
+- Structured logging/redaction/size rotation cho scan/channel; fingerprint flow đã có logger riêng.
 - Pin/checksum supply-chain cho artifact tải.
 - Docker build, Python 3.12 clean install, slow suite và API thật chưa nghiệm thu do môi trường.
+
+
+---
+
+## 2026-08-06 — Vòng review độc lập của Claude
+
+### Sửa lỗi
+
+- **`tests/test_app.py`** — `AppTest.from_file("app.py")` giải đường dẫn tương đối theo
+  `tests/` trên Streamlit 1.61 ⇒ suite đỏ. Đổi sang đường dẫn tuyệt đối dựng từ `__file__`.
+- **`channel.py` — `ChannelSync.va_metadata()`** chỉ lặp qua các key đã có trong
+  `clips_meta.json`. Kho Cory có 1717 file trên đĩa nhưng chỉ 86 entry ⇒ **1631 clip
+  không thể vá metadata bằng bất kỳ thao tác nào**. Thêm `seed_meta_tu_dia()`: tạo entry
+  từ tên file `<ngày> - <tiêu đề> [<VIDEO_ID>].opus` (chỉ `id`/`title`/`url`;
+  `upload_date`/`duration` để trống cho fetcher điền bằng dữ liệu thật). Không ghi đè
+  metadata chính thức đã có.
+- **`channel.py`** — `save_meta()` được gọi sau **mỗi** mục ⇒ O(n²) I/O trên 1631 mục.
+  Đổi sang ghi theo lô 25 mục + ghi ở `finally` để crash giữa chừng không mất dữ liệu.
+
+### Thay đổi hỗ trợ kiểm thử
+
+- **`engine._run_stream()`** nhận thêm tham số `heartbeat_seconds` (mặc định 10.0, không
+  đổi hành vi) để test heartbeat không phải chờ 10 giây thật.
+- **`clip_metadata.filename_fallback_parts()`** — API công khai, để `channel.py` và
+  resolver dùng chung **một** cách bóc tách tên file thay vì hai định nghĩa lệch nhau.
+
+### Thay đổi contract
+
+- `ChannelSync.va_metadata()` trả thêm khoá `da_them_tu_dia`. `cli.py vameta` in thêm số
+  này. Đã cập nhật call site và test.
+
+### Đã xác nhận đúng, giữ nguyên
+
+`fingerprint_progress.py`, `process_runner.py`, `audfprint_progress_runner.py`,
+`clip_metadata.py`, `kiem_metadata_kho.py`, màn hình tiến độ trong `app.py`,
+resolver dùng chung ở `bang_ngang.py`/`dossier.py`/`engine.to_rows()`, lệnh `vametak`.
+
+### Sửa deadlock nhánh đa nhân của audfprint
+
+- **`audfprint_progress_runner.py` — `instrumented_multiproc_add()`**: thay
+  `audfprint.multiproc_add`. Bản vendored đẩy nguyên một `HashTable` **419 MB mỗi worker**
+  (~3,3 GB với `--ncores 8`) qua `multiprocessing.Pipe`, giữ mọi đầu ghi ở tiến trình cha
+  và không có timeout ⇒ treo cứng **40 % số lần** (đo 8/20 lượt trên chính audfprint gốc).
+  Bản mới: worker ghi bảng ra file tạm gzip, pipe chỉ mang dict trạng thái; cha đóng đầu
+  ghi ngay sau `start()` nên worker chết thành `EOFError`; `recv()` có `poll(1800 s)` làm
+  lưới an toàn; file tạm xoá ngay sau merge.
+  → **0/20 lượt treo**, trung bình **6,4 s** so với 8,2 s của bản gốc.
+  → Bảng hash, `counts` và danh sách file **giống hệt từng ô** so với audfprint gốc.
+- **`audfprint_progress_runner.py` — `_emit()`**: ghi bằng đúng một `os.write()` thay vì
+  `print()`. Tám tiến trình con ghi chung một pipe stdout; `print()` tách nhiều lần ghi
+  làm lồng dòng và mất progress event (quan sát 7/8 thay vì 8/8).
+- **`audfprint_progress_runner.py` — `cai_dat_instrumentation()`**: tách phần gắn bản vá
+  ra khỏi `main()` để test được cả ba điểm vá.
+- **`process_runner.py`**: rút stdout theo lô và soi cây process theo nhịp 0,2 giây thay vì
+  sau mỗi dòng. Thông lượng **138 → 15.094 dòng/giây**.
+
+Test mới: `tests/test_audfprint_multiproc.py` (4 test) và
+`tests/test_audfprint_progress_integration.py::test_nhanh_da_nhan_that_khong_treo_va_khong_mat_event`
+(slow, 3 lượt build thật với `ncores=8`).
+
+### Lấy đúng ngày đăng khi đồng bộ kênh
+
+- **`channel._tai_va_nen()`**: đổi `ydl.download()` → `ydl.extract_info(download=True)`.
+  Lượt tải vốn đã trích xuất đầy đủ trang video nhưng giá trị trả về bị vứt đi; giờ dùng
+  nó để lấy `upload_date`/`duration`/`title` thật — **không thêm request mạng nào**.
+  Trả về `(đường_dẫn, VideoInfo đã bổ sung)`.
+- **`channel.ngay_dang_tu_info()`** / **`bo_sung_video_info()`**: rút ngày từ
+  `upload_date`, hoặc `release_timestamp`/`timestamp` khi có; không bao giờ ghi đè dữ
+  liệu tốt bằng rỗng.
+- **`channel.list_channel()`**: thêm `lay_ngay_dang=False` (mặc định giữ nguyên tốc độ —
+  một request cho cả kênh) và `chi_tiet=` để test offline. Bật cờ thì chỉ hỏi lại những
+  video còn thiếu ngày, có báo tiến độ, một video lỗi không làm hỏng cả danh sách.
+- **`channel._ten_file()`**: lọc qua `valid_upload_date()` — `00000000` chỉ khi thật sự
+  không có ngày, không bịa ngày hôm nay.
+- **`ChannelSync.lay_info_video()`**: một điểm trích xuất đầy đủ dùng chung.
+  `channel.va_metadata` và `engine.va_metadata_thieu` cùng dùng `ngay_dang_tu_info()`.
+- **`clip_metadata.valid_upload_date()`**: API công khai để hai module dùng chung một
+  định nghĩa "ngày đăng hợp lệ".
+- **`app.py`**: thêm ô chọn "Lấy cả ngày đăng chính xác" cho bảng xem trước (mặc định
+  tắt) và caption cho biết bao nhiêu video chưa có ngày trong danh sách nhanh.
+
+Test mới: `tests/test_ngay_dang.py` (12 test, không gọi mạng).
+
+### Phase `decoding` trở thành tín hiệu tất định
+
+- **`audfprint_progress_runner.cai_dat_theo_doi_giai_ma()`**: bọc
+  `audio_read.audio_read()` — đúng nơi `audfprint_analyze.wavfile2peaks` gọi FFmpeg —
+  để phát event `clip_phase` với `phase=decoding` / `fingerprinting`.
+  Trước đây phase `decoding` chỉ được suy ra khi *bắt gặp* tiến trình ffmpeg lúc lấy mẫu
+  cây process; clip ngắn thì ffmpeg chỉ sống vài chục mili giây nên giao diện lúc hiện lúc
+  không và `pytest -m slow` flaky. Phải cài trong **mỗi tiến trình con** vì Windows dùng
+  spawn nên bản vá ở cha không đi theo sang con.
+- **`engine._build_database_da_khoa`**: xử lý event `clip_phase`, lọc qua
+  `PHASES_FINGERPRINT = {decoding, fingerprinting, probing}` để một dòng stdout hỏng
+  không đẩy job sang trạng thái kết thúc giả.
+
+Test mới trong `tests/test_fingerprint_engine_progress.py`: phase `decoding` đến từ event
+thật (có tên clip + PID), và `clip_phase` mang pha kết thúc/không hợp lệ thì bị bỏ qua.
+`pytest -m slow` chạy **3 lượt liên tiếp, 5 passed mỗi lượt** — hết flaky.

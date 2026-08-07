@@ -2,6 +2,74 @@
 
 Ngày: 2026-08-06.
 
+## Vòng nghiệm thu progress fingerprint
+
+Tất cả test dùng `%TEMP%`/`tmp_path`; không đọc, ghi hoặc build lại kho 1.717 clip production.
+
+### Baseline tái hiện
+
+Fake ba clip và một `_run_stream` im lặng 1,5 giây phát event đầu ở 0,003 giây, sau đó không có
+thêm trạng thái tới 1,503 giây rồi nhảy thẳng 100%. Bằng call graph vendored, parent audfprint
+multi-core chỉ report sau khi một worker xử lý xong toàn bộ phần list của core.
+
+### Automated result hiện tại
+
+| Lệnh/phạm vi | Passed | Failed | Skipped/deselected | Thời lượng |
+|---|---:|---:|---:|---:|
+| Progress/controller/process/engine tests | 16 | 0 | 0 | 2,85 giây |
+| Audfprint + FFmpeg multi-core integration thật | 1 | 0 | 0 | 7,38 giây |
+| Full fast suite (lượt cuối, không có audfprint validation cạnh tranh CPU) | 299 | 0 | 1 skip, 4 slow deselect | 7,49 giây |
+| Full fast suite có coverage | 299 | 0 | 1 skip, 4 slow deselect | 14,75 giây pytest |
+| Ruff cho toàn bộ file thay đổi của vòng này | — | 0 finding | — | Pass |
+
+Coverage trong lệnh cuối: `fingerprint_progress.py` 91%, `process_runner.py` 87%, `engine.py`
+83%; tổng ba module được đo là 85%. Wrapper chạy ở subprocess nên coverage process cha không thu
+được; đường thật của wrapper được kiểm bởi integration test.
+
+Các test mới xác minh event đầu/discovery/start/phase/success/skip/failure/completed/cancelled,
+Unicode và khoảng trắng, invariant bộ đếm/percent, ETA và total 0, event đến khi worker chưa xong,
+không tạo job trùng, queue bounded, output subprocess đến trước exit, process im lặng có heartbeat,
+non-zero/timeout/cancel dọn đúng root + child, skip record hợp lệ, retry zero-hash, atomic DB khi
+cancel/failure và logger không giữ handle trên Windows.
+
+### Manual Streamlit smoke
+
+Lệnh validation chạy Streamlit bằng `.venv` hiện có nhưng inject `TIMCLIP_DATA_DIR` và
+`TIMCLIP_OUTPUT_DIR` vào một root `%TEMP%` riêng. Dataset có 6 file: một đã fingerprint, bốn WAV
+hợp lệ (ngắn/dài/tên có khoảng trắng/tên tiếng Việt) và một file hỏng. Không dùng SQLite hay `.pklz`
+production.
+
+- 250 ms sau click: UI hiện `Đang chuẩn bị danh sách clip` và tên đang xác định.
+- 1,25 giây: job còn sống; UI hiện `1/6 — 16,7%`, skip 1, phase audfprint, PID root, số worker,
+  Queue `0/256`.
+- 3,75 giây: UI hiện `6/6`, 4 đã tính, 1 skip, 1 lỗi, phase saving; event log trên màn hình có tên
+  file khoảng trắng, file hỏng, tiếng Việt và số FFmpeg đang sống.
+- Khoảng 5 giây: summary `4 tạo mới / 1 đã tồn tại / 1 lỗi`; app tiếp tục phản hồi và DB load lại
+  báo 6 record (record lỗi zero-hash sẽ được retry lần sau).
+- `fingerprint.log` có 29 event gắn `job_id` của lượt smoke cùng process start/end, child PID và
+  exit code. Python đọc file UTF-8 xác nhận nguyên vẹn `tiếng Việt.wav`.
+
+### Performance/queue
+
+Benchmark 5 vòng, 2.000 clip/4.002 event, logger bị disable để chỉ đo event/controller:
+
+- Không callback queue: median 0,078395 giây.
+- Có bounded queue/controller: median 0,122816 giây.
+- Chênh lệch: 0,044421 giây (56,66% trong microbenchmark CPU-only), xấp xỉ 11 microsecond/event.
+- Queue/recent: `256/256` và `50/50`; peak `tracemalloc` 657,0 KiB.
+- UI rerun mỗi 0,75 giây, tức tối đa khoảng 1,33 lần/giây; không render từng dòng FFmpeg.
+
+Phần trăm tương đối của microbenchmark cao vì baseline không có audio/FFmpeg và chỉ chạy 0,078 giây;
+độ tăng tuyệt đối là số phù hợp để so với workload fingerprint nhiều giây/phút.
+
+### Chưa kiểm thử trong vòng này
+
+- Không chạy toàn bộ 1.717 clip thật.
+- Không tạo `.venv-validation` mới; dùng `.venv` hiện có vì dependency native đã được xác minh, còn
+  mọi data/output vẫn cô lập trong `%TEMP%`.
+- Chưa soak cancel đúng lúc audfprint đang store một database nhiều GiB hoặc antivirus giữ file.
+- Không có test ETA trực quan trên batch dài; công thức/moving window đã unit-test.
+
 ## Môi trường
 
 - OS: Windows, PowerShell.
@@ -104,10 +172,45 @@ báo “No known vulnerabilities found”. File lock untracked của người d�
 - Disk full, antivirus lock kéo dài, Windows long-path policy khác.
 - Docker build/run trên daemon hoạt động.
 - Python 3.12 clean-machine install và các runtime khác.
-- Cancellation toàn process tree khi audfprint/FFmpeg im lặng.
+- Cancellation toàn process tree đã test cho fingerprint bằng root + child giả im lặng; chưa soak-test database nhiều GiB và các flow scan/channel khác.
 
 ## Rủi ro còn lại
 
 Không thay đổi `_merge`, ngưỡng chọn lọc hay shifts mặc định. Vì slow suite chưa hoàn tất,
 mọi release thay thuật toán matching vẫn phải bị chặn cho tới khi `pytest -m slow` xanh trên
-máy rảnh. Xem `AUDIT_REPORT.md` cho lock scan tương tác, process-tree cancellation và logging.
+máy rảnh. Xem `AUDIT_REPORT.md` cho lock scan tương tác, phần cancellation/logging còn lại ngoài
+fingerprint flow.
+
+
+---
+
+## Vòng kiểm chứng độc lập của Claude — 2026-08-06
+
+Môi trường: `.venv-claude` (Python **3.14.6** — máy không có 3.12, `py -0p` chỉ liệt kê 3.14).
+
+| Lệnh | Passed | Failed | Skipped | Deselected |
+|---|---:|---:|---:|---:|
+| `pytest -p no:cacheprovider --no-header` | **339** | 0 | 1 | 4 |
+| `pytest -m slow` | xem `CLAUDE_VALIDATION_REPORT.md` | | | |
+| `ruff check .` | `All checks passed!` | | | |
+| `compileall` (13 module chính) | exit 0 | | | |
+| `pip check` | `No broken requirements found.` | | | |
+| `git diff --check` | sạch | | | |
+
+**Baseline trước vòng này: 330 passed, 1 skipped, 1 FAILED.**
+`test_app.py::test_giao_dien_khong_loi_render` gọi `AppTest.from_file("app.py")`;
+Streamlit 1.61 giải đường dẫn tương đối theo file gọi (`tests/`) chứ không theo CWD.
+Đã sửa bằng đường dẫn tuyệt đối dựng từ `__file__`.
+
+### Test mới bổ sung trong vòng này
+
+| File | Số test | Bảo vệ điều gì |
+|---|---:|---|
+| `tests/test_fingerprint_progress_streaming.py` | 5 | Event per-clip vẫn tới khi audfprint **không in `ingesting #`** (đúng nhánh `ncores>1`); heartbeat khi subprocess im lặng; UI thấy tiến độ khi worker còn chạy; không tạo job trùng; queue bounded |
+| `tests/test_app_fingerprint_progress.py` | 2 | Khung hình tiến độ **giữa chừng** của `app.py` có tên clip/công đoạn/`2/3`/elapsed; ba đoạn ⇒ ba video gốc, tổng `so_dat_nguong=12` giữ nguyên, không bịa ngày đăng |
+| `tests/test_va_meta.py` (bổ sung) | 3 | Clip trên đĩa chưa có entry vẫn vá được; không tạo rác cho file không có VIDEO_ID; không ghi đè metadata chính thức bằng dữ liệu suy từ tên file |
+
+### Số liệu cũ trong tài liệu này
+
+Các số ở những mục phía trên là của vòng Codex và **chưa được chạy lại** trong vòng này.
+Số liệu đã kiểm chứng nằm ở [CLAUDE_VALIDATION_REPORT.md](CLAUDE_VALIDATION_REPORT.md).

@@ -12,18 +12,22 @@ Dữ liệu KHÔNG đi đâu cả — server chỉ lắng nghe ở localhost tr�
 import os
 import threading
 import time
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 import bang_ngang
 from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
+from clip_metadata import configure_metadata_logging
 from engine import Engine, ScanResult, hhmmss, o_bang_tinh_an_toan
+from fingerprint_progress import FingerprintJobController
 from channel import ChannelSync
 from sheets import SheetsExporter
 
 st.set_page_config(page_title="TimClip Pro — Tìm video gốc trong video dài",
                    page_icon="🔎", layout="wide")
+configure_metadata_logging()
 
 # =====================================================================
 #  Khởi tạo (giữ nguyên giữa các lần Streamlit vẽ lại màn hình)
@@ -47,6 +51,25 @@ if "job" not in st.session_state:
 
 eng: Engine = st.session_state.eng
 job = st.session_state.job
+if "fingerprint_controller" not in st.session_state:
+    st.session_state.fingerprint_controller = FingerprintJobController(eng)
+fingerprint_controller: FingerprintJobController = (
+    st.session_state.fingerprint_controller
+)
+
+
+def _dong_bo_job_van_tay() -> None:
+    """Chỉ main Streamlit thread đọc controller và cập nhật session_state."""
+    if job.get("kind") != "db" or not job.get("fingerprint_job_id"):
+        return
+    fingerprint_controller.drain()
+    if job.get("running") and not fingerprint_controller.running:
+        job["running"] = False
+        job["results"] = fingerprint_controller.result or []
+        job["error"] = fingerprint_controller.error
+
+
+_dong_bo_job_van_tay()
 
 
 def chay_nen(kind: str, ham, *args, **kwargs):
@@ -69,6 +92,46 @@ def chay_nen(kind: str, ham, *args, **kwargs):
     t = threading.Thread(target=target, daemon=True)
     t.start()
     st.rerun()
+
+
+def chay_van_tay(thumuc: str, mode: str) -> None:
+    """Khởi động đúng một controller; worker không gọi API Streamlit."""
+    if job.get("running") or fingerprint_controller.running:
+        st.warning("Đang có tác vụ chạy; không tạo thêm job trùng.")
+        return
+    eng.cancel_event.clear()
+    job_id = fingerprint_controller.start(thumuc, mode)
+    job.update({
+        "running": True,
+        "pct": 0.0,
+        "msg": "Đang chuẩn bị danh sách clip...",
+        "results": [],
+        "error": "",
+        "kind": "db",
+        "da_day_sheet": False,
+        "fingerprint_job_id": job_id,
+    })
+    st.rerun()
+
+
+def _thoi_luong(giay: float | None) -> str:
+    if giay is None:
+        return "Đang tính..."
+    giay = max(0, int(giay))
+    return f"{giay // 3600:02d}:{(giay % 3600) // 60:02d}:{giay % 60:02d}"
+
+
+TEN_PHASE = {
+    "discovering": "Đang chuẩn bị danh sách clip",
+    "validating": "Đang kiểm tra kho hiện có",
+    "probing": "Đang đọc thông tin media",
+    "decoding": "Đang giải mã bằng FFmpeg",
+    "fingerprinting": "Đang chạy audfprint",
+    "saving": "Đang ghi database vân tay",
+    "completed": "Hoàn tất",
+    "cancelled": "Đã dừng",
+    "failed": "Thất bại",
+}
 
 
 def lay_sheets() -> SheetsExporter:
@@ -101,6 +164,39 @@ def day_len_sheets(results: list[ScanResult]) -> tuple[bool, str]:
 
 def bang_ket_qua(results: list[ScanResult]) -> None:
     """Vẽ bảng kết quả + các nút xuất báo cáo và đẩy lên Google Sheets."""
+    matches = [
+        match
+        for result in results
+        if result.status == "ok"
+        for match in result.matches
+    ]
+    if matches:
+        coverage = eng.metadata_coverage(matches)
+        if coverage.resolved_complete == 0:
+            st.warning(
+                "⚠️ Đã phát hiện đoạn vi phạm nhưng không clip gốc nào có đủ "
+                "metadata chính thức (ID, tên, link, ngày đăng và thời lượng). "
+                "Báo cáo vẫn hiển thị dữ liệu phục hồi an toàn và đánh dấu phần thiếu."
+            )
+        if coverage.filename_fallbacks:
+            st.warning(
+                f"⚠️ {coverage.filename_fallbacks}/{coverage.selected_matches} video gốc "
+                "được phục hồi từ filename. Tiêu đề có thể đã được rút gọn; "
+                "ngày đăng/thời lượng chỉ hiện khi có bằng chứng."
+            )
+        if coverage.unresolved or coverage.ambiguous:
+            st.error(
+                f"Metadata chưa ánh xạ: {coverage.unresolved}; "
+                f"mơ hồ (không tự chọn): {coverage.ambiguous}."
+            )
+        tong_dat_nguong = sum(
+            result.so_dat_nguong for result in results if result.status == "ok"
+        )
+        if tong_dat_nguong != len(matches):
+            st.caption(
+                f"Có {tong_dat_nguong} đoạn đạt ngưỡng trước bước chọn lọc; "
+                f"{len(matches)} đoạn được chọn để xuất. Hai số này có chủ đích khác nhau."
+            )
     rows = eng.to_rows(results)
     df = pd.DataFrame(rows, columns=eng.HEADER)
     st.dataframe(df, width="stretch", hide_index=True)
@@ -308,15 +404,110 @@ with st.sidebar:
 # =====================================================================
 
 if job["running"]:
-    st.header("⏳ Đang xử lý...")
-    st.progress(job["pct"], text=f"{job['pct']*100:.0f}%")
-    st.info(job["msg"] or "Đang khởi động...")
-    if st.button("⏹️ Dừng lại", type="secondary"):
-        eng.cancel()
-        st.warning("Đã gửi yêu cầu dừng, chờ một chút...")
-    st.caption("Cửa sổ này tự cập nhật. Bạn có thể để yên và làm việc khác, "
-               "nhưng đừng đóng cửa sổ đen phía sau.")
-    time.sleep(1.0)
+    if job.get("kind") == "db":
+        fingerprint_controller.drain()
+        fp = fingerprint_controller.snapshot()
+        now = time.time()
+        progress_slot = st.empty()
+        status_slot = st.empty()
+        metrics_slot = st.empty()
+        file_slot = st.empty()
+        heartbeat_slot = st.empty()
+        log_slot = st.empty()
+
+        st.header("🔊 Đang tạo vân tay clip gốc")
+        progress_slot.progress(
+            fp.percent,
+            text=(
+                f"Đã hoàn tất {fp.processed_count} / {fp.total} — "
+                f"{fp.percent * 100:.1f}%"
+                if fp.total
+                else "Đang chuẩn bị danh sách clip..."
+            ),
+        )
+        status_slot.info(
+            f"**Công đoạn:** {TEN_PHASE.get(fp.phase, fp.phase)}  \n"
+            f"{fp.message}"
+        )
+        if fp.file_name:
+            file_slot.markdown(
+                f"**Clip hiện tại ({fp.current}/{fp.total}):** `{fp.file_name}`"
+            )
+        else:
+            file_slot.markdown("**Clip hiện tại:** đang xác định...")
+
+        with metrics_slot.container():
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Đã tính xong", fp.success_count)
+            m2.metric("Đã tồn tại", fp.skipped_count)
+            m3.metric("Lỗi", fp.failed_count)
+            m4.metric("Đã xử lý", f"{fp.processed_count}/{fp.total}")
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("Đã chạy", _thoi_luong(fp.elapsed_seconds))
+            t2.metric(
+                "Tốc độ trung bình",
+                f"{fp.rate_per_minute:.1f} clip/phút"
+                if fp.rate_per_minute is not None
+                else "Đang tính...",
+            )
+            t3.metric("ETA", _thoi_luong(fp.eta_seconds))
+            t4.metric(
+                "Worker",
+                "Đang hoạt động" if fp.worker_alive else "Đã dừng",
+            )
+
+        cap_nhat = datetime.fromtimestamp(fp.updated_at).strftime("%H:%M:%S")
+        clip_elapsed = (
+            now - fp.current_clip_started_at
+            if fp.current_clip_started_at is not None
+            else None
+        )
+        pid = fp.active_subprocess_pid or "—"
+        heartbeat_slot.caption(
+            f"Cập nhật gần nhất: {cap_nhat} · PID audfprint: {pid} · "
+            f"Clip hiện tại đã chạy: {_thoi_luong(clip_elapsed)} · "
+            f"Queue: {fp.queue_size}/256"
+        )
+        if clip_elapsed is not None and clip_elapsed >= 120:
+            st.warning(
+                "Clip hiện tại đang xử lý lâu hơn bình thường. "
+                "Worker/subprocess vẫn hoạt động; phần trăm không được tăng giả."
+            )
+        elif now - fp.last_progress_at >= 15 and fp.worker_alive:
+            st.warning(
+                "Chưa có event mới trong 15 giây, nhưng worker vẫn sống. "
+                "Đang chờ subprocess hoặc thao tác ghi file."
+            )
+
+        recent = fingerprint_controller.recent()[-20:]
+        if recent:
+            log_slot.code("\n".join(
+                f"{datetime.fromtimestamp(event.updated_at):%H:%M:%S} "
+                f"{event.status:<16} {event.message}"
+                for event in recent
+            ))
+
+        if st.button(
+            "⏹️ Dừng lại",
+            type="secondary",
+            disabled=fp.status == "cancel_requested",
+        ):
+            fingerprint_controller.cancel()
+            st.warning("Đang yêu cầu dừng; chưa đánh dấu đã dừng cho tới khi worker xác nhận.")
+        st.caption(
+            "Trang tự làm mới từ queue bounded; worker không gọi Streamlit trực tiếp. "
+            "Log kỹ thuật: `ketqua/fingerprint.log`."
+        )
+    else:
+        st.header("⏳ Đang xử lý...")
+        st.progress(job["pct"], text=f"{job['pct']*100:.0f}%")
+        st.info(job["msg"] or "Đang khởi động...")
+        if st.button("⏹️ Dừng lại", type="secondary"):
+            eng.cancel()
+            st.warning("Đã gửi yêu cầu dừng, chờ một chút...")
+        st.caption("Cửa sổ này tự cập nhật. Bạn có thể để yên và làm việc khác, "
+                   "nhưng đừng đóng cửa sổ đen phía sau.")
+    time.sleep(0.75)
     st.rerun()
 
 # Tác vụ vừa xong → hiện kết quả
@@ -335,13 +526,31 @@ if not job["running"] and (job["results"] or job["error"]):
                 "để tạo vân tay cho các video vừa tải.")
     elif job["kind"] == "db":
         r = job["results"]
-        st.success(f"✅ Đã xử lý {r.get('da_xu_ly', r['so_clip'])}/{r['so_clip']} clip "
-                   f"trong {r['giay']:.0f} giây.")
+        thong_bao = st.warning if r.get("da_huy") else st.success
+        thong_bao(
+            f"{'⏹️ Đã dừng' if r.get('da_huy') else '✅ Hoàn tất tạo vân tay'}: "
+            f"đã xử lý {r.get('da_xu_ly', r['so_clip'])}/{r['so_clip']} clip "
+            f"trong {r['giay']:.0f} giây."
+        )
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Tạo mới", r.get("thanh_cong", r.get("da_xu_ly", 0)))
+        m2.metric("Đã tồn tại", r.get("bo_qua", 0))
+        m3.metric("Lỗi", r.get("that_bai", len(r.get("loi_file", []))))
         if r.get("canh_bao"):
             st.warning("\n\n".join(r["canh_bao"]))
         if r.get("loi_file"):
             with st.expander(f"⚠️ {len(r['loi_file'])} file có vấn đề — bấm xem"):
                 st.code("\n".join(r["loi_file"][:50]))
+    elif job["kind"] == "metadata_network":
+        r = job["results"]
+        st.success(
+            f"Đã vá metadata snapshot cho {r['da_va']}/{r['tong']} clip; "
+            f"không đổi {r['bo_qua']}, lỗi {len(r['loi'])}."
+        )
+        if r["loi"]:
+            with st.expander(f"⚠️ {len(r['loi'])} clip chưa vá được"):
+                st.code("\n".join(r["loi"][:50]))
+        st.caption(f"Snapshot: `{r['snapshot_path']}`")
     elif job["kind"] == "sua":
         r = job["results"]
         st.success(f"✅ Đã dựng lại danh sách: {r['tren_dia']} video thực có trên đĩa "
@@ -423,11 +632,27 @@ with tab0:
         xem_truoc = st.button("👀 Xem danh sách video của kênh", width="stretch",
                               disabled=not kenh_url)
 
+    lay_ngay = st.checkbox(
+        "Lấy cả ngày đăng chính xác (chậm: thêm 1 lượt hỏi mỗi video)",
+        value=False,
+        help="YouTube không trả ngày đăng ở chế độ liệt kê nhanh. Bật khi bạn cần "
+             "xem ngày đăng ngay tại đây. Việc đồng bộ kho KHÔNG cần bật: ngày đăng "
+             "thật được lấy sẵn trong lượt tải của từng video.",
+    )
+
     if xem_truoc:
         with st.spinner("Đang lấy danh sách (không tải gì cả)..."):
             try:
-                ds = ChannelSync.list_channel(kenh_url.strip(), gioi_han or None)
+                ds = ChannelSync.list_channel(
+                    kenh_url.strip(), gioi_han or None, lay_ngay_dang=lay_ngay
+                )
                 st.success(f"Kênh có {len(ds)} video.")
+                thieu_ngay = sum(1 for v in ds if not v.upload_date)
+                if thieu_ngay:
+                    st.caption(
+                        f"{thieu_ngay}/{len(ds)} video chưa có ngày đăng trong danh "
+                        "sách nhanh. Ngày đăng thật vẫn được ghi đúng khi đồng bộ kho."
+                    )
                 st.dataframe(pd.DataFrame([{
                     "Ngày đăng": v.upload_date, "Tiêu đề": v.title,
                     "Thời lượng": hhmmss(v.duration), "ID": v.id} for v in ds]),
@@ -541,11 +766,131 @@ with tab1:
     with c1:
         if st.button("🔄 Tạo lại kho từ đầu", type="primary", width="stretch",
                      disabled=not (thumuc and eng.kho_dang_dung)):
-            chay_nen("db", eng.build_database, thumuc.strip('" '), "new")
+            chay_van_tay(thumuc.strip('" '), "new")
     with c2:
         if st.button("➕ Bổ sung clip mới vào kho", width="stretch",
                      disabled=not (thumuc and eng.kho_dang_dung)):
-            chay_nen("db", eng.build_database, thumuc.strip('" '), "add")
+            chay_van_tay(thumuc.strip('" '), "add")
+
+    st.divider()
+    st.markdown("#### Tình trạng metadata báo cáo")
+    st.caption(
+        "Kiểm tra chỉ đọc mối liên hệ giữa clip trong fingerprint DB và metadata. "
+        "Khôi phục offline chỉ tạo/cập nhật snapshot riêng của kho; không sửa "
+        "`clips_meta.json`, không gọi mạng và không tạo lại fingerprint."
+    )
+    mc1, mc2 = st.columns(2)
+    with mc1:
+        if st.button(
+            "🔍 Kiểm tra metadata báo cáo",
+            width="stretch",
+            disabled=not bool(clips),
+        ):
+            try:
+                audit = eng.kiem_tra_metadata_kho()
+                st.session_state.metadata_audit = audit.to_dict()
+                st.session_state.metadata_audit_kho = eng.kho_dang_dung
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Không kiểm tra được metadata: {e}")
+    with mc2:
+        if st.button(
+            "🧪 Xem trước khôi phục offline",
+            width="stretch",
+            disabled=not bool(clips),
+        ):
+            try:
+                preview = eng.khoi_phuc_metadata_offline(dry_run=True)
+                st.session_state.metadata_repair_preview = preview.to_dict()
+                st.session_state.metadata_repair_preview_kho = eng.kho_dang_dung
+                st.session_state.metadata_audit = preview.audit.to_dict()
+                st.session_state.metadata_audit_kho = eng.kho_dang_dung
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Không lập được dry-run: {e}")
+
+    audit_data = st.session_state.get("metadata_audit")
+    if (
+        audit_data
+        and st.session_state.get("metadata_audit_kho") == eng.kho_dang_dung
+    ):
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Clip trong fingerprint DB", audit_data["total_db_clips"])
+        a2.metric("Metadata đầy đủ", audit_data["complete"])
+        a3.metric("Metadata một phần", audit_data["partial"])
+        a4, a5, a6 = st.columns(3)
+        a4.metric("Phục hồi từ filename", audit_data["filename_fallbacks"])
+        a5.metric("Chưa ánh xạ", audit_data["missing"])
+        a6.metric("Mơ hồ / xung đột", audit_data["ambiguous"])
+        st.caption(
+            "Nguồn đang dùng: "
+            + (", ".join(audit_data.get("source_files") or []) or "chưa có")
+            + f" · Snapshot cập nhật: {audit_data.get('updated_at') or 'chưa có'}"
+        )
+        if audit_data.get("complete", 0) == 0 and audit_data.get("total_db_clips", 0):
+            st.warning(
+                "Kho có fingerprint nhưng chưa clip nào có đủ toàn bộ metadata báo cáo. "
+                "Có thể xuất dữ liệu fallback, nhưng báo cáo chưa được xem là đầy đủ."
+            )
+        if audit_data.get("samples"):
+            with st.expander("Mẫu metadata thiếu/mơ hồ (tối đa 20)"):
+                st.dataframe(
+                    pd.DataFrame(audit_data["samples"]),
+                    width="stretch",
+                    hide_index=True,
+                )
+
+    preview_data = st.session_state.get("metadata_repair_preview")
+    if (
+        preview_data
+        and st.session_state.get("metadata_repair_preview_kho") == eng.kho_dang_dung
+    ):
+        st.info(
+            f"Dry-run: {preview_data['updated']} entry sẽ được cập nhật, "
+            f"{preview_data['unchanged']} không đổi, "
+            f"{preview_data['skipped_ambiguous']} mơ hồ bị bỏ qua."
+        )
+    confirm_offline = st.checkbox(
+        "Tôi xác nhận chỉ tạo/cập nhật snapshot metadata offline của kho đang dùng",
+        key="confirm_metadata_offline",
+    )
+    if st.button(
+        "🛠️ Khôi phục metadata offline",
+        disabled=not (confirm_offline and bool(clips)),
+    ):
+        try:
+            repaired = eng.khoi_phuc_metadata_offline(dry_run=False)
+            if repaired.errors:
+                st.error("; ".join(repaired.errors))
+            else:
+                st.success(
+                    f"Đã cập nhật snapshot: {repaired.updated} entry; "
+                    f"không đổi {repaired.unchanged}."
+                )
+                st.caption(f"Snapshot: `{repaired.snapshot_path}`")
+                st.session_state.metadata_audit = eng.kiem_tra_metadata_kho().to_dict()
+                st.session_state.metadata_audit_kho = eng.kho_dang_dung
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Không khôi phục được metadata: {e}")
+
+    with st.expander("🌐 Vá metadata thiếu từ YouTube (tác vụ mạng riêng)"):
+        st.warning(
+            "Chỉ dùng khi bạn chủ động cần ngày đăng/thời lượng chính thức. "
+            "Tác vụ không tải audio/video, có timeout và retry hữu hạn, nhưng có thể "
+            "mất nhiều thời gian với kho lớn."
+        )
+        confirm_network = st.checkbox(
+            "Tôi xác nhận cho phép gọi YouTube để vá các entry còn thiếu",
+            key="confirm_metadata_network",
+        )
+        if st.button(
+            "Bắt đầu vá metadata thiếu",
+            disabled=not (
+                confirm_network
+                and bool(clips)
+                and eng.kho_thu_muc
+                and not job.get("running")
+            ),
+        ):
+            chay_nen("metadata_network", eng.va_metadata_thieu)
 
     if clips:
         st.divider()

@@ -18,6 +18,7 @@ TimClipPro_source.zip
 __pycache__/
 *.pyc
 .venv/
+.venv-claude/
 venv/
 
 # VS Code

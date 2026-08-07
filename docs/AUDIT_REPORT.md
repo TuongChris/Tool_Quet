@@ -1,7 +1,40 @@
 # Báo cáo audit TimClip Pro
 
+> **Cập nhật 2026-08-06 — vòng review độc lập.** Các kết luận trong tài liệu này là của
+> vòng audit trước và **chưa được chạy lại**. Phần đã kiểm chứng bằng lệnh thật (root cause
+> Lỗi A/B, số liệu kho Cory, kết quả test) nằm ở
+> [CLAUDE_AUDIT_REPORT.md](CLAUDE_AUDIT_REPORT.md) và
+> [CLAUDE_VALIDATION_REPORT.md](CLAUDE_VALIDATION_REPORT.md). Khi hai bên mâu thuẫn, tin hai
+> tài liệu CLAUDE_*.
+
 Ngày audit: 2026-08-06. Mọi location là trạng thái source trước hoặc trong lượt audit này.
 Không sao chép nội dung credential vào báo cáo.
+
+## [HIGH] Build fingerprint không phát trạng thái từng clip và có khoảng im lặng rất dài
+
+- Location: `app.py:73-92`, `engine.py:514-554`, `engine.py:785-1017`, `audfprint-master/audfprint.py:130-143`, `audfprint-master/audfprint.py:199-235` (baseline trước vòng sửa progress).
+- Component: Streamlit/concurrency/subprocess/observability.
+- Evidence: UI cũ chỉ nhận callback `(percent, message)` từ một worker sửa chung session dict; Engine đưa cả list vào một subprocess. `multiproc_add()` chia toàn list theo core nhưng chỉ report sau khi một core hoàn tất toàn bộ phần việc. `_run_stream()` cũ chờ trực tiếp từng dòng stdout, nên khi subprocess im lặng không poll/heartbeat/cancel được.
+- Reproduction: Fake ba clip với `_run_stream` im lặng 1,5 giây cho event ở 0,003 giây rồi không có event nào tới 1,503 giây; sau đó progress nhảy thẳng 100%. Với 1.717 clip/8 core, report gốc đầu tiên phụ thuộc một worker hoàn tất khoảng 215 clip.
+- Impact: UI/terminal không cho biết clip, phase, PID hay bộ đếm; người dùng không phân biệt xử lý thật, pipe chờ hay worker chết. Cancel cũng có thể chờ subprocess im lặng.
+- Root cause: Batch audfprint là một subprocess nguyên khối; vendored multi-core thiếu event per-file; đọc stdout blocking; callback UI quá nghèo và không có queue/heartbeat/logger.
+- Recommended fix: Contract event độc lập Streamlit, wrapper audfprint không đổi thuật toán, process polling + bounded output, worker/controller queue, heartbeat và structured log.
+- Regression risk: Medium; chạm boundary process và commit database, nhưng không chạm Analyzer/HashTable/matching.
+- Validation method: Unit/controller/process tests, integration thật với audfprint/FFmpeg trong temp, Streamlit browser smoke với 6 fixture và database tạm.
+- Status: Implemented and validated. UI nhận phase chuẩn bị sau 250 ms; giữa job thấy `1/6`, tên clip/PID; cuối job 4 success, 1 skip, 1 failure. Fast suite 299 passed; integration audfprint thật passed.
+
+## [HIGH] Database vân tay có thể bị thay dở khi build bị cancel hoặc lỗi
+
+- Location: `engine.py:722-1017` (boundary build database).
+- Component: Data integrity/cancellation.
+- Evidence: audfprint CLI ghi trực tiếp database target. Nếu kill/cancel trong store/merge, không có ranh giới atomic do Engine kiểm soát; trạng thái UI cũng không phân biệt “đã tính” với “đã commit”.
+- Reproduction: Fake subprocess ghi database rồi báo lỗi/cancel; xác minh sentinel database target trước sửa không có cơ chế staging do Engine sở hữu.
+- Impact: Kho nhiều giờ xây dựng có nguy cơ hỏng/mất; UI có thể báo thành công đã xử lý dù output chưa được commit.
+- Root cause: Không có per-job workspace và atomic replace ở application boundary.
+- Recommended fix: Luôn chạy `new/add` trên database tạm; add copy theo chunk, fsync; chỉ replace target sau exit code 0 và validation; dọn workspace trong `finally`.
+- Regression risk: Medium; add tạm dùng thêm dung lượng bằng kích thước database hiện tại.
+- Validation method: Test cancel/failure giữ nguyên byte sentinel của DB cũ, success phải tạo được DB tạm hợp lệ; smoke audfprint thật load lại được.
+- Status: Implemented and validated; cancellation giữ database cũ, staged success không bị báo là đã commit.
 
 ## [CRITICAL] Docker build context có thể chứa credential và 138.91 GiB dữ liệu runtime
 
@@ -44,16 +77,16 @@ Không sao chép nội dung credential vào báo cáo.
 
 ## [HIGH] Hủy tác vụ không xuyên qua subprocess dài và worker con
 
-- Location: `engine.py:430-466`, `engine.py:863-893`, `channel.py:218-248`.
+- Location: `process_runner.py`, `engine.py:514-554`, các call site FFmpeg còn lại trong `engine.py`/`channel.py`.
 - Component: Concurrency/UX/resource management.
-- Evidence: FFmpeg chạy bằng `subprocess.run()` nên chỉ kiểm cancel giữa chunk/video; `_run_stream()` chỉ kiểm cờ khi nhận dòng stdout và terminate parent rồi `wait()` không timeout.
+- Evidence: Baseline FFmpeg chạy bằng `subprocess.run()` nên chỉ kiểm cancel giữa chunk/video; `_run_stream()` chỉ kiểm cờ khi nhận dòng stdout. Vòng này đã thay `_run_stream()` của fingerprint bằng reader/poll/process-tree runner; các call site scan/channel khác chưa chuyển.
 - Reproduction: Chạy FFmpeg/audfprint tác vụ dài hoặc im lặng, đặt `cancel_event` trong lúc process chưa in dòng.
 - Impact: Nút Dừng có thể chờ lâu, worker audfprint có thể còn chạy, giữ CPU/file handle.
 - Root cause: Không có process-tree lifecycle/cancellable polling thống nhất.
 - Recommended fix: Helper process có poll timeout ngắn, terminate/kill có thời hạn và dọn descendants bằng API process; triển khai riêng với soak test.
 - Regression risk: High trên Windows và audfprint multiprocessing.
 - Validation method: Test process giả im lặng + child process; nghiệm thu Windows thật.
-- Status: Deferred — không sửa vội khi một job thật đang chạy và chưa có soak test.
+- Status: Partially implemented and validated. Fingerprint build đã poll khi im lặng, heartbeat và dọn đúng root + descendants qua test Windows; scan/channel và DB nhiều GiB chưa soak-test.
 
 ## [HIGH] Dependency hiện hành có ba advisory đã biết
 
@@ -161,16 +194,16 @@ Không sao chép nội dung credential vào báo cáo.
 
 ## [MEDIUM] Logging chưa đủ chẩn đoán và có file log được track
 
-- Location: `nhat_ky.py`, `app.py:58-64`, `session.log`.
+- Location: `nhat_ky.py`, `fingerprint_progress.py`, `process_runner.py`, `session.log`.
 - Component: Observability/privacy.
-- Evidence: GUI chỉ giữ `str(e)` không traceback/file log; CLI log là tee không timestamp/level/context; `session.log` được Git track và chứa Windows path.
+- Evidence: Baseline GUI chỉ giữ `str(e)` không traceback/file log; CLI log là tee không timestamp/level/context; `session.log` được Git track và chứa Windows path. Fingerprint flow hiện có timestamp/level/logger/job ID/PID, rotation, flush và file UTF-8 riêng.
 - Reproduction: Ném lỗi background GUI; chỉ thấy message người dùng, không có stack kỹ thuật tập trung.
 - Impact: Khó tìm nguyên nhân job; đường dẫn/ngữ cảnh có thể vào Git.
 - Root cause: Chưa có logging facade/redaction/rotation theo size.
 - Recommended fix: Ignore log mới, bỏ track log trong commit được chủ sở hữu duyệt; thêm logger tập trung ở phase riêng.
 - Regression risk: Medium vì thay print/progress máy móc sẽ phá CLI.
 - Validation method: Test log rotation/redaction và lỗi GUI.
-- Status: Partially implemented; log mới đã được ignore, nhưng logging facade và quyết định untrack `session.log` được để lại. File người dùng không bị xóa/sửa.
+- Status: Partially implemented. Fingerprint flow đã có logger terminal + rotating file và technical traceback; scan/channel chưa dùng chung facade. Quyết định untrack `session.log` vẫn để chủ sở hữu duyệt; file người dùng không bị xóa/sửa.
 
 ## [LOW] UI có thao tác xóa một bước và trợ giúp overlap đã lỗi thời
 

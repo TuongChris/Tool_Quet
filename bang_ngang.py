@@ -4,6 +4,7 @@
 from datetime import datetime
 from typing import Any
 
+from clip_metadata import ClipMetadataResolver
 from engine import Engine, hhmmss
 
 
@@ -66,10 +67,14 @@ def dinh_dang_doan(m: Any, source_id: str, source_ref: str) -> str:
     return f"{noi_dung} · {link}" if link else noi_dung
 
 
-def dung_dong_ngang(kq: Any, clips_meta: dict | None = None) -> list:
+def dung_dong_ngang(
+    kq: Any,
+    clips_meta: dict | None = None,
+    *,
+    resolver: ClipMetadataResolver | None = None,
+) -> list:
     """Dựng ĐÚNG MỘT dòng 34 phần tử từ một ScanResult. Hàm thuần, không I/O."""
-    if clips_meta is None:
-        clips_meta = {}
+    resolver = resolver or ClipMetadataResolver.from_mapping(clips_meta or {})
 
     loi = kq.status != "ok"
     matches = [] if loi else list(kq.matches[:SO_DOAN])
@@ -95,12 +100,12 @@ def dung_dong_ngang(kq: Any, clips_meta: dict | None = None) -> list:
         if i >= len(matches):
             dong.extend(["", "", "", ""])
             continue
-        meta = clips_meta.get(matches[i].clip, {})
-        duration = meta.get("duration")
+        meta = resolver.resolve(matches[i].clip)
+        duration = meta.duration
         dong.extend([
-            meta.get("url") or "",
-            meta.get("title") or "",
-            dinh_dang_ngay(meta.get("upload_date") or ""),
+            meta.url,
+            meta.title,
+            dinh_dang_ngay(meta.upload_date),
             (
                 hhmmss(duration)
                 if isinstance(duration, (int, float)) and duration > 0

@@ -2,6 +2,7 @@
 """Test cấu hình tăng tốc mà không chạy ffmpeg hoặc audfprint thật."""
 
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -38,10 +39,11 @@ def test_dung_kho_da_nhan_dem_du_so_file(engine, tmp_path, monkeypatch):
     engine.config.ncores = 0
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
 
-    def run_stream(lenh, on_line=None):
+    def run_stream(lenh, on_line=None, **kwargs):
         for i, so_file in enumerate((1, 1, 1, 1, 0, 0, 0, 0)):
             on_line(f"hash_table {i} has {so_file} files 100 hashes")
         on_line("Saved fprints for 4 files (400 hashes) to db.pklz")
+        Path(lenh[lenh.index("--dbase") + 1]).write_bytes(b"fake db")
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
@@ -169,7 +171,7 @@ def test_match_chunks_bao_truoc_khi_chay_subprocess(engine, monkeypatch):
     def progress(pct, msg):
         su_kien.append(("progress", msg))
 
-    def run_stream(lenh, on_line=None):
+    def run_stream(lenh, on_line=None, **kwargs):
         su_kien.append(("subprocess", lenh))
         return 0, []
 

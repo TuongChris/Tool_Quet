@@ -11,6 +11,7 @@ from bang_ngang import (
     dinh_dang_ngay,
     dung_dong_ngang,
 )
+from clip_metadata import ClipMetadataResolver
 from engine import ScanResult
 
 
@@ -113,7 +114,8 @@ def test_dung_day_du_thong_tin_nguon_va_clip_goc():
     )
     dong = _dong_34(kq, {
         "clip.opus": {
-            "url": "https://youtu.be/goc123",
+            "id": "goc12345678",
+            "url": "https://youtu.be/goc12345678",
             "title": "Video gốc",
             "upload_date": "20240102",
             "duration": 125,
@@ -130,7 +132,7 @@ def test_dung_day_du_thong_tin_nguon_va_clip_goc():
         "15/01/2025",
     ]
     assert dong[13:17] == [
-        "https://youtu.be/goc123",
+        "https://youtu.be/goc12345678",
         "Video gốc",
         "02/01/2024",
         "00:02:05",
@@ -167,11 +169,11 @@ def test_chi_lay_5_doan_dau():
     assert all("00:08:20" not in str(o) and "00:10:00" not in str(o) for o in dong)
 
 
-def test_meta_thieu_clip_de_bon_o_rong():
+def test_meta_thieu_clip_hien_basename_thay_vi_rong_im_lang():
     kq = ScanResult(source_name="x", matches=[M("khong-co-meta.opus")])
     dong = _dong_34(kq, {})
 
-    assert dong[13:17] == ["", "", "", ""]
+    assert dong[13:17] == ["", "khong-co-meta.opus", "", ""]
 
 
 def test_ket_qua_loi_van_du_34_o_va_bo_cac_doan():
@@ -192,12 +194,12 @@ def test_ket_qua_loi_van_du_34_o_va_bo_cac_doan():
 def test_to_rows_ngang_bo_qua_ket_qua_loi(engine, monkeypatch):
     so_lan_doc_meta = 0
 
-    def clip_meta():
+    def metadata_resolver():
         nonlocal so_lan_doc_meta
         so_lan_doc_meta += 1
-        return {}
+        return ClipMetadataResolver()
 
-    monkeypatch.setattr(engine, "clip_meta", clip_meta)
+    monkeypatch.setattr(engine, "clip_metadata_resolver", metadata_resolver)
     ok = ScanResult(source_name="ok", matches=[M()])
     loi = ScanResult(source_name="lỗi", matches=[M()], status="error")
 

@@ -3,6 +3,26 @@
 Ưu tiên dùng `Impact × Likelihood × Ease of verification ÷ Regression risk`. Mọi thay đổi
 trong nhóm 1–2 phải giữ nguyên thuật toán `_merge`, ngưỡng nhận diện và schema báo cáo công khai.
 
+## Vòng progress fingerprint — 2026-08-06
+
+Ưu tiên theo `Impact × Likelihood × Ease of verification ÷ Regression risk`:
+
+| Ưu tiên | Hạng mục | Trạng thái | Bằng chứng |
+|---|---|---|---|
+| P0 | Event thật từng clip/phase thay callback phần trăm nguyên khối | Hoàn tất | Unit + audfprint multi-core integration + browser smoke |
+| P0 | Không ghi trực tiếp DB thật; workspace + atomic replace | Hoàn tất | Cancel/failure sentinel regression; DB thật tạm load được |
+| P0 | Reader/poll subprocess không deadlock khi im lặng; cancel đúng cây PID | Hoàn tất | 5 subprocess tests trên Windows |
+| P1 | Controller một worker + queue bounded + session snapshot | Hoàn tất | Queue 256, recent 50, duplicate/cancel integration tests |
+| P1 | UI placeholder, bộ đếm, elapsed/rate/ETA/PID/heartbeat | Hoàn tất | Browser smoke quan sát ở 250 ms, 1,25 s, 3,75 s và cuối job |
+| P1 | Terminal + rotating file logger UTF-8, flush và traceback | Hoàn tất cho fingerprint | Log smoke có PID/phase/file/exit code; Windows handle test |
+| P2 | Check fingerprint đã có chỉ khi `so_hash > 0` | Hoàn tất | Existing được skip; zero-hash được retry |
+| P3 | Resume staged fingerprint sau cancel | Chưa làm | Cần thay đổi contract/storage audfprint, regression risk cao |
+| P3 | Nhận biết file cùng path đã đổi nội dung | Chưa làm | `.pklz` không có mtime/size/content hash; cần quyết định migration |
+
+Chi phí event đo tổng hợp trên 2.000 clip (4.002 event): median tăng 0,044421 giây, khoảng
+11 microsecond/event. Queue đạt trần 256, recent đạt trần 50, peak `tracemalloc` 657,0 KiB.
+Đây là overhead CPU của controller trong benchmark không sleep; UI thực chỉ rerun mỗi 0,75 giây.
+
 ## 1. Sửa lỗi bắt buộc
 
 | Ưu tiên | Hạng mục | Điểm tương đối | Cách xác minh |
@@ -31,7 +51,8 @@ Chưa thực hiện trong lượt sửa ít rủi ro nếu chưa có soak test:
 
 1. Tạo một job/workspace tạm riêng cho mỗi scan thay vì `data/chunks` dùng chung.
 2. Đưa khóa vào mọi entry point scan bằng wrapper `_scan_*_da_khoa`, tránh nested lock ở watch.
-3. Tách `ProcessRunner` có cancellation, timeout terminate/kill và dọn process tree.
+3. Mở rộng `process_runner.py` đã dùng cho fingerprint sang FFmpeg/yt-dlp của các flow scan/channel
+   sau khi có soak test riêng; không thay máy móc call site hiện có.
 4. Tách `HistoryStore`, `FingerprintStore` và reporter khỏi `Engine` nhưng giữ facade cũ.
 5. Gỡ import vòng báo cáo bằng protocol/type-only import.
 
@@ -59,7 +80,7 @@ Chưa thực hiện trong lượt sửa ít rủi ro nếu chưa có soak test:
 - URL: giữ test parser hiện có; không siết URL GUI làm thay đổi yt-dlp contract.
 - Filename: ký tự Windows và package secret filename case-insensitive.
 - Network: fake timeout/retry yt-dlp đã có; Google API/live outage để phase integration.
-- Cancellation: số đếm sync; subprocess tree ở phase riêng.
+- Cancellation: số đếm sync; fingerprint đã dọn đúng subprocess tree, scan/channel còn ở phase riêng.
 - Output: formula escape, RAW Sheets, không overwrite.
 - Compatibility: schema JSON cũ và constructor Engine mặc định.
 - Build: `.dockerignore`, source archive không chứa file cấm.

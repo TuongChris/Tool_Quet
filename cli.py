@@ -20,6 +20,7 @@ import don_dep
 import nhat_ky
 import watch
 from channel import ChannelSync
+from clip_metadata import configure_metadata_logging
 from dung_lai import YeuCauDung
 from engine import Engine, liet_ke_media
 
@@ -27,6 +28,8 @@ try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
+
+configure_metadata_logging()
 
 
 def in_tien_do(pct, msg):
@@ -106,6 +109,7 @@ def main():
             "file",
             "watch",
             "vameta",
+            "vametak",
             "dondep",
             "dung",
         ],
@@ -162,7 +166,8 @@ def main():
         ket_qua = ChannelSync(a.kho).va_metadata(in_tien_do)
         print(
             f"\nXONG: đã vá {ket_qua['da_va']}/{ket_qua['tong']} mục metadata, "
-            f"bỏ qua {ket_qua['bo_qua']} mục đã đủ."
+            f"bỏ qua {ket_qua['bo_qua']} mục đã đủ, "
+            f"bổ sung {ket_qua['da_them_tu_dia']} mục lấy từ tên file trên đĩa."
         )
         if ket_qua["loi"]:
             print("Lỗi:", *ket_qua["loi"], sep="\n  - ")
@@ -170,6 +175,17 @@ def main():
 
     eng = Engine()
     eng.config.ncores = a.ncores
+
+    if a.lenh == "vametak":
+        ket_qua = eng.va_metadata_thieu(in_tien_do)
+        print(
+            f"\nXONG snapshot kho «{eng.kho_dang_dung}»: "
+            f"đã vá {ket_qua['da_va']}/{ket_qua['tong']}, "
+            f"không đổi {ket_qua['bo_qua']}, lỗi {len(ket_qua['loi'])}."
+        )
+        if ket_qua["loi"]:
+            print("Lỗi:", *ket_qua["loi"][:20], sep="\n  - ")
+        return
 
     if a.lenh == "dondep":
         ket_qua = don_dep.don_kho_dem(
@@ -216,7 +232,13 @@ def main():
         if not a.muc:
             ap.error("Thiếu đường dẫn thư mục clip gốc.")
         r = eng.build_database(a.muc[0], "new" if a.lenh == "taodb" else "add", in_tien_do)
-        print(f"\nXONG: {r['so_clip']} clip trong {r['giay']:.0f} giây.")
+        trang_thai = "ĐÃ DỪNG" if r.get("da_huy") else "XONG"
+        print(
+            f"\n{trang_thai}: {r['da_xu_ly']}/{r['so_clip']} clip; "
+            f"tạo mới {r.get('thanh_cong', r['da_xu_ly'])}, "
+            f"đã có {r.get('bo_qua', 0)}, lỗi {r.get('that_bai', 0)} "
+            f"trong {r['giay']:.0f} giây."
+        )
         return
 
     if a.lenh == "youtube":

@@ -13,13 +13,14 @@ def _chuan_bi_lenh(engine, tmp_path, monkeypatch):
 
     cac_lenh = []
 
-    def run_stream(lenh, on_line=None):
+    def run_stream(lenh, on_line=None, **kwargs):
         cac_lenh.append(lenh)
         if on_line:
             if "match" in lenh:
                 on_line("Analyzed #1")
             else:
                 on_line("ingesting #1: clip.wav...")
+                Path(lenh[lenh.index("--dbase") + 1]).write_bytes(b"fake db")
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
