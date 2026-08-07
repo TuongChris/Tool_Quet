@@ -214,3 +214,58 @@ Streamlit 1.61 giải đường dẫn tương đối theo file gọi (`tests/`) 
 
 Các số ở những mục phía trên là của vòng Codex và **chưa được chạy lại** trong vòng này.
 Số liệu đã kiểm chứng nằm ở [CLAUDE_VALIDATION_REPORT.md](CLAUDE_VALIDATION_REPORT.md).
+
+
+---
+
+## Vòng ngày đăng — 2026-08-07
+
+| Bộ | Kết quả |
+|---|---|
+| `tests/test_publication_date.py` (mới) | 30 passed |
+| `tests/test_publication_date_exporters.py` (mới) | 7 passed |
+| `tests/test_kiem_ngay_dang.py` (mới) | 7 passed |
+| Fast suite toàn bộ | **400 passed, 1 skipped, 5 deselected** |
+| `ruff check .` | All checks passed |
+| `compileall`, `pip check` | sạch |
+
+Bao phủ: upload thường · premiere/scheduled (`release_timestamp` thắng
+`upload_date`) · `release_date` khi không có epoch · ranh giới 16:59:59 và 17:00:00
+UTC · cùng ngày thì không cảnh báo thừa · metadata legacy · fallback tên file và
+quy tắc metadata chính thức thắng tên file · ngày không hợp lệ · thiếu ngày ·
+epoch mili giây bị từ chối rõ ràng · epoch âm/bool/chuỗi · **độc lập múi giờ máy**
+(chạy lại trong tiến trình con với TZ = UTC / LA / Tokyo / Kiritimati) · múi giờ
+không tồn tại lùi về UTC.
+
+Guard cấu trúc: không module nào ngoài `publication_date.py` được tự định dạng
+`%d/%m/%Y`, tự quy đổi epoch, hay dùng `timedelta(days=...)` cho ngày đăng.
+Ngoại lệ liệt kê tường minh: `app.py` (đồng hồ tiến trình), `nhat_ky.py` (hạn giữ log).
+
+Regression hai video thật, fixture chứa đúng raw field dẫn tới quyết định:
+`Asv1kjFuX-4` → 01/08/2026, `T_mKh8IUpWw` → 21/06/2025.
+
+
+---
+
+## Vòng Scan Pipeline V2 — 2026-08-07
+
+| Bộ | Kết quả |
+|---|---|
+| `tests/test_scan_streaming.py` (mới) | 12 passed |
+| `tests/test_sheet_delivery.py` (mới) | 14 passed |
+| `tests/test_sheets_session.py` (mới) | 15 passed |
+| `tests/test_app_scan_progress.py` (mới) | 1 passed |
+| **Fast suite toàn bộ** | **449 passed, 1 skipped, 5 deselected** |
+| `ruff` · `compileall` · `pip check` · `git diff --check` | sạch |
+
+Bao phủ đáng chú ý:
+
+- Hai luồng quét chạy chồng nhau (`threading.Barrier`) không xoá chunk của nhau.
+- Kết quả video 1 xuất hiện khi batch chưa xong (`controller.results()` khác rỗng
+  trong lúc `completed < total`).
+- Sheets chậm 0,3 s/lần: `enqueue()` của 5 video vẫn dưới 0,2 s ⇒ scan không bị chặn.
+- Sheets sập hoàn toàn: 5/5 `failed`, không mất trạng thái, scan vẫn chạy hết.
+- Lỗi vĩnh viễn (`PERMISSION_DENIED`) chỉ thử **một** lần; lỗi tạm thời thử lại có backoff.
+- 10 lần append chỉ xác thực + mở bảng **một** lần; `get_all_values()` **0** lượt.
+- `sheets.append()` không tự thử lại ⇒ không sinh dòng trùng.
+- 12 thread append đồng thời vẫn dùng chung một kết nối.

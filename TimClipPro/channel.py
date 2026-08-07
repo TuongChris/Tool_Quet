@@ -21,11 +21,11 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Callable, Mapping, Optional
 
 from clip_metadata import filename_fallback_parts, valid_upload_date
 from luu_tru import doc_json_an_toan, ghi_json_an_toan
+from publication_date import resolve_publication_date
 
 # Ký tự Windows không cho phép đặt trong tên file
 RE_XAU = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -42,9 +42,10 @@ NETWORK_TIMEOUT_S = 30
 class VideoInfo:
     id: str
     title: str
-    upload_date: str
+    upload_date: str           # ngày đăng CHÍNH TẮC dạng YYYYMMDD (xem publication_date)
     duration: float
     url: str
+    publication_source: str = ""   # trường metadata đã sinh ra ngày trên
 
 
 def lam_sach_ten(s: str, max_len: int = 80) -> str:
@@ -54,36 +55,21 @@ def lam_sach_ten(s: str, max_len: int = 80) -> str:
     return s[:max_len].rstrip(". ") or "khong_ten"
 
 
-def _ngay_tu_timestamp(gia_tri: object) -> str:
-    """Epoch giây → ``YYYYMMDD`` theo UTC, đúng múi giờ yt-dlp dùng cho upload_date."""
-    try:
-        moc = float(gia_tri)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return ""
-    if moc <= 0:
-        return ""
-    try:
-        return datetime.fromtimestamp(moc, tz=timezone.utc).strftime("%Y%m%d")
-    except (OverflowError, OSError, ValueError):
-        return ""
-
-
 def ngay_dang_tu_info(info: Mapping | None) -> str:
-    """Rút ngày đăng từ info của yt-dlp, chấp nhận nhiều tên trường.
+    """Ngày đăng chính tắc (``YYYYMMDD``) từ info của yt-dlp.
 
-    Ở chế độ ``extract_flat`` YouTube thường không trả ``upload_date``, nhưng một số
-    entry (premiere, livestream đã kết thúc) có ``release_timestamp``/``timestamp``.
-    Lấy được cái nào thì dùng cái đó; không suy đoán.
+    Uỷ quyền cho :mod:`publication_date` để cả dự án dùng chung một quy tắc.
+    Trước đây hàm này ưu tiên ``upload_date`` — mà đó là ngày theo lịch **UTC**,
+    lệch một ngày so với ngày người dùng Việt Nam nhìn thấy đối với video phát
+    hành từ 17:00 UTC trở đi. Nay ưu tiên trường có thời điểm chính xác
+    (``release_timestamp``/``timestamp``) vì chỉ nó mới quy đổi được múi giờ.
     """
-    info = info or {}
-    ngay = valid_upload_date(info.get("upload_date"))
-    if ngay:
-        return ngay
-    for khoa in ("release_timestamp", "timestamp"):
-        ngay = _ngay_tu_timestamp(info.get(khoa))
-        if ngay:
-            return ngay
-    return ""
+    return resolve_publication_date(info or {}).yyyymmdd
+
+
+def provenance_ngay_dang(info: Mapping | None) -> dict:
+    """Ngày đăng kèm nguồn gốc, để lưu vào clips_meta.json cho audit về sau."""
+    return resolve_publication_date(info or {}).to_dict()
 
 
 def bo_sung_video_info(v: VideoInfo, info: Mapping | None) -> VideoInfo:
@@ -92,7 +78,7 @@ def bo_sung_video_info(v: VideoInfo, info: Mapping | None) -> VideoInfo:
     Chỉ ghi đè khi giá trị mới thực sự có; không bao giờ thay dữ liệu tốt bằng rỗng.
     """
     info = info or {}
-    ngay = ngay_dang_tu_info(info)
+    ket_qua = resolve_publication_date(info)
     try:
         thoi_luong = float(info.get("duration") or 0)
     except (TypeError, ValueError):
@@ -100,9 +86,10 @@ def bo_sung_video_info(v: VideoInfo, info: Mapping | None) -> VideoInfo:
     return VideoInfo(
         id=str(info.get("id") or v.id),
         title=str(info.get("title") or v.title),
-        upload_date=ngay or v.upload_date,
+        upload_date=ket_qua.yyyymmdd or v.upload_date,
         duration=thoi_luong if thoi_luong > 0 else v.duration,
         url=v.url,
+        publication_source=ket_qua.source_field or v.publication_source,
     )
 
 
@@ -454,9 +441,14 @@ class ChannelSync:
                 f"[{i+1}/{len(can_tai)}] {v.title[:60]}")
             try:
                 f, v = self._tai_va_nen(v)
+                ngay = valid_upload_date(v.upload_date)
                 meta[os.path.basename(f)] = {
                     "id": v.id, "title": v.title,
-                    "upload_date": valid_upload_date(v.upload_date),
+                    # upload_date giữ tên cũ để bản đọc metadata cũ vẫn chạy;
+                    # publication_date là trường chính tắc kèm nguồn gốc.
+                    "upload_date": ngay,
+                    "publication_date": ngay,
+                    "publication_date_source": v.publication_source,
                     "duration": v.duration, "url": f"https://youtu.be/{v.id}",
                 }
                 self.save_meta(meta)

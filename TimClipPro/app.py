@@ -22,6 +22,8 @@ from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
 from clip_metadata import configure_metadata_logging
 from engine import Engine, ScanResult, hhmmss, o_bang_tinh_an_toan
 from fingerprint_progress import FingerprintJobController
+from scan_jobs import QUET_DANG_CHAY, QUET_LOI, QUET_XONG, ScanJobController
+from sheet_delivery import SheetDelivery, SheetDeliveryWorker, khoa_giao_hang
 from channel import ChannelSync
 from sheets import SheetsExporter
 
@@ -70,6 +72,59 @@ def _dong_bo_job_van_tay() -> None:
 
 
 _dong_bo_job_van_tay()
+
+
+if "scan_sheet_worker" not in st.session_state:
+    st.session_state.scan_sheet_worker = SheetDeliveryWorker(
+        sender=lambda header, rows: lay_sheets().append(header, rows)
+    )
+if "scan_controller" not in st.session_state:
+    st.session_state.scan_controller = ScanJobController(
+        eng, sheet_worker=st.session_state.scan_sheet_worker
+    )
+scan_sheet_worker: SheetDeliveryWorker = st.session_state.scan_sheet_worker
+scan_controller: ScanJobController = st.session_state.scan_controller
+
+
+def chay_quet(nguon: list, source_type: str) -> None:
+    """Khởi động batch quét. Kết quả hiện ngay từng video; Sheets gửi song song."""
+    if job.get("running") or scan_controller.running:
+        st.warning("Đang có tác vụ chạy; không tạo job trùng.")
+        return
+    tu_dong_sheet = bool(st.session_state.sheet_auto)
+    dang_ngang = bool(st.session_state.sheet_dang_ngang)
+    if tu_dong_sheet:
+        scan_sheet_worker.start()
+
+    def sau_moi_video(index: int, tong: int, ket_qua) -> None:
+        """Chạy trong scan worker — chỉ xếp hàng, tuyệt đối không chờ Google."""
+        if not tu_dong_sheet or ket_qua.status != "ok":
+            return
+        if dang_ngang:
+            header, rows = bang_ngang.HEADER_NGANG, eng.to_rows_ngang([ket_qua])
+        else:
+            header, rows = eng.HEADER, eng.to_rows([ket_qua])
+        if not rows:
+            return
+        rows = [[o_bang_tinh_an_toan(o) for o in dong] for dong in rows]
+        khoa = khoa_giao_hang(
+            lay_sheets().sheet_id, "", "ngang" if dang_ngang else "doc",
+            ket_qua.job_id, ket_qua.source_id, rows,
+        )
+        scan_sheet_worker.enqueue(SheetDelivery(
+            delivery_key=khoa,
+            source_id=ket_qua.source_id or "",
+            source_name=ket_qua.source_name or "",
+            header=header, rows=rows,
+        ))
+        scan_controller.ghi_nhan_giao_hang(index, khoa)
+
+    batch_id = scan_controller.start(nguon, source_type, on_result=sau_moi_video)
+    job.update({
+        "running": True, "pct": 0.0, "msg": "Đang chuẩn bị...", "results": [],
+        "error": "", "kind": "scan", "da_day_sheet": True, "scan_batch_id": batch_id,
+    })
+    st.rerun()
 
 
 def chay_nen(kind: str, ham, *args, **kwargs):
@@ -131,6 +186,31 @@ TEN_PHASE = {
     "completed": "Hoàn tất",
     "cancelled": "Đã dừng",
     "failed": "Thất bại",
+}
+
+TEN_PHASE_QUET = {
+    "queued": "Đang chờ",
+    "fetching_metadata": "Đang lấy thông tin video",
+    "downloading": "Đang tải audio",
+    "chunking": "Đang cắt khúc",
+    "matching": "Đang so khớp vân tay",
+    "merging": "Đang tổng hợp kết quả",
+    "completed": "Hoàn tất",
+    "failed": "Lỗi",
+    "cancelled": "Đã dừng",
+}
+TEN_TRANG_THAI_QUET = {
+    QUET_XONG: "✅ Xong",
+    QUET_LOI: "❌ Lỗi",
+    QUET_DANG_CHAY: "⏳ Đang chạy",
+    "queued": "Chờ",
+}
+TEN_TRANG_THAI_SHEET = {
+    "pending": "Chờ gửi",
+    "sending": "Đang gửi",
+    "sent": "✅ Đã gửi",
+    "retrying": "Đang thử lại",
+    "failed": "❌ Lỗi",
 }
 
 
@@ -498,6 +578,57 @@ if job["running"]:
             "Trang tự làm mới từ queue bounded; worker không gọi Streamlit trực tiếp. "
             "Log kỹ thuật: `ketqua/fingerprint.log`."
         )
+    elif job.get("kind") == "scan":
+        anh = scan_controller.snapshot()
+        if not scan_controller.running:
+            job["running"] = False
+            job["results"] = scan_controller.results()
+            job["error"] = scan_controller.error
+
+        st.header("🔍 Đang quét video")
+        st.progress(
+            anh.batch_progress,
+            text=f"{anh.completed + anh.failed} / {anh.total} video — "
+                 f"{anh.batch_progress * 100:.0f}%",
+        )
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Hoàn tất", anh.completed)
+        b2.metric("Lỗi", anh.failed)
+        b3.metric("Đã chạy", _thoi_luong(anh.elapsed_seconds))
+        b4.metric("ETA", _thoi_luong(anh.eta_seconds))
+
+        if 0 < anh.current_index <= len(anh.videos):
+            v = anh.videos[anh.current_index - 1]
+            st.info(
+                f"**[{v.index}/{anh.total}] {v.title or v.nguon[:70]}**  \n"
+                f"Công đoạn: {TEN_PHASE_QUET.get(v.phase, v.phase)} · "
+                f"Đã chạy video: {_thoi_luong(v.elapsed)}  \n"
+                f"{v.message}"
+            )
+
+        tt_sheet = scan_sheet_worker.snapshot()
+        st.dataframe(pd.DataFrame([{
+            "#": v.index,
+            "Video": (v.title or v.nguon)[:60],
+            "Quét": TEN_TRANG_THAI_QUET.get(v.scan_status, v.scan_status),
+            "Đoạn": "—" if v.matches is None else v.matches,
+            "Sheets": (
+                TEN_TRANG_THAI_SHEET.get(tt_sheet[v.delivery_key].status,
+                                         tt_sheet[v.delivery_key].status)
+                if v.delivery_key and v.delivery_key in tt_sheet else "—"
+            ),
+        } for v in anh.videos]), width="stretch", hide_index=True, height=260)
+
+        tom_tat = scan_sheet_worker.tom_tat()
+        if tom_tat["tong"]:
+            st.caption(
+                f"Google Sheets — đã gửi {tom_tat['da_gui']}, "
+                f"đang chờ {tom_tat['cho_gui']}, lỗi {tom_tat['that_bai']}. "
+                "Quét không chờ Sheets."
+            )
+        if st.button("⏹️ Dừng lại", type="secondary", disabled=anh.cancelled):
+            scan_controller.cancel()
+            st.warning("Đã gửi yêu cầu dừng; kết quả đã xong vẫn được giữ.")
     else:
         st.header("⏳ Đang xử lý...")
         st.progress(job["pct"], text=f"{job['pct']*100:.0f}%")
@@ -915,7 +1046,7 @@ with tab2:
     if links:
         st.caption(f"Đã nhận {len(links)} link.")
     if st.button("🚀 Bắt đầu quét", type="primary", disabled=not links or not env["database"]):
-        chay_nen("scan", eng.scan_many, links, "youtube")
+        chay_quet(links, "youtube")
     if not env["database"]:
         st.warning("Chưa có kho vân tay — hãy làm tab «Kho clip gốc» trước.")
 
@@ -944,7 +1075,7 @@ with tab3:
             st.error("Không tìm thấy đường dẫn này.")
     if st.button("🚀 Bắt đầu quét", key="quet_file", type="primary",
                  disabled=not ds_file or not env["database"]):
-        chay_nen("scan", eng.scan_many, ds_file, "file")
+        chay_quet(ds_file, "file")
 
 # ---------------------------------------------------------------- TAB 4
 with tab4:

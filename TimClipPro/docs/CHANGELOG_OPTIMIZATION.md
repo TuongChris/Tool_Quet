@@ -210,3 +210,79 @@ Test mới: `tests/test_ngay_dang.py` (12 test, không gọi mạng).
 Test mới trong `tests/test_fingerprint_engine_progress.py`: phase `decoding` đến từ event
 thật (có tên clip + PID), và `clip_phase` mang pha kết thúc/không hợp lệ thì bị bỏ qua.
 `pytest -m slow` chạy **3 lượt liên tiếp, 5 passed mỗi lượt** — hết flaky.
+
+### Ngày đăng video: chốt theo múi giờ người dùng
+
+`upload_date` của yt-dlp là ngày theo lịch **UTC**. Người dùng ở `Asia/Ho_Chi_Minh`
+(UTC+7) thấy ngày khác khi video phát hành từ **17:00 UTC** trở đi — đúng 1 ngày,
+không bao giờ 2. Đó là lý do chỉ một số video sai.
+
+- **`publication_date.py`** (mới): `PublicationDateResolver` + `PublicationDateResult`
+  (date, source_field, raw_value, confidence, warnings) + `format_publication_date()`.
+  Ưu tiên `release_timestamp` → `timestamp` → `release_date` → `upload_date` →
+  tên file. Trường có thời điểm chính xác luôn thắng trường chỉ có ngày, vì chỉ nó
+  mới quy đổi được múi giờ.
+- **`engine.youtube_info()`**: chốt ngày chính tắc ngay tại tầng nạp metadata, trả
+  thêm `upload_date_raw`, `publication_date_source`, `publication_date_confidence`.
+- **`channel.ngay_dang_tu_info()`**: trước đây ưu tiên `upload_date` nên nhánh đọc
+  `timestamp` không bao giờ chạy; nay uỷ quyền cho resolver.
+- **`channel.sync()`**: ghi thêm `publication_date` + `publication_date_source` vào
+  `clips_meta.json`, giữ `upload_date` cho bản đọc cũ.
+- **`clip_metadata.source_from_mapping()`**: đọc `publication_date` trước, lùi về
+  `upload_date` cho kho cũ (đường bình thường, không phát cảnh báo).
+- **`bang_ngang.dinh_dang_ngay()`**: uỷ quyền cho `format_publication_date()` — một
+  hàm định dạng duy nhất cho CSV ngang, Sheets và UI.
+- **`kiem_ngay_dang.py`** (mới): audit / repair-offline / repair-network, mặc định
+  chỉ đọc, có dry-run, backup, ghi nguyên tử, `--limit`.
+
+Kiểm chứng: hai video mẫu qua đúng đường của tool cho `01/08/2026` và `21/06/2025`,
+khớp giá trị người dùng đã xác minh. Mẫu 25 clip kho Cory: 22 lệch 1 ngày, 3 đúng,
+0 lỗi (dry-run, không ghi). 400 passed, 1 skipped.
+
+### Scan Pipeline V2 — streaming result, Sheets không chặn, workspace riêng
+
+- **`engine.Engine.scan_workspace()`** (mới): mỗi lượt quét có `data/scan_jobs/<uuid>/`
+  riêng. Trước đây `_cut_chunks` `rmtree` thư mục CHUNG `data/chunks` ngay đầu hàm và
+  `_match_chunks` ghi `data/_ds_khuc.txt` / `data/_raw_match.txt` cố định — hai luồng
+  quét đồng thời (GUI + Watch) xoá chunk của nhau. Đây là lỗi ĐÚNG/SAI, không phải chậm.
+- **`engine.Engine.scan_iter()`** (mới): generator, yield từng `ScanResult` ngay khi
+  xong, kèm `on_video` callback. `scan_many()` giờ là `list(scan_iter(...))` nên mọi
+  call site cũ (CLI, Watch, test) giữ nguyên hành vi.
+- **`scan_jobs.py`** (mới): `ScanJobController` + `VideoState` + `BatchSnapshot`. Một
+  worker thread, snapshot bất biến cho UI, ETA theo trung bình trượt, tách hẳn trạng
+  thái QUÉT khỏi trạng thái GIAO SHEETS.
+- **`sheet_delivery.py`** (mới): `SheetDeliveryWorker` chạy thread riêng. Scan worker
+  chỉ `enqueue()` rồi đi tiếp. Retry phân loại (429/5xx/timeout thử lại;
+  PERMISSION_DENIED/404 dừng ngay), backoff mũ, khoá idempotency SHA-256 chống ghi trùng.
+- **`app.py`**: màn hình quét mới — batch progress, Hoàn tất/Lỗi/Đã chạy/ETA, video
+  hiện tại kèm công đoạn, bảng từng video (Quét · Đoạn · Sheets), tóm tắt Sheets.
+
+Đo được (10 video, quét 0,3 s/video, Sheets 1,5 s/lần): người dùng thấy kết quả sau
+**3,00 s** thay vì **18,01 s** — sớm hơn 83 %.
+
+### Dùng lại kết nối Google Sheets
+
+`sheets.append()` trước đây mỗi lần gọi đều `service_account()` → `open_by_key()` →
+`worksheet()` → `get_all_values()`. Riêng `get_all_values()` **tải toàn bộ bảng** chỉ
+để hỏi «bảng có trống không», nên chi phí tăng theo số dòng đã tích luỹ. Với
+incremental delivery, số lần append tăng từ 1/batch lên 1/video nên điểm này thành nút thắt.
+
+- Cache kết nối ở **cấp module** (không phải cấp instance) vì `app.py` tạo
+  `SheetsExporter` mới mỗi lần đẩy; khoá cache gồm mtime của `google_key.json` nên
+  thay khoá là tự xác thực lại.
+- Kiểm tra header bằng cách đọc **ô A1** thay vì tải cả bảng, và chỉ đọc **một lần**
+  cho cả phiên.
+- Lỗi khi ghi thì bỏ cache để lần sau kết nối lại, nhưng **không tự thử lại append** —
+  lượt ghi có thể đã tới Google, thử lại tại đây sẽ tạo dòng trùng. Việc thử lại là
+  của `SheetDeliveryWorker`.
+- `kiem_tra()` vẫn mở kết nối mới để «Kiểm tra kết nối» thật sự chạm tới Google.
+
+Đo được (10 video, bảng đã có 2000 dòng, 0,25 s/lượt API):
+
+| | Lượt gọi API | Thời gian |
+| --- | ---: | ---: |
+| Trước | 50 | 22,54 s |
+| Sau | **14** | **3,50 s** |
+
+Test mới: `tests/test_scan_streaming.py` (12), `tests/test_sheet_delivery.py` (14),
+`tests/test_sheets_session.py` (15), `tests/test_app_scan_progress.py` (1).

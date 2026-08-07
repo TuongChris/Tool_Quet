@@ -42,6 +42,7 @@ def test_youtube_info_lay_du_khoa(engine, monkeypatch):
         "channel_id": "UC123",
         "channel_url": "https://youtube.com/channel/UC123",
         "upload_date": "20260726",
+        "timestamp": 1785060000,        # 2026-07-26 10:00:00 UTC -> 17:00 giờ VN
     }
     monkeypatch.setattr(
         yt_dlp,
@@ -50,6 +51,10 @@ def test_youtube_info_lay_du_khoa(engine, monkeypatch):
     )
 
     ket_qua = engine.youtube_info("https://youtu.be/abc123")
+    # youtube_info nay chot luon ngay dang chinh tac + nguon goc.
+    assert ket_qua.pop("upload_date_raw") == "20260726"
+    assert ket_qua.pop("publication_date_source") == "timestamp"
+    assert ket_qua.pop("publication_date_confidence") == "high"
 
     assert ket_qua == {
         "id": "abc123",

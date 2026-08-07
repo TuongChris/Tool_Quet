@@ -341,10 +341,20 @@ def source_from_mapping(
                 url = ""
                 entry_warnings.append("invalid_url")
 
-        raw_date = raw_value.get("upload_date")
+        # `publication_date` là trường chính tắc (ngày người dùng nhìn thấy trên
+        # YouTube, đã quy đổi múi giờ). `upload_date` là schema cũ, chỉ dùng khi
+        # entry chưa được nâng cấp — xem docs/PUBLICATION_DATE_ARCHITECTURE.md.
+        raw_date = raw_value.get("publication_date")
         upload_date = _valid_upload_date(raw_date)
-        if raw_date not in (None, "", "00000000") and not upload_date:
-            entry_warnings.append("invalid_upload_date")
+        if not upload_date:
+            if raw_date not in (None, "", "00000000"):
+                entry_warnings.append("invalid_publication_date")
+            # Rơi về schema cũ là đường chạy BÌNH THƯỜNG với kho đã có từ trước,
+            # không phải lỗi — tuyệt đối không phát cảnh báo ở đây.
+            raw_date = raw_value.get("upload_date")
+            upload_date = _valid_upload_date(raw_date)
+            if raw_date not in (None, "", "00000000") and not upload_date:
+                entry_warnings.append("invalid_upload_date")
 
         raw_duration = raw_value.get("duration")
         duration = _valid_duration(raw_duration)

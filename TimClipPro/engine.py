@@ -63,9 +63,11 @@ from fingerprint_progress import (
 from khoa import KhoaTienTrinh
 from luu_tru import LoiDuLieu, doc_json_an_toan, ghi_json_an_toan
 from process_runner import ProcessSnapshot, run_observed_process
+from publication_date import ghi_log_chan_doan, resolve_publication_date
 
 
 LOGGER_METADATA = logging.getLogger("clip_metadata")
+LOGGER_SCAN = logging.getLogger("scan.job")
 
 # Phase mà wrapper audfprint được phép áp cho một clip đang chạy. Danh sách hẹp để
 # một dòng stdout bị hỏng không đẩy job sang trạng thái kết thúc giả.
@@ -1636,6 +1638,10 @@ class Engine:
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
+        # Ngày đăng phải được chốt NGAY TẠI ĐÂY, ở tầng nạp metadata. Exporter chỉ
+        # định dạng lại, không bao giờ hỏi YouTube lần nữa.
+        ngay = resolve_publication_date(info)
+        ghi_log_chan_doan(str(info.get("id") or ""), ngay, info)
         return {
             "id": info.get("id", ""),
             "title": info.get("title", url),
@@ -1646,7 +1652,12 @@ class Engine:
             "channel_url": (
                 info.get("channel_url") or info.get("uploader_url") or ""
             ),
-            "upload_date": str(info.get("upload_date") or ""),
+            # Giữ tên khoá cũ nhưng mang giá trị CHÍNH TẮC; `upload_date_raw` để
+            # chẩn đoán, không dùng cho báo cáo.
+            "upload_date": ngay.yyyymmdd,
+            "upload_date_raw": str(info.get("upload_date") or ""),
+            "publication_date_source": ngay.source_field or "",
+            "publication_date_confidence": ngay.confidence,
         }
 
     def download_audio(self, url: str, video_id: str,
@@ -1734,12 +1745,33 @@ class Engine:
         self._bao(progress, pct, thong_tin)
         return overlap
 
+    @contextlib.contextmanager
+    def scan_workspace(self, scan_job_id: Optional[str] = None):
+        """Workspace riêng cho MỘT lượt quét.
+
+        Trước đây mọi lượt quét dùng chung ``data/chunks``, ``data/_ds_khuc.txt`` và
+        ``data/_raw_match.txt``; ``_cut_chunks`` còn ``rmtree`` thư mục chung ngay
+        đầu hàm. Hai luồng quét đồng thời (GUI + Watch, hoặc hai batch) sẽ xoá chunk
+        của nhau — đó là lỗi ĐÚNG/SAI chứ không phải chậm. Mỗi lượt quét nay có thư
+        mục riêng nên không thể giẫm chân nhau.
+        """
+        goc = os.path.join(self.data_dir, "scan_jobs", scan_job_id or uuid.uuid4().hex)
+        os.makedirs(os.path.join(goc, "chunks"), exist_ok=True)
+        try:
+            yield goc
+        finally:
+            shutil.rmtree(goc, ignore_errors=True)
+
     def _cut_chunks(self, media: str, progress: Optional[Callable] = None,
-                    pct0: float = 0.40, pct1: float = 0.60) -> tuple:
+                    pct0: float = 0.40, pct1: float = 0.60,
+                    workspace: Optional[str] = None) -> tuple:
         cfg = self.config
         overlap = self._overlap_thuc_te(progress, pct0)
-        shutil.rmtree(self.chunk_dir, ignore_errors=True)
-        os.makedirs(self.chunk_dir, exist_ok=True)
+        # Không có workspace (call site cũ) thì giữ nguyên hành vi cũ để tương thích.
+        chunk_dir = os.path.join(workspace, "chunks") if workspace else self.chunk_dir
+        if not workspace:
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+        os.makedirs(chunk_dir, exist_ok=True)
 
         tong = self.duration_of(media)
         if not tong:
@@ -1754,7 +1786,7 @@ class Engine:
         ds = []
         for i, bat_dau in enumerate(moc):
             self._check_cancel()
-            out = os.path.join(self.chunk_dir, f"chunk_{int(bat_dau):07d}.wav")
+            out = os.path.join(chunk_dir, f"chunk_{int(bat_dau):07d}.wav")
             r = subprocess.run(
                 ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                  "-ss", str(bat_dau), "-t", str(cfg.chunk_s), "-i", media,
@@ -1767,11 +1799,13 @@ class Engine:
         return ds, tong
 
     def _match_chunks(self, chunks: list, progress: Optional[Callable] = None,
-                      pct0: float = 0.60, pct1: float = 0.95) -> list:
-        listfile = os.path.join(self.data_dir, "_ds_khuc.txt")
+                      pct0: float = 0.60, pct1: float = 0.95,
+                      workspace: Optional[str] = None) -> list:
+        goc = workspace or self.data_dir
+        listfile = os.path.join(goc, "_ds_khuc.txt")
         with open(listfile, "w", encoding="utf-8") as f:
             f.write("\n".join(chunks))
-        opfile = os.path.join(self.data_dir, "_raw_match.txt")
+        opfile = os.path.join(goc, "_raw_match.txt")
         if os.path.exists(opfile):
             os.remove(opfile)
 
@@ -2029,11 +2063,16 @@ class Engine:
         try:
             if not os.path.isfile(path):
                 raise RuntimeError(f"Không tìm thấy file: {path}")
-            chunks, tong = self._cut_chunks(path, progress, pct_start, p_cut1)
-            kq.duration_s = tong
-            if not chunks:
-                raise RuntimeError("Không cắt được khúc nào từ file này.")
-            tho = self._match_chunks(chunks, progress, p_cut1, p_match1)
+            with self.scan_workspace() as ws:
+                chunks, tong = self._cut_chunks(
+                    path, progress, pct_start, p_cut1, workspace=ws
+                )
+                kq.duration_s = tong
+                if not chunks:
+                    raise RuntimeError("Không cắt được khúc nào từ file này.")
+                tho = self._match_chunks(
+                    chunks, progress, p_cut1, p_match1, workspace=ws
+                )
             tat_ca = self._merge(tho)
             if self.canh_bao_gop:
                 kq.note = "\n".join(self.canh_bao_gop)
@@ -2102,17 +2141,47 @@ class Engine:
             kq.job_id = self.save_job(kq, "youtube")
         return kq
 
+    def scan_iter(
+        self,
+        nguon: Iterable,
+        source_type: str = "youtube",
+        progress: Optional[Callable] = None,
+        on_video: Optional[Callable] = None,
+    ):
+        """Quét lần lượt nhiều nguồn, **yield từng ScanResult ngay khi xong**.
+
+        Đây là API nền cho streaming result: người dùng thấy kết quả video 1 mà
+        không phải chờ video 10. ``scan_many()`` giờ chỉ là ``list(scan_iter(...))``
+        nên mọi call site cũ (CLI, Watch, test) giữ nguyên hành vi.
+
+        ``on_video(index, total, ket_qua)`` được gọi ngay sau mỗi video — dùng để
+        đẩy Sheets/ghi UI mà không chặn video kế tiếp. Ngoại lệ trong callback được
+        nuốt có chủ đích và ghi log: một lỗi ở tầng giao hàng không được phép làm
+        hỏng lượt quét đang chạy tốt.
+        """
+        nguon = list(nguon)
+        tong = len(nguon)
+        for i, x in enumerate(nguon, 1):
+            def p(pct, msg, i=i):
+                self._bao(progress, (i - 1 + pct) / max(1, tong), f"[{i}/{tong}] {msg}")
+
+            ket_qua = (
+                self.scan_youtube(x, p) if source_type == "youtube"
+                else self.scan_media(x, progress=p)
+            )
+            if on_video:
+                try:
+                    on_video(i, tong, ket_qua)
+                except Exception:  # noqa: BLE001
+                    LOGGER_SCAN.exception(
+                        "event=scan.on_video_callback_failed index=%d total=%d", i, tong
+                    )
+            yield ket_qua
+
     def scan_many(self, nguon: Iterable, source_type: str = "youtube",
                   progress: Optional[Callable] = None) -> list:
         """Quét lần lượt nhiều nguồn. progress nhận thêm tiền tố [i/n]."""
-        nguon = list(nguon)
-        ket = []
-        for i, x in enumerate(nguon, 1):
-            def p(pct, msg, i=i):
-                self._bao(progress, (i - 1 + pct) / len(nguon), f"[{i}/{len(nguon)}] {msg}")
-            ket.append(self.scan_youtube(x, p) if source_type == "youtube"
-                       else self.scan_media(x, progress=p))
-        return ket
+        return list(self.scan_iter(nguon, source_type, progress))
 
     def cancel(self) -> None:
         self.cancel_event.set()

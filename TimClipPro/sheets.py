@@ -17,11 +17,37 @@ Nếu chưa thiết lập, hệ thống vẫn chạy bình thường — chỉ l
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import threading
+from dataclasses import dataclass
 from typing import Optional
 
 TEN_FILE_KEY = "google_key.json"
+
+LOGGER = logging.getLogger("scan.sheet")
+
+
+@dataclass
+class _KetNoi:
+    """Kết nối đã mở, dùng lại giữa nhiều lần append."""
+
+    worksheet: object
+    da_co_header: bool = False
+
+
+# Cache ở cấp MODULE chứ không phải cấp instance, vì `app.py` tạo một
+# `SheetsExporter` mới cho mỗi lần đẩy (`lay_sheets()`); cache theo instance sẽ
+# không bao giờ trúng. Khoá gồm mtime của file key nên thay khoá là tự kết nối lại.
+_KHOA = threading.RLock()
+_CACHE: dict[tuple, _KetNoi] = {}
+
+
+def xoa_cache_ket_noi() -> None:
+    """Buộc lần sau mở kết nối mới. Dùng khi đổi key/sheet hoặc trong test."""
+    with _KHOA:
+        _CACHE.clear()
 
 
 def _lay_sheet_id(s: str) -> str:
@@ -78,7 +104,16 @@ class SheetsExporter:
 
     # ---------- kết nối ----------
 
+    def _khoa_cache(self) -> tuple:
+        try:
+            moc = os.stat(self.key_path).st_mtime_ns
+        except OSError:
+            moc = 0
+        return (os.path.normcase(os.path.abspath(self.key_path)), moc,
+                self.sheet_id, self.worksheet)
+
     def _mo_worksheet(self, so_cot: int = 12):
+        """Mở worksheet MỚI. Không dùng cache — dành cho «Kiểm tra kết nối»."""
         import gspread
         gc = gspread.service_account(filename=self.key_path)
         sh = gc.open_by_key(self.sheet_id)
@@ -86,6 +121,28 @@ class SheetsExporter:
             return sh.worksheet(self.worksheet)
         except gspread.WorksheetNotFound:
             return sh.add_worksheet(title=self.worksheet, rows=1000, cols=max(so_cot, 12))
+
+    def _ket_noi(self, so_cot: int = 12) -> _KetNoi:
+        """Kết nối dùng lại: xác thực + mở bảng + mở trang tính đúng MỘT lần.
+
+        Trước đây mỗi ``append()`` gọi lại ``service_account()`` →
+        ``open_by_key()`` → ``worksheet()``, tức 3 lượt thiết lập mỗi video.
+        """
+        khoa = self._khoa_cache()
+        with _KHOA:
+            ket_noi = _CACHE.get(khoa)
+            if ket_noi is not None:
+                return ket_noi
+            ket_noi = _KetNoi(worksheet=self._mo_worksheet(so_cot))
+            _CACHE[khoa] = ket_noi
+            LOGGER.info(
+                "event=scan.sheet.connection_opened worksheet=%r", self.worksheet
+            )
+            return ket_noi
+
+    def _bo_ket_noi(self) -> None:
+        with _KHOA:
+            _CACHE.pop(self._khoa_cache(), None)
 
     def kiem_tra(self) -> tuple:
         """Trả về (thành_công, thông_báo). Dùng cho nút «Kiểm tra kết nối»."""
@@ -115,9 +172,36 @@ class SheetsExporter:
         if not self.san_sang():
             raise RuntimeError(self.thieu_gi())
 
-        ws = self._mo_worksheet(len(header))
-        if ghi_header_neu_trong and not ws.get_all_values():
-            ws.append_row([str(x) for x in header], value_input_option="RAW")
-        ws.append_rows([[("" if v is None else str(v)) for v in r] for r in rows],
-                       value_input_option="RAW")
+        ket_noi = self._ket_noi(len(header))
+        ws = ket_noi.worksheet
+        try:
+            if ghi_header_neu_trong and not ket_noi.da_co_header:
+                if not self._co_header(ws):
+                    ws.append_row([str(x) for x in header], value_input_option="RAW")
+                # Header đã tồn tại thì không thể biến mất giữa phiên; nhớ lại để
+                # những lần append sau khỏi hỏi Google thêm lần nào nữa.
+                ket_noi.da_co_header = True
+            ws.append_rows(
+                [[("" if v is None else str(v)) for v in r] for r in rows],
+                value_input_option="RAW",
+            )
+        except Exception:
+            # Kết nối có thể đã hỏng (token/socket). Bỏ cache để lần sau mở lại,
+            # nhưng KHÔNG tự thử lại append: một lần ghi có thể đã tới Google rồi,
+            # thử lại ở đây sẽ tạo dòng trùng. Việc thử lại là của SheetDeliveryWorker.
+            self._bo_ket_noi()
+            raise
         return len(rows)
+
+    @staticmethod
+    def _co_header(ws) -> bool:
+        """Kiểm tra ô A1 thay vì tải cả bảng.
+
+        ``get_all_values()`` kéo về TOÀN BỘ sheet chỉ để trả lời «có trống không» —
+        chi phí tăng theo số dòng đã tích luỹ. Đọc một ô là đủ và không đổi theo
+        kích thước bảng. Bản gspread cũ không có ``get_values`` thì lùi về cách cũ.
+        """
+        lay = getattr(ws, "get_values", None)
+        if callable(lay):
+            return bool(lay("A1"))
+        return bool(ws.get_all_values())

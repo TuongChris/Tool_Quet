@@ -6,6 +6,7 @@ from typing import Any
 
 from clip_metadata import ClipMetadataResolver
 from engine import Engine, hhmmss
+from publication_date import format_publication_date
 
 
 SO_DOAN = 5
@@ -48,15 +49,13 @@ HEADER_NGANG: list = [
 ]
 
 
-def dinh_dang_ngay(s: str) -> str:
-    """Đổi "20250115" -> "15/01/2025". Rỗng hoặc sai định dạng -> ""."""
-    if not isinstance(s, str) or len(s) != 8 or not s.isdigit() or s == "00000000":
-        return ""
-    try:
-        ngay = datetime.strptime(s, "%Y%m%d")
-    except ValueError:
-        return ""
-    return ngay.strftime("%d/%m/%Y")
+def dinh_dang_ngay(s) -> str:
+    """Đổi "20250115" -> "15/01/2025". Rỗng hoặc sai định dạng -> "".
+
+    Uỷ quyền cho ``publication_date.format_publication_date`` để mọi exporter
+    (CSV ngang, CSV dọc, Markdown, Sheets, UI) dùng đúng một hàm định dạng.
+    """
+    return format_publication_date(s)
 
 
 def dinh_dang_doan(m: Any, source_id: str, source_ref: str) -> str:
