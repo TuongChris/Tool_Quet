@@ -324,3 +324,33 @@ Test mới: `tests/test_scan_ui_schema.py` (9), `tests/test_scan_thread_boundary
 `tests/test_app_scan_no_warnings.py` (1). Có guard cấu trúc dùng `tokenize` để chặn
 `scan_jobs.py`/`sheet_delivery.py`/`scan_ui.py` chạm Streamlit — và một test tự kiểm
 tra guard đó thật sự bắt được vi phạm.
+
+### Chọn kết quả đại diện: ngang bằng thì ưu tiên đoạn dễ kiểm tra
+
+Với `top_n = 1`, `_chon_loc` chia video thành `duration/1` tức **một vùng duy nhất**,
+nên Top-1 trước đây thuần tuý là `max(hashes)` — vị trí không đóng vai trò gì. Video
+compilation dài có thể trả về đoạn nằm ở giờ thứ 35, dù có đoạn tương đương ở giờ thứ 4.
+
+- **`engine.chon_dai_dien()`** (mới, hàm thuần): chọn đại diện trong một nhóm ứng viên.
+  Chất lượng quyết định trước; chỉ trong nhóm **ngang bằng** mới xét độ dễ kiểm tra.
+- **`engine.chi_phi_kiem_tra()`** (mới): `(start_s/duration, start_s)` — dùng cả tỉ lệ
+  lẫn giây tuyệt đối vì 45% của video 12 tiếng vẫn là hơn 5 tiếng tua. Không biết thời
+  lượng thì lùi về giây tuyệt đối.
+- **`Config.dung_sai_gan_bang = 0.03`** (mới, có validate 0..0.5).
+- `_chon_loc` dùng `chon_dai_dien` ở cả nhánh phân bổ đều lẫn nhánh thường.
+
+"Ngang bằng" đòi hỏi **cả** số hash **và** thời lượng khớp đạt ≥97% của ứng viên tốt
+nhất, cùng bậc phân loại. Điều kiện thời lượng chặn ca đoạn 20 giây ở đầu video thắng
+đoạn 15 phút rõ ràng.
+
+Hiệu chỉnh dung sai bằng dữ liệu thật (200 job trong `lichsu.db`): trung vị
+`hashes(#2)/hashes(#1)` = **0,921** nên near-tie là chuyện thường; dung sai 10% sẽ đảo
+62% kết quả. Ở mức 3% chỉ 24% job có ứng viên lọt dải.
+
+Tác động đo được trên 200 job: **188 giữ nguyên (94%), 12 thay đổi (6%)**. Ví dụ job
+291 — video 50,1 giờ — Top-1 chuyển từ vị trí 70% về 8%, đánh đổi **0,2%** bằng chứng.
+
+Không đụng: `_merge`, audfprint, ngưỡng, shifts, ngữ nghĩa `top_n`, phân bổ đều theo
+vùng, cột báo cáo, contract Sheets.
+
+Test mới: `tests/test_match_selection.py` (26).

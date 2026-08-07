@@ -110,6 +110,12 @@ class Config:
     min_hash_strong: int = 5000  # Từ ngưỡng này: coi là bằng chứng mạnh, ưu tiên chọn
     phan_bo_deu: bool = True     # Chia video vi phạm thành N vùng, mỗi vùng lấy 1 kết quả
     uu_tien_clip_khac_nhau: bool = True  # Ưu tiên 5 clip GỐC KHÁC NHAU thay vì trùng lặp
+    # Hai ứng viên chênh nhau trong dung sai này thì coi là NGANG BẰNG về bằng
+    # chứng; lúc đó mới ưu tiên đoạn dễ kiểm tra hơn. Đo trên 200 job thật:
+    # trung vị hashes(#2)/hashes(#1) = 0,92 nên near-tie là chuyện thường —
+    # dung sai lỏng sẽ đảo phần lớn kết quả. Ở mức 0,03 chỉ 24% job có ứng viên
+    # lọt dải, và chỉ một phần trong đó thực sự sớm hơn.
+    dung_sai_gan_bang: float = 0.03
 
     def validate(self, overlap_s: Optional[int] = None) -> None:
         if self.chunk_s <= 60:
@@ -140,6 +146,8 @@ class Config:
             raise ValueError("shifts_kho và shifts_quet phải nằm trong khoảng 0..8.")
         if self.top_n < 1:
             raise ValueError("top_n phải >= 1.")
+        if not 0.0 <= self.dung_sai_gan_bang <= 0.5:
+            raise ValueError("dung_sai_gan_bang phải nằm trong khoảng 0..0.5.")
         if self.min_hash_floor < 0 or self.min_hash_strong < 0:
             raise ValueError("Ngưỡng hash chọn lọc không được âm.")
         if self.dem_max_gb < 0 or self.dem_max_ngay < 0:
@@ -204,6 +212,75 @@ class Cancelled(Exception):
 def hhmmss(giay: float) -> str:
     giay = max(0, int(round(giay)))
     return f"{giay // 3600:02d}:{(giay % 3600) // 60:02d}:{giay % 60:02d}"
+
+
+def chi_phi_kiem_tra(m, duration: float) -> tuple:
+    """Chi phí để một người kiểm tra độc lập tua tới đoạn này. Nhỏ hơn = dễ hơn.
+
+    Đây **không** phải chỉ số pháp lý — nó chỉ nói đoạn nào tua tới nhanh hơn.
+    Dùng cả vị trí tương đối lẫn tuyệt đối: 45% của video 12 tiếng vẫn là hơn 5
+    tiếng tua, nên tỉ lệ một mình chưa đủ. Khi không biết thời lượng video thì
+    lùi về giây tuyệt đối thay vì bỏ qua tín hiệu.
+    """
+    bat_dau = max(0.0, float(getattr(m, "start_s", 0.0) or 0.0))
+    ty_le = bat_dau / duration if duration and duration > 0 else 1.0
+    return (round(max(0.0, min(1.0, ty_le)), 4), bat_dau)
+
+
+def chon_dai_dien(ung_vien: list, duration: float, dung_sai: float, khoa_chat_luong):
+    """Chọn ứng viên ĐẠI DIỆN tốt nhất trong một nhóm.
+
+    Thứ tự giá trị, không được đảo:
+
+    1. Chất lượng bằng chứng (``khoa_chat_luong``) — quyết định trước hết.
+    2. Chỉ trong nhóm **ngang bằng** về chất lượng mới xét tới độ dễ kiểm tra.
+    3. Hoà tiếp thì phá hoà tất định.
+
+    Nhờ vậy một đoạn khớp yếu ở đầu video **không bao giờ** vượt được đoạn khớp
+    mạnh hơn đáng kể ở cuối video — nhưng hai đoạn thực sự tương đương thì đoạn
+    tua tới nhanh hơn sẽ thắng.
+
+    "Ngang bằng" đòi hỏi cả bằng chứng lẫn thời lượng đều nằm trong dung sai:
+    một đoạn 20 giây không được coi là tương đương một đoạn 15 phút chỉ vì tình
+    cờ có số hash xấp xỉ.
+    """
+    if not ung_vien:
+        raise ValueError("Không có ứng viên nào để chọn.")
+    if len(ung_vien) == 1:
+        return ung_vien[0]
+
+    tot_nhat = max(ung_vien, key=khoa_chat_luong)
+    if dung_sai <= 0:
+        return tot_nhat
+
+    hang_tot_nhat = khoa_chat_luong(tot_nhat)
+    san = 1.0 - dung_sai
+
+    def ngang_bang(m) -> bool:
+        hang = khoa_chat_luong(m)
+        # Các bậc phân loại (bằng chứng mạnh, clip chưa dùng) phải trùng khớp —
+        # dung sai chỉ áp cho phần định lượng ở cuối khoá.
+        if hang[:-1] != hang_tot_nhat[:-1]:
+            return False
+        if hang_tot_nhat[-1] > 0 and hang[-1] < hang_tot_nhat[-1] * san:
+            return False
+        dai_nhat = float(getattr(tot_nhat, "matched_s", 0.0) or 0.0)
+        dai = float(getattr(m, "matched_s", 0.0) or 0.0)
+        return not (dai_nhat > 0 and dai < dai_nhat * san)
+
+    gan_bang = [m for m in ung_vien if ngang_bang(m)]
+    if len(gan_bang) <= 1:
+        return tot_nhat
+
+    # Phá hoà tất định: dễ kiểm tra nhất, rồi bằng chứng mạnh nhất, rồi tên clip.
+    return min(
+        gan_bang,
+        key=lambda m: (
+            chi_phi_kiem_tra(m, duration),
+            -float(getattr(m, "hashes", 0) or 0),
+            str(getattr(m, "clip", "")),
+        ),
+    )
 
 
 def o_bang_tinh_an_toan(gia_tri):
@@ -1980,6 +2057,10 @@ class Engine:
             ))
         return sorted(ket_qua, key=lambda m: m.start_s)
 
+    def _chon_loc_dai_dien(self, *args, **kwargs):
+        """Giữ chỗ cho khả năng ghi đè trong test; mặc định dùng hàm thuần."""
+        return chon_dai_dien(*args, **kwargs)
+
     def _gan_chi_so(self, ds: list, duration: float) -> None:
         """Tính tỷ lệ vân tay khớp (%) và vùng vị trí cho từng kết quả."""
         tong_hash = {c["ten"]: c["so_hash"] for c in self.db_clips() if c["so_hash"]}
@@ -2014,9 +2095,22 @@ class Engine:
                     (m.clip not in da_dung) if cfg.uu_tien_clip_khac_nhau else True,
                     m.hashes)
 
+        def dai_dien(ung_vien: list, da_dung: set):
+            """Chọn một đại diện: chất lượng trước, dễ kiểm tra chỉ để phá hoà."""
+            return chon_dai_dien(
+                ung_vien, duration, cfg.dung_sai_gan_bang,
+                lambda m: uu_tien(m, da_dung),
+            )
+
         n = max(1, cfg.top_n)
         if not cfg.phan_bo_deu or not duration or len(dat) <= n:
-            chon = sorted(dat, key=lambda m: -m.hashes)[:n]
+            con, chon, da_dung = list(dat), [], set()
+            while con and len(chon) < n:
+                tot = dai_dien(con, da_dung)
+                chon.append(tot)
+                con.remove(tot)
+                da_dung.add(tot.clip)
+            loai = loai + con
         else:
             con = list(dat)
             chon, da_dung = [], set()
@@ -2026,13 +2120,13 @@ class Engine:
                 t0, t1 = i * buoc, (i + 1) * buoc
                 uv = [m for m in con if t0 <= m.start_s < t1]
                 if uv:
-                    tot = max(uv, key=lambda m: uu_tien(m, da_dung))
+                    tot = dai_dien(uv, da_dung)
                     chon.append(tot)
                     con.remove(tot)
                     da_dung.add(tot.clip)
             # Lượt 2: vùng nào trống thì bù bằng kết quả mạnh nhất còn lại
             while len(chon) < n and con:
-                tot = max(con, key=lambda m: uu_tien(m, da_dung))
+                tot = dai_dien(con, da_dung)
                 chon.append(tot)
                 con.remove(tot)
                 da_dung.add(tot.clip)

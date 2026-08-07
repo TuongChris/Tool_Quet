@@ -90,3 +90,38 @@ tường minh.
 1. Smoke với video YouTube thật (chưa chạy — chờ hết chặn chống bot).
 2. Outbox bền vững cho hàng đợi Sheets (hiện trong RAM).
 3. Benchmark concurrency download/matcher — chưa có bằng chứng nên chưa làm.
+
+
+---
+
+## Vòng chọn kết quả đại diện (2026-08-07, sau `8cb2597`)
+
+Chi tiết: [MATCH_SELECTION_ARCHITECTURE.md](MATCH_SELECTION_ARCHITECTURE.md).
+
+**Ngữ nghĩa `top_n`** = số ĐOẠN vi phạm được xuất, không phải số video gốc. Giữ nguyên.
+
+**Vấn đề**: với `top_n=1`, `_chon_loc` tạo một vùng duy nhất nên Top-1 thuần
+`max(hashes)`; vị trí không có vai trò gì.
+
+**Đã làm**: `chon_dai_dien()` + `chi_phi_kiem_tra()` + `Config.dung_sai_gan_bang=0.03`.
+Chất lượng quyết định trước; dễ kiểm tra chỉ phá hoà trong nhóm ngang bằng (≥97% cả
+hash lẫn thời lượng).
+
+**Đo trên 200 job thật**: 94% giữ nguyên, 6% đổi. **496 passed, 1 skipped.**
+
+### Còn lại
+1. Cân nhắc đổi khoá chất lượng chính từ `hashes` sang `ty_le` — CLAUDE.md ghi `ty_le`
+   mới là chỉ số chuẩn hoá, `hashes` phụ thuộc độ dài clip. Đây là đổi định nghĩa
+   "tốt nhất", cần dữ liệu và nghiệm thu riêng. **Hướng tối ưu tiếp theo đáng giá nhất.**
+2. Smoke Scan Pipeline V2 với video YouTube thật (chưa chạy).
+3. Outbox bền vững cho hàng đợi Sheets.
+
+### Dữ liệu ngày đăng — ĐÃ XONG cả ba kho
+| Kho | Clip | Đã sửa | Lỗi |
+| --- | ---: | ---: | ---: |
+| duncanyounot | 139 | 138 | 0 |
+| SML | 744 | 377 | 0 |
+| Cory | 1717 | 1124 | 0 |
+
+Audit sau sửa cả ba kho: `co_provenance` = `co_epoch_luu_san` = tổng số clip,
+`se_doi` = 0, `thieu_ngay` = 0.

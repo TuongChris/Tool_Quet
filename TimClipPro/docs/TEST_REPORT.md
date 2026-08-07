@@ -293,3 +293,25 @@ Bao phủ đáng chú ý:
 - Callback ném exception: 3/3 video vẫn `completed`, kết quả vẫn còn.
 - Guard cấu trúc bỏ bình luận/chuỗi bằng `tokenize` nên không bắt nhầm chính phần
   docstring giải thích, và có test khẳng định guard bắt được vi phạm thật.
+
+
+---
+
+## Vòng chọn kết quả đại diện — 2026-08-07
+
+| Bộ | Kết quả |
+|---|---|
+| `tests/test_match_selection.py` (mới) | 26 passed |
+| **Fast suite toàn bộ** | **496 passed, 1 skipped, 5 deselected** |
+| `ruff` · `compileall` · `pip check` | sạch |
+
+Bao phủ: match mạnh ở cuối thắng match yếu ở đầu · ngang bằng thì chọn đoạn sớm hơn ·
+compilation 8 tiếng · đoạn 20 giây không thắng đoạn 15 phút · bậc "bằng chứng mạnh"
+không bị dung sai phá · không biết thời lượng video · `start_s` âm · một ứng viên duy
+nhất · danh sách rỗng · dung sai = 0 · **kết quả không đổi qua 50 lần xáo trộn đầu
+vào** · phá hoà theo tên clip · `top_n=1` trả đúng một kết quả · `top_n>1` vẫn giữ
+phân bổ đều theo vùng · dưới ngưỡng vẫn bị loại · không bịa kết quả khi không ai đạt
+ngưỡng · `Config` từ chối dung sai vô lý.
+
+Đối chứng trên 200 job thật trong `lichsu.db`: 188 giữ nguyên (94%), 12 đổi (6%) —
+xa ngưỡng cảnh báo 80–90%, đúng vùng near-tie.
