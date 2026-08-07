@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "GitHub.copilot",
+    "GitHub.copilot-chat",
+    "charliermarsh.ruff",
+    "yzhang.markdown-all-in-one"
+  ]
+}

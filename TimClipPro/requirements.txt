@@ -1,0 +1,17 @@
+# Security compatibility constraints for transitive packages.
+-c constraints.txt
+
+# Loi fingerprint (audfprint can)
+numpy
+scipy
+docopt
+joblib
+psutil
+# Tai YouTube / dong bo kenh
+yt-dlp
+# Giao dien web chay local + xu ly bang
+streamlit
+pandas
+# Google Sheets (tuy chon - khong cai van chay binh thuong)
+gspread
+google-auth

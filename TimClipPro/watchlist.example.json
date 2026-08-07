@@ -1,0 +1,18 @@
+{
+  "muc": [
+    {
+      "loai": "kenh",
+      "url": "https://www.youtube.com/@TenKenhCanTheoDoi",
+      "ghi_chu": "Ví dụ kênh cần theo dõi",
+      "bat": true
+    },
+    {
+      "loai": "link",
+      "url": "https://youtu.be/VIDEO_ID",
+      "ghi_chu": "Ví dụ một video riêng lẻ",
+      "bat": false
+    }
+  ],
+  "kho": "Kho mặc định",
+  "gioi_han_moi_lan": 20
+}

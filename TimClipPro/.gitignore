@@ -1,0 +1,35 @@
+# Bi mat - TUYET DOI khong commit
+google_key.json
+*.json.key
+cau_hinh.json
+
+# Du lieu lon / sinh ra khi chay
+data/
+ketqua/
+bin/
+*.pklz
+*.opus
+*.m4a
+downloaded.txt
+clips_meta.json
+TimClipPro_source.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv-claude/
+venv/
+
+# VS Code
+.streamlit/secrets.toml
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+tests/__pycache__/
+
+# Nhat ky runtime co the chua duong dan/URL cua nguoi dung
+*.log
+watchlist.local.json
+watchlist.local.*.json
