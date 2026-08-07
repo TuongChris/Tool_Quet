@@ -141,6 +141,62 @@ YouTube:
 Kiểm báo cáo trong `ketqua\` và job trong tab Lịch sử. Exporter không ghi đè: nếu tên tồn
 tại, file mới nhận hậu tố `_2`, `_3`, ... Cell có prefix công thức được xuất dưới dạng text.
 
+## Khi một lượt quét trả về 0 đoạn
+
+Từ 2026-08-07 hệ thống **luôn nói mất ở tầng nào**, không còn chỉ nói "không tìm thấy".
+Đọc dòng giải thích trên GUI (mục "🔎 Chi tiết chẩn đoán") hoặc phần phễu ở CLI rồi xử
+lý theo bảng:
+
+| Giai đoạn báo về | Nghĩa là gì | Làm gì |
+|---|---|---|
+| `khong_cat_duoc_khuc` | ffmpeg không cắt được khúc nào | Kiểm file tải về trong `data\downloads` có phát được không |
+| `audfprint_khong_ra_match` | Không có một dòng khớp nào | Kiểm đang chọn **đúng kho**; kiểm kho có clip (`db_clips`) |
+| `parser_hong` | audfprint có ra dòng khớp nhưng đọc không được | **Lỗi code** — định dạng output đã đổi, phải sửa `RE_MATCH` |
+| `bang_chung_qua_yeu` | Có dòng khớp nhưng quá ngắn/quá ít hash | Nhiều khả năng video không chứa clip gốc nào |
+| `khong_dat_chap_nhan` | Có ứng viên nhưng chưa đạt chuẩn | Xem "ứng viên mạnh nhất bị loại" — xem mục dưới |
+| `chon_loc_bo_het` | Đạt chuẩn nhưng Top-N bỏ hết | **Lỗi logic chọn lọc**, phải sửa |
+
+**Đọc ứng viên mạnh nhất bị loại.** Nếu nó có *phủ vân tay dưới ~5%* và *đoạn khớp chỉ
+vài giây*, gần như chắc chắn đó là **nhạc hiệu/nhạc nền dùng chung** giữa nhiều clip
+gốc, không phải bản reup. Dấu hiệu xác nhận: cùng một mốc thời gian khớp với hàng chục
+clip gốc khác nhau. **Không hạ ngưỡng trong trường hợp này** — hạ ngưỡng chỉ biến đoạn
+nhạc hiệu 9 giây thành "bằng chứng vi phạm" trong báo cáo.
+
+Một bản reup thật trông rất khác: hàng nghìn hash, khớp liên tục hàng phút, phủ vân
+tay hàng chục phần trăm, và chỉ khớp với **một** clip gốc.
+
+Bản ghi chẩn đoán của mỗi ca 0 kết quả được lưu tại `data\chan_doan\*.json` (giữ 200
+file gần nhất, chỉ số liệu, không chứa media hay khoá bí mật):
+
+```powershell
+Get-ChildItem "data\chan_doan" | Sort-Object LastWriteTime -Descending | Select-Object -First 5
+```
+
+Chi tiết: [ZERO_MATCH_ROOT_CAUSE.md](ZERO_MATCH_ROOT_CAUSE.md).
+
+### Video bị đổi tốc độ để né nhận dạng — đã có bù tự động
+
+Đo thật: lệch tốc độ **0,5%** làm một đoạn khớp 263 giây vỡ thành mảnh dài nhất 21
+giây; lệch 4% thì gần như mất trắng. Ngược lại, nén lại (AAC 64k, Opus 32k), đổi âm
+lượng (±dB) và lọc tần số hầu như không ảnh hưởng.
+
+Từ 2026-08-07, khi lượt quét thường không có ứng viên nào đạt chuẩn, hệ thống **tự
+động thử bù tốc độ** rồi quét lại. Video có kết quả bình thường không tốn thêm giây nào.
+
+Trên GUI, nếu một kết quả chỉ khớp được sau khi bù, sẽ có dòng thông báo riêng —
+**đó là dấu hiệu né nhận dạng có chủ ý, nên đưa vào hồ sơ khiếu nại.**
+
+Vùng phủ mặc định: đổi tốc độ giữ cao độ **±6%** (đọc trực tiếp từ độ trôi, miễn phí),
+đổi cao độ **±5%** (lưới quét mù + tinh chỉnh). Ngoài vùng đó thì thêm mức vào cấu hình:
+
+```powershell
+# thêm mức cho video bị tăng/giảm tốc mạnh hơn ±6%
+# eng.config.luoi_tempo = [0.90, 1.10]
+```
+
+Muốn tắt hẳn (về đúng hành vi cũ): `quet_da_toc_do = False`.
+Chi tiết và số đo: [DA_TOC_DO.md](DA_TOC_DO.md).
+
 ## Kiểm tra và phục hồi metadata báo cáo
 
 Tên registry phải dùng chính xác. Kho mà người dùng thường gọi “Cory toàn bộ” hiện được đăng ký

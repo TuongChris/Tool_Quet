@@ -2,6 +2,87 @@
 
 Ngày: 2026-08-06.
 
+## Vòng điều tra zero-match + Fast Top-1 — 2026-08-07
+
+### Phạm vi
+
+Không đọc/ghi/dựng lại kho vân tay production. Kiểm chứng thật chạy trên audio **đã
+tải sẵn** trong `data\downloads`, gọi `scan_media(..., luu_lich_su=False)` nên không
+ghi `lichsu.db`, không đẩy Google Sheets, không sửa `db.pklz`.
+
+### Test tự động
+
+| Lệnh/phạm vi | Passed | Failed | Skipped | Ghi chú |
+|---|---:|---:|---:|---|
+| `tests/test_chan_doan_zero_match.py` (mới) | 32 | 0 | 0 | Chấp nhận 2 bậc, 6 giai đoạn phễu, parser, Fast Top-1 |
+| Full fast suite (`pytest -q`) | 537 | 0 | 1 | Toàn bộ suite cũ giữ nguyên hành vi |
+| `pytest -m slow` | 5 | 0 | 0 | Tích hợp audio tổng hợp thật |
+| `ruff check .` / `compileall` / `pip check` | — | 0 finding | — | Pass |
+
+### Kiểm chứng 11 video sau khi sửa
+
+0/11 có kết quả (đúng như trước khi sửa — **tiêu chí mới không tạo dương tính giả**),
+11/11 nói được giai đoạn mất kết quả (`khong_dat_chap_nhan`) kèm ứng viên mạnh nhất bị
+loại và lý do. 11/11 chạm trần `--max-matches` và nay có cảnh báo. Bảng đầy đủ ở
+[ZERO_MATCH_ROOT_CAUSE.md](ZERO_MATCH_ROOT_CAUSE.md) mục 9.
+
+### Bù đa tốc độ (`tests/test_toc_do_khop.py` — 33 test)
+
+| Test | Khoá điều gì |
+|---|---|
+| `test_uoc_luong_dung_ty_le` | 8 mức tốc độ 0,94…1,05 phải ước lượng đúng tới 1e-4 |
+| `test_khong_doi_toc_do_thi_khong_bao_gi` | Bản khớp nguyên tốc độ **không** được coi là bị đổi |
+| `test_lech_qua_nho_bi_bo_qua` | Dưới 0,15% là dao động bình thường, không phải né tránh |
+| `test_ben_voi_manh_nhieu_lan_vao` | Nhạc hiệu dùng chung lẫn vào cùng clip vẫn ước lượng đúng (ca làm vỡ bình phương tối thiểu) |
+| `test_chi_toan_nhieu_thi_khong_uoc_luong_bua` | Align ngẫu nhiên không sinh ra "tốc độ" giả |
+| `test_ten_khuc_cu_van_doc_duoc` | Tên khúc không có hậu tố hệ số = 1,0 (tương thích ngược) |
+| `test_ma_he_so_di_ve_nguyen_ven` | Mã/giải mã hệ số trong tên file không mất chính xác |
+| `test_ke_hoach_uu_tien_do_troi_hon_luoi` | Ưu tiên ước lượng miễn phí trước, lưới quét mù sau |
+| `test_tat_thi_khong_co_ke_hoach_nao_chay` | Tắt được hoàn toàn |
+
+Kiểm chứng đầu-cuối trên fixture audio thật (clip gốc CÓ trong kho, chèn giữa nhiễu):
+3 ca bị đổi tốc độ đều từ **0 kết quả** thành tìm ra **đúng clip**, mốc thời gian lệch
+≤1 giây so với vị trí đã chèn; đối chứng âm (chỉ nhiễu) vẫn 0 sau khi thử đủ 4 phương
+án bù. Bảng đầy đủ ở [DA_TOC_DO.md](DA_TOC_DO.md) mục 7.
+
+Chạy lại 11 video thật với bù tốc độ bật: **vẫn 0/11**, và cả 4 lượt bù cao độ đều cho
+**0 dòng khớp** — bằng chứng độc lập nữa cho kết luận âm tính đúng.
+
+Chi phí đo sạch (máy rảnh, `OVTMo5bhtN0` 59 phút, âm tính): 54,2s → 158,2s (**×2,9**).
+Video **có** kết quả không tốn thêm gì vì lượt bù chỉ chạy khi không có ứng viên đạt
+chuẩn. Đặt `luoi_resample = []` đưa chi phí về gần 0 mà vẫn phủ đổi tốc độ ±6%.
+
+### Benchmark Fast Top-1
+
+`n4Ca9SmTfi0` (6,7 giờ, 8 khúc): quét toàn bộ **326,9s** → fast Top-1 **98,1s (−70%)**.
+Hai lượt trả về hai clip gốc khác nhau, **cả hai đều là reup thật** trên 10.000 hash;
+đánh đổi này được khoá lại bằng `test_dung_som_co_the_bo_qua_ung_vien_ty_le_cao_hon_o_sau`.
+
+### Test khoá lại hành vi quan trọng
+
+| Test | Khoá điều gì |
+|---|---|
+| `test_clip_goc_ngan_khop_gan_het_van_duoc_nhan` | Clip gốc 830 hash, phủ 92,2% phải được nhận (§107 — trước đây bất khả thi) |
+| `test_nhac_hieu_dung_chung_bi_loai` | 133 hash / 8,8s / phủ 0,9% phải bị loại (số thật từ 11 video) |
+| `test_trung_khop_thua_ngau_nhien_bi_loai` | 309 hash / 578,6s / 0,53 hash/s phải bị loại (số thật từ qUrJv94OzJE) |
+| `test_tat_bac_phu_cao_thi_ve_dung_hanh_vi_cu` | Đặt `ty_le_chap_nhan=0` là quay về đúng luật cũ |
+| `test_phan_biet_parser_hong_voi_khong_co_match` | Hai ca trước đây hiện ra giống hệt nhau nay phải khác mã |
+| `test_parser_doc_duoc_dong_that_cua_audfprint` | 3 dòng output THẬT (chép nguyên từ log) phải parse được 100% |
+| `test_match_manh_o_cuoi_video_van_tim_duoc` | Fast pass trượt thì fallback vẫn thấy match ở ~90% video |
+| `test_quet_bu_giu_lai_ket_qua_tho_cua_vung_dau` | Quét bù không được vứt bằng chứng của khúc đầu |
+| `test_dung_som_khong_kich_hoat_voi_bang_chung_yeu` | `top_n=1` là "nhiều nhất một", không phải "luôn có một" (§108) |
+
+### Kiểm chứng dữ liệu thật
+
+Xem [ZERO_MATCH_ROOT_CAUSE.md](ZERO_MATCH_ROOT_CAUSE.md) cho bảng phễu đầy đủ 11 video,
+thống kê phân phối hash 3 kho, ma trận độ bền trước 18 biến đổi audio, và thí nghiệm
+chứng minh `--max-matches` cắt cụt sai.
+
+**Lưu ý về số đo thời gian:** trong lúc chạy kiểm chứng, ứng dụng Streamlit của người
+dùng đang chạy một lượt quét thật song song (7 tiến trình audfprint). Mọi con số thời
+gian trong vòng này vì vậy **bị tranh chấp CPU** và chỉ dùng để so sánh tương đối,
+không dùng làm mốc hiệu năng tuyệt đối.
+
 ## Vòng nghiệm thu progress fingerprint
 
 Tất cả test dùng `%TEMP%`/`tmp_path`; không đọc, ghi hoặc build lại kho 1.717 clip production.

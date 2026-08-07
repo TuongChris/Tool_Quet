@@ -2,6 +2,84 @@
 
 Ngày: 2026-08-06.
 
+## Vòng điều tra zero-match + Fast Top-1 — 2026-08-07
+
+Bối cảnh: 11 video báo "quét xong 0 đoạn". Điều tra kết luận **cả 11 đều là âm tính
+đúng** — chúng là video parody lồng tiếng lại, chỉ có nhạc hiệu dùng chung khớp được
+(phủ vân tay 0,5–0,9% so với 20–100% của một bản reup thật). Chi tiết số liệu:
+[ZERO_MATCH_ROOT_CAUSE.md](ZERO_MATCH_ROOT_CAUSE.md).
+
+Giả thuyết "ngưỡng 1000 hash cao hơn tổng hash của clip gốc" đã bị **bác bỏ bằng số
+đo**: kho SML đang dùng có clip ít hash nhất là 6.239, không clip nào dưới 1000.
+
+| File | Nội dung và lý do | Rủi ro | Test xác minh | Trước → Sau |
+|---|---|---|---|---|
+| `chan_doan_quet.py` (mới) | Phễu phát hiện: đếm ứng viên sống sót từng tầng, mã hoá 6 giai đoạn mất kết quả, ảnh chụp ứng viên mạnh nhất bị loại | Low | 12 test thuần | 0 kết quả không phân biệt được với bug → luôn chỉ đúng tầng đã mất |
+| `chap_nhan_khop.py` (mới) | Chấp nhận hai bậc: tuyệt đối (luật cũ) **hoặc** phủ vân tay cao + đủ dài + đủ dày | Low | 9 test thuần | Clip gốc < 1000 hash không bao giờ báo được → nhận được khi khớp gần hết |
+| `engine.py` | Bỏ `--sortbytime` (sửa cắt cụt sai), `_quet_tho()` đường đi nhanh Top-1, nối chẩn đoán, lưu JSON chẩn đoán cho ca 0 kết quả | Medium | 10 test + kiểm chứng 11 video thật | Cắt cụt theo thời gian làm mất 207 dòng khớp/khúc → cắt theo độ mạnh |
+| `app.py` | Thay lời khuyên "hạ ngưỡng xuống 60%" bằng bảng chẩn đoán phễu + cảnh báo nhạc hiệu dùng chung | Low | Full fast suite | Lời khuyên cũ tạo dương tính giả (job 364: 126 hash/10s) → giải thích đúng |
+| `cli.py` | In phễu + ứng viên mạnh nhất bị loại thay cho "Không tìm thấy clip gốc nào." | Low | Full fast suite | Một dòng vô nghĩa → chẩn đoán đủ để hành động |
+| `tests/test_chan_doan_zero_match.py` (mới) | 31 test: chấp nhận, phễu, parser trên dòng thật, đường đi nhanh Top-1 | Low | 31 pass | Không có → khoá lại hành vi |
+
+Hành vi ảnh hưởng người dùng: kết quả 0 đoạn nay luôn nói mất ở tầng nào và ứng viên
+mạnh nhất thiếu bao nhiêu; `top_n=1` trên video từ 3 khúc trở lên có thể dừng sớm khi
+gặp bằng chứng rất mạnh ở phần đầu.
+
+**Đánh đổi phải biết của Fast Top-1.** Đo trên `n4Ca9SmTfi0` (6,7 giờ, 8 khúc):
+quét toàn bộ 326,9s chọn clip phủ 81,2% ở 01:29:28; fast Top-1 **98,1s (−70%)** chọn
+clip phủ 73,2% ở 00:25:18. Cả hai đều là reup thật trên 10.000 hash và khớp liên tục
+trên 9 phút — khác nhau chỉ ở thứ tự xếp hạng theo `ty_le`. Fast Top-1 cam kết trả về
+bằng chứng **rất mạnh**, không cam kết trả về ứng viên **tối ưu toàn cục**. Cần đúng
+hành vi cũ thì đặt `top1_tim_nhanh = False`.
+
+Không thay đổi: `_merge()`, `min_hash_floor`, `min_hash_strong`, thuật toán xếp hạng
+Top-N, `chon_dai_dien()`, schema SQLite, định dạng vân tay, hợp đồng báo cáo/Sheets,
+audfprint vendored. `so_dat_nguong` giữ nguyên ý nghĩa.
+
+## Vòng bù đa tốc độ — 2026-08-07
+
+Bịt điểm mù đổi tốc độ đã đo ở vòng trên. Chi tiết: [DA_TOC_DO.md](DA_TOC_DO.md).
+
+Quyết định kiến trúc: **không quét mù nhiều tốc độ.** Lưới bước 1% để lại sai số tồn
+dư 0,5%, mà 0,5% đã làm mất 93% bằng chứng — muốn bằng chứng mạnh phải trúng tới ~0,1%,
+tức hàng chục lượt quét. Thay vào đó khai thác một tính chất toán học: khi video phát
+ở tốc độ `r`, align của các mảnh khớp **trôi tuyến tính** với độ dốc đúng bằng `(1−r)`.
+Hồi quy độ dốc là ra tốc độ — dữ liệu đã nằm sẵn trong output lượt quét thường, tốn
+**0 giây** so khớp thêm, sai số đo được ≤0,05% (chính xác hơn lưới 1% khoảng 100 lần).
+
+| File | Nội dung và lý do | Rủi ro | Test xác minh | Trước → Sau |
+|---|---|---|---|---|
+| `toc_do_khop.py` (mới) | Ước lượng tốc độ bằng hồi quy **Theil–Sen** trên độ trôi align; bộ lọc ffmpeg cho 2 họ biến đổi | Low | 33 test thuần | Không có → đọc được tốc độ, sai số ≤0,05% |
+| `engine.py` | `_quet_da_toc_do()` có vòng tinh chỉnh lặp; quy đổi mốc thời gian theo hệ số mã trong tên khúc | Medium | 4 ca fixture thật + đối chứng âm | Video bị đổi tốc độ = 0 kết quả → tìm ra đúng clip |
+| `app.py`, `cli.py` | Báo rõ khi kết quả chỉ khớp được sau khi bù | Low | Full suite | Người dùng không biết → biết đây là dấu hiệu né nhận dạng |
+
+**Vì sao Theil–Sen chứ không bình phương tối thiểu:** nhạc hiệu dùng chung tạo mảnh
+align ngẫu nhiên trong cùng clip gốc, kéo lệch bình phương tối thiểu. Đo thật: với
+fixture 3%, bình phương tối thiểu cho R²=0,916 (sát ngưỡng tới mức dựng lại file là
+lật kết quả) và lệch 0,00135 → chỉ thu lại 38,5% vân tay. Theil–Sen cho **1,03000**
+đúng tuyệt đối → 56,4%.
+
+Kiểm chứng đầu-cuối (fixture: nhiễu 60s + clip gốc thật bị biến đổi + nhiễu 60s):
+
+| Ca | Trước | Sau | Mốc báo về |
+|---|---|---|---|
+| nhanh 3%, giữ cao độ | **0** | 6.365 hash, phủ 56,4% | 00:00:59 (thật: 00:01:00) |
+| chậm 3%, giữ cao độ | **0** | 6.625 hash, phủ 58,7% | 00:01:01 |
+| nhanh 3% + đổi cao độ | **0** | 9.615 hash, phủ 85,3% | 00:00:59 |
+| chỉ có nhiễu (đối chứng âm) | 0 | **0** — không bịa kết quả | — |
+
+Chi phí: chỉ chạy khi lượt quét thường không ra ứng viên nào đạt chuẩn, nên video có
+kết quả bình thường **không tốn thêm giây nào**. Đo sạch trên một video âm tính 59
+phút: 54,2s → 158,2s (**×2,9**). Muốn giữ lợi ích mà không mất tốc độ thì đặt
+`luoi_resample = []` — bỏ lưới quét mù, chỉ giữ phần đọc độ trôi (miễn phí, vẫn phủ
+đổi tốc độ ±6%).
+
+Kiểm chứng không hồi quy: chạy lại đủ 11 video thật với bù tốc độ bật → **vẫn 0/11**,
+và cả 4 lượt bù cao độ đều cho **0 dòng khớp**.
+
+Không thay đổi: mọi thứ ở vòng trước, cộng thêm hợp đồng `_match_chunks()` (tên khúc
+không có hậu tố hệ số vẫn hiểu là 1,0).
+
 ## Vòng observability tạo vân tay — 2026-08-06
 
 | File | Nội dung và lý do | Rủi ro | Test xác minh | Trước → Sau |

@@ -251,6 +251,76 @@ def day_len_sheets(results: list[ScanResult]) -> tuple[bool, str]:
         return False, f"Lỗi ghi Sheets: {e}"
 
 
+def bao_cao_khong_co_ket_qua(results: list[ScanResult]) -> None:
+    """Giải thích một lượt quét 0 kết quả MẤT Ở TẦNG NÀO, thay vì chỉ nói không thấy.
+
+    Năm tình huống dưới đây trước kia hiện ra y hệt nhau nên người dùng không phân
+    biệt được âm tính đúng với lỗi phần mềm: audfprint không ra dòng nào; ra dòng
+    nhưng parser đọc không được; bằng chứng quá yếu; không đạt tiêu chí chấp nhận;
+    chọn lọc bỏ hết. Giờ mỗi tình huống có câu trả lời riêng.
+    """
+    ok = [x for x in results if x.status == "ok"]
+    if not ok:
+        return
+
+    for x in ok:
+        cd = getattr(x, "chan_doan", None)
+        tieu_de = x.source_name or x.source_ref
+        if cd is None:
+            st.warning(f"**{tieu_de}** — không tìm thấy clip gốc nào.")
+            continue
+
+        st.warning(f"**{tieu_de}** — không có đoạn nào đạt tiêu chí.\n\n"
+                   f"{cd.mat_o_dau()}")
+        with st.expander("🔎 Chi tiết chẩn đoán"):
+            st.markdown(
+                f"- Số khúc đã cắt: **{cd.so_khuc}**\n"
+                f"- Dòng khớp thô từ audfprint: **{cd.dong_co_matched}**\n"
+                f"- Đọc ra được: **{cd.parse_duoc}**\n"
+                f"- Qua lọc số hash tối thiểu: **{cd.qua_min_hash}**\n"
+                f"- Qua lọc độ dài tối thiểu: **{cd.qua_min_match_s}**\n"
+                f"- Ứng viên sau khi gộp: **{cd.gop_lai}**\n"
+                f"- Đạt tiêu chí chấp nhận: **{cd.duoc_chap_nhan}**\n"
+                f"- Bằng chứng thô mạnh nhất: **{cd.hash_tho_lon_nhat} hash**, "
+                f"đoạn dài nhất **{cd.khop_tho_dai_nhat:.1f}s**"
+            )
+            u = cd.manh_nhat_bi_loai
+            if u is not None:
+                st.markdown("**Ứng viên mạnh nhất đã bị loại**")
+                st.code(u.mo_ta(), language=None)
+                # Giúp người dùng tự phân biệt reup thật với nhạc hiệu dùng chung.
+                if u.ty_le < 5 and u.matched_s < 30:
+                    st.caption(
+                        "Dấu hiệu này (phủ vân tay rất thấp, đoạn khớp chỉ vài giây) "
+                        "thường là nhạc hiệu/nhạc nền dùng chung giữa nhiều clip gốc, "
+                        "không phải một bản reup. Hạ ngưỡng lúc này sẽ tạo báo cáo sai."
+                    )
+            # Giữ khả năng soi toàn bộ ứng viên bị loại như bản cũ, chỉ đổi chỗ đặt
+            # và bổ sung cột mật độ — cột này mới là thứ phân biệt reup với nhiễu.
+            bi_loai = sorted(getattr(x, "matches_loai", []),
+                             key=lambda z: -z.hashes)[:30]
+            if bi_loai:
+                st.markdown(f"**{len(bi_loai)} ứng viên bị loại mạnh nhất**")
+                st.dataframe(pd.DataFrame([{
+                    "Clip gốc": m.clip,
+                    "Xuất hiện từ": m.start_hhmmss,
+                    "Số hash": m.hashes,
+                    "Phủ (%)": m.ty_le,
+                    "Khớp (giây)": round(m.matched_s, 1),
+                    "Mật độ (hash/giây)": round(m.hashes / m.matched_s, 1)
+                    if m.matched_s else 0.0,
+                } for m in bi_loai]), width="stretch", hide_index=True)
+            if cd.da_thu_toc_do:
+                st.markdown(
+                    f"**Đã thử bù tốc độ {len(cd.da_thu_toc_do)} lượt** "
+                    "(phòng trường hợp video bị tăng/giảm tốc để né nhận dạng)")
+                for x in cd.da_thu_toc_do:
+                    st.caption(f"• {x}")
+            for canh in cd.canh_bao:
+                st.caption(f"⚠️ {canh}")
+            st.caption(cd.tom_tat())
+
+
 def bang_ket_qua(results: list[ScanResult]) -> None:
     """Vẽ bảng kết quả + các nút xuất báo cáo và đẩy lên Google Sheets."""
     matches = [
@@ -698,33 +768,28 @@ if not job["running"] and (job["results"] or job["error"]):
         tong_loai = sum(len(getattr(x, "matches_loai", [])) for x in res)
         loi = [x for x in res if x.status != "ok"]
 
-        # An toàn: ngưỡng đặt quá cao sẽ lọc sạch kết quả — phải báo rõ, không im lặng
-        if tong_match == 0 and tong_loai:
-            cao_nhat = max((m.hashes for x in res for m in getattr(x, "matches_loai", [])),
-                           default=0)
-            st.warning(
-                f"⚠️ Có **{tong_loai}** kết quả nhưng **không cái nào đạt ngưỡng** "
-                f"«Loại hẳn nếu dưới {eng.config.min_hash_floor} hash». "
-                f"Kết quả mạnh nhất chỉ đạt **{cao_nhat} hash**.\n\n"
-                f"Nếu clip gốc của bạn ngắn hoặc ít âm thanh, hãy hạ ngưỡng này xuống "
-                f"khoảng **{max(100, int(cao_nhat * 0.6))}** ở thanh bên rồi quét lại.")
-            with st.expander(f"Xem {min(tong_loai, 30)} kết quả bị loại"):
-                st.dataframe(pd.DataFrame([{
-                    "Nguồn": x.source_name, "Clip gốc": m.clip,
-                    "Xuất hiện từ": m.start_hhmmss, "Số hash": m.hashes,
-                    "Tỷ lệ (%)": m.ty_le,
-                } for x in res for m in sorted(getattr(x, "matches_loai", []),
-                                               key=lambda z: -z.hashes)[:30]]),
-                    width="stretch", hide_index=True)
+        # Không có kết quả thì PHẢI nói mất ở tầng nào. Trước đây chỗ này chỉ nói
+        # "không tìm thấy" và khuyên hạ ngưỡng xuống 60% của kết quả mạnh nhất —
+        # lời khuyên đó tạo dương tính giả: với video chỉ chứa nhạc hiệu dùng chung
+        # của kênh, hạ ngưỡng sẽ biến một đoạn 9 giây thành "bằng chứng vi phạm".
+        if tong_match == 0:
+            bao_cao_khong_co_ket_qua(res)
         elif tong_loai:
-            st.caption(f"ℹ️ Đã loại {tong_loai} kết quả yếu (dưới "
-                       f"{eng.config.min_hash_floor} hash) khỏi báo cáo.")
+            st.caption(f"ℹ️ Đã loại {tong_loai} ứng viên chưa đạt tiêu chí chấp nhận "
+                       "khỏi báo cáo.")
 
         if tong_match:
             st.success(f"✅ Đã chọn **{tong_match}** bằng chứng tốt nhất "
                        f"từ {len(res)} nguồn đã quét.")
-        elif not tong_loai:
-            st.warning("Không tìm thấy clip gốc nào trong các nguồn đã quét.")
+            # Bị đổi tốc độ là dấu hiệu né nhận dạng có chủ ý — người dùng cần biết
+            # để đưa vào hồ sơ khiếu nại, và để hiểu vì sao mốc thời gian hơi lệch.
+            for x in res:
+                cd = getattr(x, "chan_doan", None)
+                if cd is not None and cd.toc_do_tim_duoc:
+                    st.info(
+                        f"🔎 **{x.source_name}** chỉ khớp sau khi bù tốc độ — "
+                        f"{cd.toc_do_tim_duoc}. Video này nhiều khả năng đã bị "
+                        "chỉnh tốc độ để né nhận dạng bản quyền.")
         if loi:
             st.error("Có nguồn bị lỗi: " + "; ".join(f"{x.source_name} ({x.note})" for x in loi))
         bang_ket_qua(res)

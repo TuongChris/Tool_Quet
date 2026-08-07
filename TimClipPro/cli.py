@@ -264,7 +264,23 @@ def main():
         if kq.status != "ok":
             print(f"   LỖI: {kq.note}")
         elif not kq.matches:
-            print("   Không tìm thấy clip gốc nào.")
+            # Không bao giờ chỉ nói "không tìm thấy": phải chỉ ra tầng đã làm mất
+            # kết quả, nếu không thì âm tính đúng trông y hệt một con bug.
+            cd = getattr(kq, "chan_doan", None)
+            if cd is None:
+                print("   Không tìm thấy clip gốc nào.")
+            else:
+                print(f"   Không có đoạn nào đạt tiêu chí. {cd.mat_o_dau()}")
+                print(f"   Phễu: {cd.tom_tat()}")
+                if cd.manh_nhat_bi_loai is not None:
+                    print(f"   Mạnh nhất bị loại: {cd.manh_nhat_bi_loai.mo_ta()}")
+                for x in cd.da_thu_toc_do:
+                    print(f"   Đã thử bù tốc độ: {x}")
+                for canh in cd.canh_bao:
+                    print(f"   ⚠️ {canh}")
+        cd = getattr(kq, "chan_doan", None)
+        if kq.matches and cd is not None and cd.toc_do_tim_duoc:
+            print(f"   🔎 Chỉ khớp sau khi bù tốc độ — {cd.toc_do_tim_duoc}")
         for m in kq.matches:
             print(f"   • {m.clip} | {m.start_hhmmss} → {m.end_hhmmss} "
                   f"| {m.hashes} hash ({m.confidence})")

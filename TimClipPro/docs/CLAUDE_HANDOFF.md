@@ -124,3 +124,78 @@ hash lẫn thời lượng).
 
 Audit sau sửa cả ba kho: `co_provenance` = `co_epoch_luu_san` = tổng số clip,
 `se_doi` = 0, `thieu_ngay` = 0.
+
+---
+
+## Vòng điều tra zero-match + Fast Top-1 (2026-08-07, sau `2bbb7f9`)
+
+**Vấn đề báo cáo**: 11 video quét xong báo 0 đoạn, người dùng tin chắc chúng chứa reup.
+
+**Kết luận**: cả 11 đều là **âm tính đúng**. Chúng là video parody lồng tiếng lại; chỉ
+nhạc hiệu dùng chung của kênh khớp được (phủ vân tay 0,5–0,9%, đoạn khớp ~10 giây, cùng
+một mốc thời gian khớp ~100 clip gốc khác nhau). Đối chứng dương tính cùng kho: video
+`n4Ca9SmTfi0` cho đoạn khớp **786,8 giây / 15.173 hash**.
+
+**Giả thuyết bị bác bỏ**: "`min_hash_floor=1000` cao hơn tổng hash của clip gốc". Kho
+SML đang dùng có clip ít hash nhất là **6.239**; không clip nào dưới 1000. Bẫy toán học
+chỉ tồn tại ở kho Cory với quy mô 3/1717 clip (0,2%).
+
+**Lỗi thật đã sửa**:
+1. `--sortbytime` khiến `--max-matches` cắt cụt theo *align time* thay vì theo *độ mạnh*
+   — đo được mất 207 dòng khớp trên một khúc, và **mọi khúc của cả 11 video đều chạm
+   trần 200**. Đã bỏ `--sortbytime`.
+2. Ngưỡng tuyệt đối một mình loại oan clip gốc ngắn. Đã thêm bậc chấp nhận thứ hai
+   (phủ ≥60% + dài ≥20s + mật độ ≥3 hash/s). Thuần **thêm**, không bớt.
+3. Kết quả 0 đoạn không nói được mất ở tầng nào. Đã thêm `chan_doan_quet.py` với 6 mã
+   giai đoạn + ảnh chụp ứng viên mạnh nhất bị loại + lưu JSON tại `data\chan_doan\`.
+4. GUI khuyên "hạ ngưỡng xuống 60% kết quả mạnh nhất" — lời khuyên này tạo dương tính
+   giả (job 364: một match 126 hash/10 giây đã lọt vào báo cáo theo đúng cách đó). Đã
+   thay bằng bảng chẩn đoán phễu.
+
+**Fast Top-1**: `top_n=1` và video từ 3 khúc trở lên thì quét khúc đầu trước; vượt cổng
+(≥5.000 hash **và** ≥60 giây) thì dừng, không thì quét nốt phần còn lại trong một lần
+gọi và ghép kết quả thô. Tối đa 2 lần nạp kho. Xem [FAST_TOP1_SCAN.md](FAST_TOP1_SCAN.md).
+
+### Còn lại
+1. **Điểm mù đổi tốc độ** — đo được: lệch 0,5% làm đoạn khớp 263 giây vỡ còn 21 giây;
+   lệch 4% mất trắng. Nén lại/đổi âm lượng/lọc tần số thì vô hại. Bịt cần so khớp đa
+   tốc độ (chi phí nhân lên) — cần người dùng quyết định có đáng không.
+2. Cân nhắc siết bậc A bằng điều kiện mật độ (ca "phủ thấp, hash cao"). Chưa làm vì đó
+   là **bớt** kết quả người dùng đang nhận, phải hỏi trước.
+3. Trần `--max-matches 200` vẫn còn; chẩn đoán nay cảnh báo khi chạm trần.
+
+---
+
+## Vòng bù đa tốc độ (2026-08-07, tiếp theo vòng trên)
+
+**Yêu cầu**: bịt điểm mù đổi tốc độ đã đo được (lệch 0,5% mất 93% bằng chứng).
+
+**Quyết định**: KHÔNG quét mù nhiều tốc độ. Lưới bước 1% để lại sai số tồn dư 0,5% —
+mà 0,5% đã đủ phá bằng chứng, nên muốn mạnh phải trúng tới ~0,1%, tức hàng chục lượt.
+
+Thay vào đó khai thác quan hệ toán học: video phát ở tốc độ `r` thì
+`align = t_video · (1 − r)`, tức align **trôi tuyến tính**, độ dốc chính là `(1 − r)`.
+Hồi quy độ dốc trên chính output lượt quét thường → ra tốc độ, **tốn 0 giây so khớp**,
+sai số đo được ≤0,05%.
+
+**Chi tiết kỹ thuật quan trọng**:
+1. Dùng **Theil–Sen** (trung vị độ dốc từng cặp) chứ không bình phương tối thiểu —
+   nhạc hiệu dùng chung tạo mảnh align ngẫu nhiên trong cùng clip gốc và kéo lệch
+   bình phương tối thiểu. Đo: LSQ cho R²=0,916 lệch 0,00135 (thu 38,5% vân tay);
+   Theil–Sen cho 1,03000 đúng tuyệt đối (thu 56,4%).
+2. **Vòng tinh chỉnh lặp** là thứ cứu được ca đổi cao độ: lưới thô bước 2% kéo về
+   trong ~1% → sinh đủ mảnh → đọc độ trôi → trúng 1,02970 → thu 85,3%. Mọi mốc đã quy
+   về trục thời gian gốc nên độ dốc luôn cho **tổng** tỉ lệ, không phải phần dư.
+3. **Quy đổi mốc thời gian**: hệ số mã trong tên khúc (`chunk_0003420_k097087.wav`),
+   `t_video = offset + t_trong_khúc × k`. Tên không có hậu tố = k 1,0 (tương thích ngược).
+4. Chỉ chạy khi lượt quét thường không ra ứng viên đạt chuẩn → đường đi bình thường
+   không tốn thêm giây nào.
+
+**Vùng phủ đo được**: đổi tốc độ giữ cao độ ±6% (đọc độ trôi); đổi cao độ ±5% (lưới +
+tinh chỉnh). Ngoài đó thêm mức vào `luoi_tempo`/`luoi_resample`.
+
+### Còn lại
+1. Đổi tốc độ giữ cao độ vượt ±6% và đổi cao độ vượt ±5% chưa phủ mặc định — mỗi mức
+   thêm tốn đúng một lượt so khớp, bật khi gặp thực tế.
+2. Cân nhắc siết bậc A bằng điều kiện mật độ (vẫn treo, phải hỏi trước).
+3. Trần `--max-matches 200` vẫn còn; chẩn đoán có cảnh báo khi chạm.

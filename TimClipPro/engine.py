@@ -45,6 +45,16 @@ from typing import Callable, Iterable, Optional
 import channel
 import cau_hinh
 import dossier
+from chan_doan_quet import ChanDoanQuet, ghi_nhan_bi_loai
+from chap_nhan_khop import loc_chap_nhan
+from toc_do_khop import (
+    HO_RESAMPLE,
+    HO_TEMPO,
+    bo_loc_ffmpeg,
+    giai_ma_he_so,
+    ma_he_so,
+    uoc_luong_toc_do,
+)
 from clip_metadata import (
     ClipMetadataResolver,
     MetadataAudit,
@@ -108,6 +118,35 @@ class Config:
     top_n: int = 5               # Chỉ giữ lại bao nhiêu kết quả tốt nhất
     min_hash_floor: int = 1000   # Dưới ngưỡng này: LOẠI HẲN, không đưa vào báo cáo
     min_hash_strong: int = 5000  # Từ ngưỡng này: coi là bằng chứng mạnh, ưu tiên chọn
+    # --- Đường chấp nhận thứ hai: phủ vân tay cao (xem chap_nhan_khop.py) ---
+    # Số hash tuyệt đối mà một clip gốc sinh ra phụ thuộc độ dài của chính nó, nên
+    # `min_hash_floor` một mình tạo false negative với clip ngắn: đo trên kho Cory
+    # có 3/1717 clip tổng hash < 1000, tức khớp 100% vẫn không bao giờ đạt ngưỡng.
+    # Ba điều kiện dưới phải ĐỒNG THỜI đúng thì mới mở đường chấp nhận thứ hai;
+    # mỗi cái chặn một kiểu dương tính giả đã đo được trên dữ liệu quét thật.
+    ty_le_chap_nhan: float = 60.0      # % vân tay clip gốc phải khớp được
+    min_match_chap_nhan: float = 20.0  # đoạn khớp phải dài tối thiểu (giây)
+    mat_do_toi_thieu: float = 3.0      # hash trên mỗi giây khớp
+    # --- Tìm nhanh một kết quả khi top_n = 1 ---
+    top1_tim_nhanh: bool = True   # Quét vùng đầu trước, đủ mạnh thì dừng luôn
+    top1_khuc_toi_thieu: int = 3  # Chỉ bật khi video có từ ngần này khúc trở lên
+    top1_hash_dung_som: int = 5000     # Dừng sớm nếu ứng viên đạt ngần này hash
+    top1_match_s_dung_som: float = 60.0  # ... và khớp liên tục ngần này giây
+    # --- Bù video bị đổi tốc độ để né vân tay (xem toc_do_khop.py) ---
+    # Chỉ chạy khi lượt quét thường KHÔNG có ứng viên nào đạt chuẩn, nên đường đi
+    # bình thường không tốn thêm một giây nào.
+    quet_da_toc_do: bool = True
+    # Ước lượng tốc độ từ độ trôi align: gần như miễn phí, phủ đổi tốc độ ±6%.
+    toc_do_min_manh: int = 4          # Số mảnh tối thiểu để hồi quy
+    toc_do_thang_hang: float = 0.60   # Tỉ lệ mảnh phải nằm đúng trên đường trôi
+    toc_do_lech_toi_thieu: float = 0.0015   # Dưới 0,15% coi như không lệch
+    toc_do_lech_toi_da: float = 0.25
+    # Lưới quét mù, chỉ để bù vùng bộ dò độ trôi không thấy: cao độ bị đổi thì mọi
+    # mốc phổ dịch đi, không mảnh nào sống sót nên không có gì để hồi quy.
+    luoi_resample: list = field(default_factory=lambda: [0.96, 0.98, 1.02, 1.04])
+    # Đổi tốc độ giữ cao độ đã được bộ dò độ trôi phủ tới ±6% nên lưới này để rỗng.
+    luoi_tempo: list = field(default_factory=list)
+    toc_do_toi_da_thu: int = 6        # Trần số lượt so khớp phụ mỗi video
     phan_bo_deu: bool = True     # Chia video vi phạm thành N vùng, mỗi vùng lấy 1 kết quả
     uu_tien_clip_khac_nhau: bool = True  # Ưu tiên 5 clip GỐC KHÁC NHAU thay vì trùng lặp
     # Hai ứng viên chênh nhau trong dung sai này thì coi là NGANG BẰNG về bằng
@@ -164,6 +203,28 @@ class Config:
             raise ValueError("san_bang_chung phải nằm trong khoảng 0..1.")
         if self.min_hash_floor < 0 or self.min_hash_strong < 0:
             raise ValueError("Ngưỡng hash chọn lọc không được âm.")
+        if not 0.0 <= self.ty_le_chap_nhan <= 100.0:
+            raise ValueError("ty_le_chap_nhan phải nằm trong khoảng 0..100.")
+        if self.min_match_chap_nhan < 0 or self.mat_do_toi_thieu < 0:
+            raise ValueError("Tiêu chí chấp nhận theo tỷ lệ không được âm.")
+        if self.top1_khuc_toi_thieu < 1:
+            raise ValueError("top1_khuc_toi_thieu phải >= 1.")
+        if self.top1_hash_dung_som < 0 or self.top1_match_s_dung_som < 0:
+            raise ValueError("Ngưỡng dừng sớm Top-1 không được âm.")
+        if self.toc_do_min_manh < 3:
+            raise ValueError("toc_do_min_manh phải >= 3 để hồi quy có nghĩa.")
+        if not 0.0 <= self.toc_do_thang_hang <= 1.0:
+            raise ValueError("toc_do_thang_hang phải nằm trong khoảng 0..1.")
+        if not 0 < self.toc_do_lech_toi_thieu < self.toc_do_lech_toi_da <= 0.5:
+            raise ValueError(
+                "Phải có 0 < toc_do_lech_toi_thieu < toc_do_lech_toi_da <= 0.5."
+            )
+        if self.toc_do_toi_da_thu < 0:
+            raise ValueError("toc_do_toi_da_thu không được âm.")
+        for ten in ("luoi_resample", "luoi_tempo"):
+            for k in getattr(self, ten):
+                if not isinstance(k, (int, float)) or not 0.5 <= float(k) <= 2.0:
+                    raise ValueError(f"{ten} chỉ nhận hệ số trong khoảng 0,5..2,0.")
         if self.dem_max_gb < 0 or self.dem_max_ngay < 0:
             raise ValueError("Giới hạn kho đệm không được âm.")
 
@@ -212,7 +273,12 @@ class ScanResult:
     channel_id: str = ""
     channel_url: str = ""
     upload_date: str = ""
+    # Số ứng viên ĐẠT tiêu chí chấp nhận trước khi cắt còn Top-N. Ý nghĩa này giữ
+    # nguyên như trước; chỉ có định nghĩa "đạt" là mở rộng thêm bậc phủ vân tay cao.
     so_dat_nguong: int = 0
+    # Phễu phát hiện của chính lượt quét này. Nhờ nó mà một kết quả 0 đoạn nói được
+    # nó mất ở tầng nào, thay vì chỉ nói "không tìm thấy".
+    chan_doan: Optional[ChanDoanQuet] = None
 
 
 class Cancelled(Exception):
@@ -386,6 +452,10 @@ RE_MATCH = re.compile(
     r"\s+to\s+time\s+([\d.]+)\s+s\s+in\s+(.+?)\s+with\s+(\d+)\s+of\s+(\d+)\s+common\s+hashes"
 )
 
+# Tên khúc: `chunk_<mốc bắt đầu>.wav`, hoặc `chunk_<mốc>_k<hệ số x100000>.wav` khi
+# khúc đã bị đổi tốc độ để bù né tránh. Hậu tố là tuỳ chọn nên tên cũ vẫn đọc được.
+RE_TEN_KHUC = re.compile(r"chunk_(\d+)(?:_k(\d+))?\.wav")
+
 
 # =====================================================================
 #  Engine
@@ -400,6 +470,7 @@ class Engine:
         self.config = config or Config()
         self.canh_bao_khoi_dong: list = []
         self.canh_bao_gop: list = []
+        self.chan_doan_quet = ChanDoanQuet()
         self.cau_hinh_da_luu: dict = {}
 
         self.bin_dir = os.path.join(self.root, "bin")
@@ -430,6 +501,24 @@ class Engine:
         self._nap_cau_hinh()
         self._init_sqlite()
         self._init_kho()
+
+    @property
+    def chan_doan_quet(self) -> ChanDoanQuet:
+        """Phễu phát hiện của lượt quét đang chạy; đặt lại ở đầu mỗi `scan_media()`.
+
+        Tự tạo khi truy cập lần đầu để các test logic thuần dựng Engine bằng
+        ``Engine.__new__(Engine)`` (không chạy ``__init__``) vẫn gọi được
+        ``_merge()`` và ``_chon_loc()`` mà không phải chuẩn bị thêm gì.
+        """
+        cd = getattr(self, "_chan_doan_quet", None)
+        if cd is None:
+            cd = ChanDoanQuet()
+            self._chan_doan_quet = cd
+        return cd
+
+    @chan_doan_quet.setter
+    def chan_doan_quet(self, gia_tri: ChanDoanQuet) -> None:
+        self._chan_doan_quet = gia_tri
 
     def _nap_cau_hinh(self) -> None:
         """Nạp cấu hình bền vững; mọi lỗi đều được hạ thành cảnh báo khởi động."""
@@ -1927,12 +2016,30 @@ class Engine:
 
     def _match_chunks(self, chunks: list, progress: Optional[Callable] = None,
                       pct0: float = 0.60, pct1: float = 0.95,
-                      workspace: Optional[str] = None) -> list:
+                      workspace: Optional[str] = None,
+                      hau_to: str = "") -> list:
+        """So khớp một nhóm khúc với kho vân tay, trả về danh sách kết quả thô.
+
+        VÌ SAO KHÔNG CÒN DÙNG ``--sortbytime``:
+        audfprint cắt bớt kết quả THEO THỨ TỰ ĐANG CÓ, và nó cắt SAU khi đã sắp lại:
+
+            results = results[(-results[:, 1]).argsort(),]   # mạnh nhất lên đầu
+            if self.sort_by_time:
+                rslts = rslts[(-rslts[:, 2]).argsort(), :]   # sắp lại theo align time
+            return rslts[:self.max_returns, :]               # RỒI MỚI cắt
+
+        Nghĩa là khi một khúc có nhiều hơn ``--max-matches`` kết quả, phần được giữ
+        lại là phần có align time LỚN NHẤT, không phải phần MẠNH NHẤT. Đo trên khúc
+        đầu của video sljyQs9RAhE: cấu hình cũ chỉ thấy khoảng t=[1482..1847]s, bỏ
+        mất 207 kết quả nằm ở t=[3313..3505]s. Bỏ ``--sortbytime`` thì phần bị cắt
+        là phần yếu nhất — đúng ngữ nghĩa mong muốn. Thứ tự thời gian vẫn được bảo
+        đảm vì ``_merge()`` tự sắp theo ``start_s`` ở cuối.
+        """
         goc = workspace or self.data_dir
-        listfile = os.path.join(goc, "_ds_khuc.txt")
+        listfile = os.path.join(goc, f"_ds_khuc{hau_to}.txt")
         with open(listfile, "w", encoding="utf-8") as f:
             f.write("\n".join(chunks))
-        opfile = os.path.join(goc, "_raw_match.txt")
+        opfile = os.path.join(goc, f"_raw_match{hau_to}.txt")
         if os.path.exists(opfile):
             os.remove(opfile)
 
@@ -1945,7 +2052,7 @@ class Engine:
                           f"Đang so khớp vân tay... khúc {dem['n']}/{len(chunks)}")
 
         tham_so = [
-            "--find-time-range", "--sortbytime", "--exact-count",
+            "--find-time-range", "--exact-count",
             "--min-count", "10", "--max-matches", str(self.config.max_matches),
         ]
         shifts_quet = max(0, int(self.config.shifts_quet))
@@ -1965,10 +2072,17 @@ class Engine:
             raise RuntimeError("Lỗi khi so khớp:\n" + "\n".join(duoi[-10:]))
 
         tho = []
+        dong_tho = dong_co_matched = 0
+        theo_khuc: dict = {}
         if os.path.exists(opfile):
             with open(opfile, "r", encoding="utf-8", errors="replace") as f:
                 for dong in f:
-                    m = RE_MATCH.search(dong.strip())
+                    dong_tho += 1
+                    dong = dong.strip()
+                    if "Matched" not in dong:
+                        continue
+                    dong_co_matched += 1
+                    m = RE_MATCH.search(dong)
                     if not m:
                         continue
                     khop = float(m.group(1))
@@ -1977,11 +2091,39 @@ class Engine:
                     t_clip = float(m.group(4))
                     file_clip = m.group(5).strip()
                     so_hash = int(m.group(6))
-                    mk = re.search(r"chunk_(\d+)\.wav", os.path.basename(file_khuc))
+                    ten_khuc = os.path.basename(file_khuc)
+                    theo_khuc[ten_khuc] = theo_khuc.get(ten_khuc, 0) + 1
+                    mk = RE_TEN_KHUC.search(ten_khuc)
                     offset = int(mk.group(1)) if mk else 0
-                    tho.append({"clip": file_clip, "bat_dau": offset + t_khuc,
+                    # Khúc đã bị đổi tốc độ để bù né tránh thì mọi mốc thời gian
+                    # ĐO TRONG khúc phải nhân ngược lại mới về đúng trục thời gian
+                    # của video gốc. Mốc bắt đầu khúc (offset) thì không đổi.
+                    he_so = giai_ma_he_so(mk.group(2) if mk else None)
+                    bat_dau = offset + t_khuc * he_so
+                    khop = khop * he_so
+                    tho.append({"clip": file_clip, "bat_dau": bat_dau,
                                 "khop": khop, "t_clip": t_clip, "hash": so_hash,
-                                "align": (offset + t_khuc) - t_clip})
+                                "align": bat_dau - t_clip})
+
+        # Cộng dồn vào chẩn đoán của lượt quét: hàm này có thể được gọi nhiều lần
+        # (đường đi nhanh Top-1 gọi hai lần) nên phải cộng chứ không gán đè.
+        cd = self.chan_doan_quet
+        cd.so_khuc += len(chunks)
+        cd.dong_tho += dong_tho
+        cd.dong_co_matched += dong_co_matched
+        cd.parse_duoc += len(tho)
+        cd.tran_max_matches = int(self.config.max_matches)
+        cd.so_khuc_cham_tran += sum(
+            1 for n in theo_khuc.values() if n >= self.config.max_matches
+        )
+        if dong_co_matched and not tho:
+            cd.canh_bao.append(
+                f"audfprint trả về {dong_co_matched} dòng khớp nhưng không đọc ra "
+                "được dòng nào — nghi định dạng output đã đổi."
+            )
+            LOGGER_SCAN.warning(
+                "event=scan.parser_mismatch matched_lines=%d parsed=0", dong_co_matched
+            )
         return tho
 
     def _merge(self, tho: list) -> list:
@@ -1995,12 +2137,18 @@ class Engine:
         """
         cfg = self.config
         self.canh_bao_gop = []
+        qua_hash = [x for x in tho if x["hash"] >= cfg.min_hash]
         loc = [
-            x for x in tho
-            if x["hash"] >= cfg.min_hash
-            and x["khop"] >= cfg.min_match_s
+            x for x in qua_hash
+            if x["khop"] >= cfg.min_match_s
             and x["khop"] > 0
         ]
+        # Ghi lại từng tầng để một kết quả 0 đoạn chỉ được đúng chỗ nó biến mất.
+        cd = self.chan_doan_quet
+        cd.qua_min_hash = len(qua_hash)
+        cd.qua_min_match_s = len(loc)
+        cd.hash_tho_lon_nhat = max((int(x["hash"]) for x in tho), default=0)
+        cd.khop_tho_dai_nhat = round(max((float(x["khop"]) for x in tho), default=0.0), 1)
         loc.sort(key=lambda x: (x["clip"], x["align"], -x["hash"]))
 
         try:
@@ -2111,9 +2259,16 @@ class Engine:
         """Giữ chỗ cho khả năng ghi đè trong test; mặc định dùng hàm thuần."""
         return chon_dai_dien(*args, **kwargs)
 
+    def _tong_hash_kho(self) -> dict:
+        """Bản đồ tên clip -> tổng số hash trong kho. Kho lỗi thì trả về rỗng."""
+        try:
+            return {c["ten"]: c["so_hash"] for c in self.db_clips() if c["so_hash"]}
+        except Exception:  # noqa: BLE001 — chẩn đoán không được phép làm hỏng lượt quét
+            return {}
+
     def _gan_chi_so(self, ds: list, duration: float) -> None:
         """Tính tỷ lệ vân tay khớp (%) và vùng vị trí cho từng kết quả."""
-        tong_hash = {c["ten"]: c["so_hash"] for c in self.db_clips() if c["so_hash"]}
+        tong_hash = self._tong_hash_kho()
         for m in ds:
             goc = tong_hash.get(m.clip, 0)
             m.ty_le = min(100.0, round(100.0 * m.hashes / goc, 1)) if goc else 0.0
@@ -2132,11 +2287,18 @@ class Engine:
         chứng minh được vi phạm trải dài toàn bộ video.
 
         Trả về (danh_sách_chọn, danh_sách_bị_loại).
+
+        Tiêu chí "đạt" do `chap_nhan_khop.loc_chap_nhan()` quyết định: ngoài ngưỡng
+        hash tuyệt đối cũ còn có đường thứ hai cho clip gốc ngắn (phủ vân tay cao +
+        đủ dài + đủ dày). Đường thứ hai CHỈ THÊM ứng viên nên không thể làm mất kết
+        quả mà luật cũ đã nhận.
         """
         cfg = self.config
-        dat = [m for m in ds if m.hashes >= cfg.min_hash_floor]
-        loai = [m for m in ds if m.hashes < cfg.min_hash_floor]
+        dat, loai, ly_do = loc_chap_nhan(ds, cfg)
+        cd = self.chan_doan_quet
+        cd.duoc_chap_nhan = len(dat)
         if not dat:
+            ghi_nhan_bi_loai(cd, loai, self._tong_hash_kho(), ly_do)
             return [], loai
 
         # `ty_le` chỉ dùng được khi _gan_chi_so đã chạy. Nếu chưa (gọi trực tiếp,
@@ -2196,7 +2358,295 @@ class Engine:
             loai = loai + con
 
         chon.sort(key=lambda m: m.start_s)   # xếp theo thời gian cho dễ đọc
+        cd.da_chon = len(chon)
+        if not chon:
+            ghi_nhan_bi_loai(cd, loai, self._tong_hash_kho(), ly_do)
         return chon, loai
+
+    # =================================================================
+    #  3a) CHỐT CHẨN ĐOÁN PHỄU PHÁT HIỆN
+    # =================================================================
+
+    def _chot_chan_doan(self, kq: ScanResult) -> ChanDoanQuet:
+        """Chốt phễu, ghi log có cấu trúc và lưu bản ghi cho ca không có kết quả."""
+        cd = self.chan_doan_quet
+        cd.da_chon = len(kq.matches)
+        cd.chot_giai_doan()
+        if cd.so_khuc_cham_tran:
+            cd.canh_bao.append(
+                f"{cd.so_khuc_cham_tran} khúc chạm trần --max-matches "
+                f"({cd.tran_max_matches}); có thể còn kết quả yếu hơn chưa được xét. "
+                "Tăng «Số kết quả tối đa mỗi khúc» nếu cần soi kỹ hơn."
+            )
+        LOGGER_SCAN.info(
+            "event=scan.funnel source_id=%s %s",
+            kq.source_id or kq.source_name, cd.dong_log(),
+        )
+        if cd.giai_doan_mat and kq.status == "ok":
+            with contextlib.suppress(Exception):
+                self._luu_chan_doan(kq, cd)
+        return cd
+
+    def _luu_chan_doan(self, kq: ScanResult, cd: ChanDoanQuet) -> None:
+        """Lưu bản ghi JSON nhẹ cho ca 0 kết quả, để soi lại mà không cần quét lại.
+
+        Chỉ ghi số liệu phễu và cấu hình đã dùng — không ghi media, không ghi cookie
+        hay khoá API. Giữ tối đa 200 file gần nhất.
+        """
+        thu_muc = os.path.join(self.data_dir, "chan_doan")
+        os.makedirs(thu_muc, exist_ok=True)
+        ban_ghi = {
+            "thoi_diem": datetime.now().isoformat(timespec="seconds"),
+            "video": kq.source_id or kq.source_name,
+            "source_ref": kq.source_ref,
+            "duration_s": round(kq.duration_s, 1),
+            "kho": self.kho_dang_dung,
+            "kho_db": os.path.basename(self.db_file),
+            "cau_hinh": {
+                k: getattr(self.config, k) for k in (
+                    "chunk_s", "overlap_max_s", "min_hash", "min_match_s",
+                    "max_matches", "shifts_quet", "min_hash_floor",
+                    "min_hash_strong", "ty_le_chap_nhan", "min_match_chap_nhan",
+                    "mat_do_toi_thieu", "top_n",
+                )
+            },
+            "phieu_phat_hien": cd.thanh_dict(),
+        }
+        ten = ten_file_an_toan(f"{ban_ghi['video']}_{int(time.time())}") + ".json"
+        ghi_json_an_toan(os.path.join(thu_muc, ten), ban_ghi)
+        cu = sorted(glob.glob(os.path.join(thu_muc, "*.json")), key=os.path.getmtime)
+        for path in cu[:-200]:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+    # =================================================================
+    #  3b) ĐƯỜNG ĐI NHANH KHI CHỈ CẦN MỘT KẾT QUẢ (top_n = 1)
+    # =================================================================
+
+    def _du_manh_de_dung_som(self, tho: list, duration: float) -> Optional[Match]:
+        """Trong nhóm khúc vừa quét đã có ứng viên đủ mạnh để dừng hẳn chưa?
+
+        Cổng dừng sớm phải CHẶT hơn hẳn tiêu chí chấp nhận thường: dừng sớm đồng
+        nghĩa với việc không bao giờ nhìn phần còn lại của video, nên chỉ được dừng
+        khi bằng chứng mạnh tới mức phần còn lại không thể đổi kết luận.
+
+        Số tham chiếu đo thật: một bản reup nguyên vẹn cho 15.173 hash trên 786,8
+        giây; clip gốc nguyên bản cho 4.610 hash trên 263,6 giây. Trong khi đó nhiễu
+        mạnh nhất đo được trên 11 video âm tính chỉ đạt 309 hash và nhạc hiệu dùng
+        chung chỉ đạt 133 hash / 8,8 giây. Cổng mặc định 5.000 hash + 60 giây nằm
+        giữa hai vùng đó, lệch hẳn về phía an toàn.
+        """
+        cfg = self.config
+        if not tho:
+            return None
+        ung_vien = self._merge(tho)
+        if not ung_vien:
+            return None
+        self._gan_chi_so(ung_vien, duration)
+        dat, _, _ = loc_chap_nhan(ung_vien, cfg)
+        du = [
+            m for m in dat
+            if m.hashes >= cfg.top1_hash_dung_som
+            and m.matched_s >= cfg.top1_match_s_dung_som
+        ]
+        if not du:
+            return None
+        return max(du, key=lambda m: (m.hashes, m.matched_s))
+
+    def _quet_tho(self, chunks: list, duration: float,
+                  progress: Optional[Callable], pct0: float, pct1: float,
+                  workspace: str) -> list:
+        """Lấy kết quả thô cho toàn bộ khúc, có thể dừng sớm khi top_n = 1.
+
+        Chiến lược: quét khúc ĐẦU trước (nơi người kiểm tra dễ tua tới nhất), nếu đã
+        có bằng chứng vượt cổng dừng sớm thì trả về luôn; nếu chưa thì quét nốt phần
+        còn lại TRONG MỘT LẦN GỌI nữa và ghép kết quả thô lại.
+
+        Nhờ ghép kết quả thô thay vì quét lại từ đầu, đường đi nhanh không làm tăng
+        khối lượng so khớp — chỉ tốn thêm đúng một lần nạp kho vân tay (đo được
+        khoảng 13 giây) trong trường hợp phải quét tiếp. Đổi lại, khi gặp bản reup
+        rõ ràng nằm ở đầu video thì bỏ qua được toàn bộ phần sau.
+        """
+        cfg = self.config
+        cd = self.chan_doan_quet
+        du_dieu_kien = (
+            cfg.top1_tim_nhanh
+            and cfg.top_n == 1
+            and len(chunks) >= max(2, cfg.top1_khuc_toi_thieu)
+        )
+        if not du_dieu_kien:
+            cd.duong_di = "quet_toan_bo"
+            return self._match_chunks(chunks, progress, pct0, pct1, workspace=workspace)
+
+        # Chia đôi tiến độ: phần đầu cho vùng ưu tiên, phần sau cho quét bù.
+        giua = pct0 + (pct1 - pct0) * 0.35
+        self._bao(progress, pct0,
+                  "Tìm nhanh 1 kết quả đáng tin — đang kiểm tra phần đầu video...")
+        dau = self._match_chunks(chunks[:1], progress, pct0, giua,
+                                 workspace=workspace, hau_to="_uu_tien")
+        som = self._du_manh_de_dung_som(dau, duration)
+        if som is not None:
+            cd.duong_di = "dung_som_vung_dau"
+            LOGGER_SCAN.info(
+                "event=scan.top1.early_accept clip=%s hashes=%d matched_s=%.1f ratio=%.1f",
+                som.clip, som.hashes, som.matched_s, som.ty_le,
+            )
+            self._bao(progress, pct1,
+                      f"✓ Đã tìm thấy bằng chứng đủ mạnh ở phần đầu "
+                      f"({som.hashes} hash, khớp {hhmmss(som.matched_s)}) — "
+                      "bỏ qua phần còn lại.")
+            return dau
+
+        cd.duong_di = "quet_bu_toan_bo"
+        self._bao(progress, giua,
+                  "Chưa có bằng chứng đủ mạnh ở phần đầu — đang mở rộng quét toàn bộ video...")
+        con_lai = self._match_chunks(chunks[1:], progress, giua, pct1,
+                                     workspace=workspace, hau_to="_con_lai")
+        return dau + con_lai
+
+    # =================================================================
+    #  3c) BÙ VIDEO BỊ ĐỔI TỐC ĐỘ ĐỂ NÉ VÂN TAY
+    # =================================================================
+
+    def _co_ung_vien_dat(self, tho: list, duration: float) -> bool:
+        """Đã có ứng viên nào đạt tiêu chí chấp nhận chưa? Không đụng chẩn đoán cuối."""
+        if not tho:
+            return False
+        ung_vien = self._merge(tho)
+        if not ung_vien:
+            return False
+        self._gan_chi_so(ung_vien, duration)
+        dat, _, _ = loc_chap_nhan(ung_vien, self.config)
+        return bool(dat)
+
+    def _bien_doi_khuc(self, chunks: list, he_so: float, ho: str,
+                       workspace: str) -> list:
+        """Tạo bản khúc đã đổi tốc độ ``he_so`` lần; mã hệ số vào tên file.
+
+        Đổi tốc độ trên chính file khúc (đã là WAV 11 kHz mono) chứ không giải mã
+        lại video gốc — rẻ hơn nhiều lần.
+        """
+        thu_muc = os.path.join(workspace, "chunks")
+        os.makedirs(thu_muc, exist_ok=True)
+        ma = ma_he_so(he_so)
+        ra = []
+        for khuc in chunks:
+            self._check_cancel()
+            mk = RE_TEN_KHUC.search(os.path.basename(khuc))
+            if not mk:
+                continue
+            out = os.path.join(thu_muc, f"chunk_{int(mk.group(1)):07d}_k{ma}.wav")
+            r = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", khuc,
+                 "-vn", "-ac", "1", "-ar", "11025",
+                 "-af", bo_loc_ffmpeg(he_so, ho), out],
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1024:
+                ra.append(out)
+        return ra
+
+    def _ke_hoach_toc_do(self, tho: list) -> list:
+        """Danh sách (hệ số, họ biến đổi, mô tả) cần thử, theo thứ tự ưu tiên.
+
+        Ưu tiên tuyệt đối cho ước lượng đọc từ độ trôi align: nó chính xác tới
+        ~0,01% và không tốn một giây so khớp nào để có được. Lưới quét mù chỉ chạy
+        khi không đọc được gì, và chỉ nhằm bù vùng cao độ bị đổi — vùng mà không
+        mảnh khớp nào sống sót nên không có gì để hồi quy.
+        """
+        cfg = self.config
+        ke_hoach = []
+        uoc = uoc_luong_toc_do(
+            tho,
+            min_manh=cfg.toc_do_min_manh,
+            min_ty_le_hop=cfg.toc_do_thang_hang,
+            lech_toi_thieu=cfg.toc_do_lech_toi_thieu,
+            lech_toi_da=cfg.toc_do_lech_toi_da,
+        )
+        for u in uoc:
+            ke_hoach.append((u.he_so_bu, HO_TEMPO,
+                             f"đo từ độ trôi: video {u.mo_ta()}"))
+        if not ke_hoach:
+            for k in cfg.luoi_tempo:
+                ke_hoach.append((1.0 / float(k), HO_TEMPO,
+                                 f"lưới tốc độ {float(k):.3f}"))
+            for k in cfg.luoi_resample:
+                ke_hoach.append((1.0 / float(k), HO_RESAMPLE,
+                                 f"lưới cao độ {float(k):.3f}"))
+        return ke_hoach[: max(0, cfg.toc_do_toi_da_thu)]
+
+    def _quet_da_toc_do(self, chunks: list, tho: list,
+                        progress: Optional[Callable], pct0: float, pct1: float,
+                        workspace: str) -> list:
+        """Quét lại ở các tốc độ đã hiệu chỉnh; trả về kết quả thô ĐÃ quy đổi mốc.
+
+        Chỉ được gọi khi lượt quét thường không có ứng viên nào đạt chuẩn.
+        """
+        cfg = self.config
+        cd = self.chan_doan_quet
+        hang_doi = self._ke_hoach_toc_do(tho)
+        if not hang_doi:
+            return []
+
+        def uoc_lai(tat_ca_tho: list) -> list:
+            return uoc_luong_toc_do(
+                tat_ca_tho,
+                min_manh=cfg.toc_do_min_manh,
+                min_ty_le_hop=cfg.toc_do_thang_hang,
+                lech_toi_thieu=cfg.toc_do_lech_toi_thieu,
+                lech_toi_da=cfg.toc_do_lech_toi_da,
+            )
+
+        da_thu: set = set()
+        them: list = []
+        lan = 0
+        while hang_doi and lan < max(0, cfg.toc_do_toi_da_thu):
+            he_so, ho, mo_ta = hang_doi.pop(0)
+            khoa = (round(he_so, 5), ho)
+            if khoa in da_thu:
+                continue
+            da_thu.add(khoa)
+            lan += 1
+            self._check_cancel()
+
+            p0 = pct0 + (pct1 - pct0) * (lan - 1) / max(1, cfg.toc_do_toi_da_thu)
+            p1 = pct0 + (pct1 - pct0) * lan / max(1, cfg.toc_do_toi_da_thu)
+            cd.da_thu_toc_do.append(mo_ta)
+            self._bao(progress, p0, f"Thử bù tốc độ (lượt {lan}) — {mo_ta}...")
+
+            khuc_moi = self._bien_doi_khuc(chunks, he_so, ho, workspace)
+            if not khuc_moi:
+                continue
+            ket = self._match_chunks(khuc_moi, progress, p0, p1,
+                                     workspace=workspace,
+                                     hau_to=f"_k{ma_he_so(he_so)}_{ho}")
+            for khuc in khuc_moi:
+                with contextlib.suppress(OSError):
+                    os.remove(khuc)
+            if not ket:
+                continue
+            them.extend(ket)
+
+            if self._co_ung_vien_dat(tho + them, 0.0):
+                cd.toc_do_tim_duoc = mo_ta
+                LOGGER_SCAN.info(
+                    "event=scan.tempo.recovered factor=%.5f family=%s note=%s",
+                    he_so, ho, mo_ta,
+                )
+                self._bao(progress, p1,
+                          f"✓ Tìm thấy bằng chứng sau khi bù tốc độ — {mo_ta}")
+                break
+
+            # Chưa đạt nhưng lượt vừa rồi thường để lại NHIỀU mảnh hơn hẳn, nên ước
+            # lượng lại sẽ chính xác hơn. Mọi mốc đã được quy về trục thời gian gốc
+            # nên độ dốc luôn cho ra TỔNG tỉ lệ, không phải phần dư — cứ ước lượng
+            # lại trên toàn bộ mảnh đã có là hội tụ dần. Giữ nguyên họ biến đổi:
+            # sai cao độ thì phải bù bằng resample, đổi tốc độ suông không cứu được.
+            for u in uoc_lai(tho + them):
+                moi = (round(u.he_so_bu, 5), ho)
+                if moi in da_thu:
+                    continue
+                hang_doi.insert(0, (u.he_so_bu, ho, f"tinh chỉnh: video {u.mo_ta()}"))
+        return them
 
     # =================================================================
     #  4) CÁC HÀM QUÉT CẤP CAO (giao diện chỉ cần gọi những hàm này)
@@ -2217,6 +2667,7 @@ class Engine:
             self.cancel_event.clear()
         ten = label or os.path.basename(path)
         kq = ScanResult(source_name=ten, source_ref=ref or path)
+        self.chan_doan_quet = ChanDoanQuet()
         try:
             if not os.path.isfile(path):
                 raise RuntimeError(f"Không tìm thấy file: {path}")
@@ -2227,9 +2678,14 @@ class Engine:
                 kq.duration_s = tong
                 if not chunks:
                     raise RuntimeError("Không cắt được khúc nào từ file này.")
-                tho = self._match_chunks(
-                    chunks, progress, p_cut1, p_match1, workspace=ws
-                )
+                tho = self._quet_tho(chunks, tong, progress, p_cut1, p_match1, ws)
+                # Không có gì đạt chuẩn thì thử bù tốc độ trước khi kết luận là
+                # không có. Đây là lúc DUY NHẤT lượt quét phụ được chạy, nên video
+                # có kết quả bình thường không tốn thêm giây nào.
+                if self.config.quet_da_toc_do and not self._co_ung_vien_dat(tho, tong):
+                    tho = tho + self._quet_da_toc_do(
+                        chunks, tho, progress, p_match1, p_match1, ws
+                    )
             tat_ca = self._merge(tho)
             if self.canh_bao_gop:
                 kq.note = "\n".join(self.canh_bao_gop)
@@ -2240,10 +2696,11 @@ class Engine:
             goc = os.path.basename(path).lower()
             tat_ca = [m for m in tat_ca if m.clip.lower() != goc]
             self._gan_chi_so(tat_ca, tong)
-            kq.so_dat_nguong = len([
-                m for m in tat_ca
-                if m.hashes >= self.config.min_hash_floor
-            ])
+            self.chan_doan_quet.gop_lai = len(tat_ca)
+            # Hợp đồng cũ giữ nguyên: số ứng viên ĐẠT chuẩn TRƯỚC khi cắt còn Top-N.
+            # Chỉ định nghĩa "đạt" là mở rộng thêm bậc phủ vân tay cao.
+            dat_chuan, _, _ = loc_chap_nhan(tat_ca, self.config)
+            kq.so_dat_nguong = len(dat_chuan)
             kq.matches, kq.matches_loai = self._chon_loc(tat_ca, tong)
             tb = f"Xong — chọn {len(kq.matches)} kết quả tốt nhất"
             if kq.matches_loai:
@@ -2255,6 +2712,7 @@ class Engine:
             kq.status, kq.note = "error", str(e)
         finally:
             shutil.rmtree(self.chunk_dir, ignore_errors=True)
+            kq.chan_doan = self._chot_chan_doan(kq)
         if luu_lich_su:
             kq.job_id = self.save_job(kq, source_type)
         return kq
