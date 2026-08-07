@@ -15,7 +15,7 @@ ghi `lichsu.db`, không đẩy Google Sheets, không sửa `db.pklz`.
 | Lệnh/phạm vi | Passed | Failed | Skipped | Ghi chú |
 |---|---:|---:|---:|---|
 | `tests/test_chan_doan_zero_match.py` (mới) | 32 | 0 | 0 | Chấp nhận 2 bậc, 6 giai đoạn phễu, parser, Fast Top-1 |
-| Full fast suite (`pytest -q`) | 537 | 0 | 1 | Toàn bộ suite cũ giữ nguyên hành vi |
+| Full fast suite (`pytest -q`) | 574 | 0 | 1 | Toàn bộ suite cũ giữ nguyên hành vi |
 | `pytest -m slow` | 5 | 0 | 0 | Tích hợp audio tổng hợp thật |
 | `ruff check .` / `compileall` / `pip check` | — | 0 finding | — | Pass |
 
@@ -25,6 +25,21 @@ ghi `lichsu.db`, không đẩy Google Sheets, không sửa `db.pklz`.
 11/11 nói được giai đoạn mất kết quả (`khong_dat_chap_nhan`) kèm ứng viên mạnh nhất bị
 loại và lý do. 11/11 chạm trần `--max-matches` và nay có cảnh báo. Bảng đầy đủ ở
 [ZERO_MATCH_ROOT_CAUSE.md](ZERO_MATCH_ROOT_CAUSE.md) mục 9.
+
+### Rào chắn mật độ cho bậc A
+
+Hiệu chỉnh và kiểm chứng hồi quy bằng cách chạy chính `danh_gia_chap_nhan()` trên
+**toàn bộ 1.199 match lịch sử** trong `lichsu.db`, so luật cũ (`mat_do_bac_a = 0`) với
+luật mới (3,0): **0 mất đi, 0 thêm vào**. Mật độ thấp nhất trong lịch sử là 9,99 hash/s
+nên biên an toàn là 3,3 lần. Ca bệnh lý 1.200 hash trải 2.000 giây bị chặn đúng.
+
+| Test | Khoá điều gì |
+|---|---|
+| `test_bac_a_loai_bang_chung_qua_loang` | 1.200 hash / 2.000s / 0,6 h/s phải bị loại |
+| `test_bac_a_bao_dung_ly_do_khi_du_hash_nhung_loang` | Lý do phải nói "quá loãng", không nói "thiếu hash" |
+| `test_rao_chan_mat_do_khong_dung_toi_match_that` | Match thật ở mật độ thấp nhất đo được (9,99 h/s) vẫn phải được nhận |
+| `test_tat_rao_chan_mat_do_thi_ve_dung_hanh_vi_cu` | `mat_do_bac_a = 0` là quay về luật cũ |
+| `test_khong_cho_dat_rao_chan_vao_vung_nguy_hiem` | `validate()` chặn giá trị > 9,0 |
 
 ### Bù đa tốc độ (`tests/test_toc_do_khop.py` — 33 test)
 

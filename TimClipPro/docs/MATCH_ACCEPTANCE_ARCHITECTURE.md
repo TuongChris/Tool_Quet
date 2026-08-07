@@ -44,6 +44,7 @@ tra — nhưng nó vẫn là lỗi đúng/sai, và sửa được mà không đ�
 ```
 Bậc A — bằng chứng tuyệt đối
     hashes >= min_hash_floor                       (mặc định 1000)
+VÀ  mật độ >= mat_do_bac_a                         (rào chắn, mặc định 3,0 hash/giây)
 
 Bậc B — phủ vân tay cao (đường mới, dành cho clip gốc ngắn)
     ty_le      >= ty_le_chap_nhan                  (mặc định 60,0 %)
@@ -53,12 +54,47 @@ VÀ  mật độ     >= mat_do_toi_thieu                 (mặc định 3,0 hash
 
 Ứng viên đạt **một trong hai** bậc thì được nhận.
 
-### Tính chất quan trọng: thay đổi CHỈ THÊM, không bao giờ BỚT
+### Bậc B chỉ THÊM, không bao giờ BỚT
 
-Bậc A giữ nguyên nguyên văn luật cũ. Bậc B là một nhánh `hoặc`. Vì vậy mọi ứng viên
-luật cũ đã nhận thì luật mới vẫn nhận — không thể gây hồi quy trên kết quả đang
-đúng. Rủi ro duy nhất cần canh là dương tính giả mới do bậc B, và đó là lý do bậc B
-phải thoả cả ba điều kiện.
+Bậc B là một nhánh `hoặc` nên mọi ứng viên luật cũ đã nhận thì vẫn nhận. Rủi ro duy
+nhất cần canh là dương tính giả mới, và đó là lý do bậc B phải thoả cả ba điều kiện.
+
+### Rào chắn mật độ của bậc A — tham số DUY NHẤT có thể lấy đi kết quả
+
+Vượt ngưỡng hash tuyệt đối chưa chứng minh được gì nếu số hash đó rải quá mỏng: một
+ứng viên 1.200 hash trải 2.000 giây (0,6 hash/s) chỉ là các điểm trùng rải rác bám
+cùng một align, không phải một đoạn khớp thật.
+
+Ngưỡng được chọn bằng cách chạy chính hàm chấp nhận trên **toàn bộ 1.199 match đã
+từng được báo cáo** trong `lichsu.db`:
+
+| | Mật độ (hash/giây) |
+|---|---:|
+| thấp nhất trong lịch sử | **9,99** |
+| p1 | 11,52 |
+| trung vị | 16,84 |
+| cao nhất | 40,92 |
+
+**Không có một match thật nào thưa.** Hệ quả quan trọng:
+
+* Mọi ngưỡng từ 0,5 đến 5,0 hash/s loại **0/1.198** kết quả — đây là **rào chắn**
+  chống ca bệnh lý, **không phải bộ lọc**. Ca thưa thật sự (309 hash trải 578,6 giây
+  = 0,53 hash/s) vốn đã bị chính sàn 1000 loại từ trước, không cần tới mật độ.
+* Từ khoảng 10 hash/s trở lên là cắt vào bằng chứng thật ngay: hai match 11.445 hash
+  (19 phút) và 10.366 hash nằm đúng ở 9,99 và 10,00 hash/s.
+
+Chọn **3,0** vì cách mức thấp nhất thật 3,3 lần mà vẫn chặn được ca bệnh lý.
+`Config.validate()` từ chối mọi giá trị trên 9,0 để chặn gõ nhầm.
+
+Mô phỏng luật cũ (`mat_do_bac_a = 0`) so với luật mới (3,0) trên 1.199 match lịch sử:
+**0 mất đi, 0 thêm vào.**
+
+Để riêng khỏi `mat_do_toi_thieu` có chủ ý: bậc A là đường tương thích ngược mà mọi
+kết quả cũ dựa vào, nên siết bậc B không được phép vô tình siết luôn bậc A. Đặt
+`mat_do_bac_a = 0` là quay về đúng hành vi trước đó.
+
+Khi ứng viên đủ hash nhưng trượt rào chắn, lý do loại nói thẳng là **"quá loãng"**
+chứ không nói "thiếu hash" — nếu không người dùng sẽ đi hạ nhầm `min_hash_floor`.
 
 ---
 
@@ -111,11 +147,11 @@ Cả ba đều nằm trong `Config` nên chỉnh được mà không phải sử
 
 * **`min_hash_floor` giữ nguyên 1000.** Số đo cho thấy nó không phải nguyên nhân
   zero-match; hạ nó xuống chỉ tạo dương tính giả.
-* **Không thêm điều kiện mật độ vào bậc A.** Ca "phủ thấp, hash cao" (ví dụ 1.200
-  hash trải 2.000 giây) đúng là bằng chứng yếu, và về lý nên siết. Nhưng siết bậc A
-  sẽ **bỏ bớt** kết quả người dùng đang nhận được — đó là thay đổi hành vi, không
-  phải sửa lỗi, nên cần người dùng quyết định. Hiện mật độ được hiển thị trong chẩn
-  đoán để theo dõi trước.
+* ~~Không thêm điều kiện mật độ vào bậc A.~~ — **ĐÃ THÊM** theo yêu cầu người dùng,
+  dưới dạng rào chắn `mat_do_bac_a = 3,0` (xem mục 3). Đo trước khi làm cho thấy nó
+  loại 0/1.198 kết quả lịch sử: ca "phủ thấp, hash cao" là mối lo có thật về lý
+  thuyết nhưng **chưa từng xảy ra** trong dữ liệu thật, vì muốn đạt 1.000 hash với
+  mật độ dưới 3 thì đoạn khớp phải dài hơn 333 giây. Giữ lại như một rào chắn.
 * **`_merge()` và thuật toán xếp hạng Top-N giữ nguyên.** `CLAUDE.md` ghi rõ chúng
   đã được hiệu chỉnh bằng thực nghiệm; điều tra này không đưa ra bằng chứng nào cần
   đổi chúng.

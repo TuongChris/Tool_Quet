@@ -79,6 +79,48 @@ def test_phu_cao_du_dai_nhung_thua_hash_thi_loai():
     assert not danh_gia_chap_nhan(_m(hashes=100, ty_le=90.0, matched=100.0), _cfg())
 
 
+def test_bac_a_loai_bang_chung_qua_loang():
+    """§68: vượt ngưỡng tuyệt đối chưa đủ nếu hash rải quá mỏng.
+
+    1.200 hash trải 2.000 giây = 0,6 hash/s — chỉ là các điểm trùng rải rác bám
+    cùng một align, không phải một đoạn khớp thật.
+    """
+    kq = danh_gia_chap_nhan(_m(hashes=1200, ty_le=6.0, matched=2000.0), _cfg())
+    assert not kq.chap_nhan
+    assert "loãng" in kq.ly_do and "mật độ" in kq.ly_do
+
+
+def test_bac_a_bao_dung_ly_do_khi_du_hash_nhung_loang():
+    """Không được báo 'thiếu hash' — người dùng sẽ đi hạ nhầm ngưỡng."""
+    kq = danh_gia_chap_nhan(_m(hashes=1200, ty_le=6.0, matched=2000.0), _cfg())
+    assert "1200 hash < ngưỡng tuyệt đối" not in kq.ly_do
+    assert kq.ly_do.startswith("đủ 1200 hash")
+
+
+def test_rao_chan_mat_do_khong_dung_toi_match_that():
+    """Mật độ thấp nhất đo được trên 1.198 match thật trong lịch sử là 9,99 hash/s.
+
+    Rào chắn 3,0 phải cách xa mức đó — nếu test này vỡ nghĩa là ai đó đã nâng
+    ngưỡng vào vùng cắt mất bằng chứng thật.
+    """
+    thap_nhat_that = _m(hashes=11445, ty_le=50.0, matched=1145.3)   # 9,99 hash/s
+    assert danh_gia_chap_nhan(thap_nhat_that, _cfg()).chap_nhan
+
+
+def test_tat_rao_chan_mat_do_thi_ve_dung_hanh_vi_cu():
+    cfg = _cfg()
+    cfg.mat_do_bac_a = 0.0
+    assert danh_gia_chap_nhan(_m(hashes=1200, ty_le=6.0, matched=2000.0), cfg)
+
+
+def test_khong_cho_dat_rao_chan_vao_vung_nguy_hiem():
+    """Chặn gõ nhầm: trên 9,0 hash/s là bắt đầu cắt vào match thật."""
+    cfg = Config()
+    cfg.mat_do_bac_a = 12.0
+    with pytest.raises(ValueError, match="mat_do_bac_a"):
+        cfg.validate()
+
+
 def test_loc_chap_nhan_chia_dung_hai_nhom():
     ds = [_m(1500, 0.0, 60.0), _m(830, 92.2, 55.0), _m(133, 0.9, 8.8)]
     dat, loai, ly_do = loc_chap_nhan(ds, _cfg())

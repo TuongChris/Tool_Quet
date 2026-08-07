@@ -36,6 +36,25 @@ Không thay đổi: `_merge()`, `min_hash_floor`, `min_hash_strong`, thuật to�
 Top-N, `chon_dai_dien()`, schema SQLite, định dạng vân tay, hợp đồng báo cáo/Sheets,
 audfprint vendored. `so_dat_nguong` giữ nguyên ý nghĩa.
 
+## Vòng siết bậc A bằng mật độ — 2026-08-07
+
+Theo yêu cầu người dùng. Đây là thay đổi **duy nhất trong cả đợt có thể lấy đi kết
+quả**, nên hiệu chỉnh trên toàn bộ 1.199 match đã từng báo cáo trong `lichsu.db`.
+
+Số đo cho kết quả ngược với kỳ vọng: mật độ thấp nhất trong lịch sử là **9,99 hash/s**
+(p1 = 11,52; trung vị = 16,84). Không có match thật nào thưa, nên mọi ngưỡng từ 0,5
+đến 5,0 hash/s loại **0/1.198** kết quả, còn từ ~10 trở lên thì cắt vào bằng chứng
+thật ngay. Ca thưa thật (309 hash / 578,6s = 0,53 h/s) vốn đã bị sàn 1000 loại từ trước.
+
+Kết luận: triển khai như **rào chắn**, không phải bộ lọc. `mat_do_bac_a = 3,0` — cách
+mức thấp nhất thật 3,3 lần, mô phỏng trên 1.199 match cho **0 mất, 0 thêm**, nhưng vẫn
+chặn ca bệnh lý 1.200 hash trải 2.000 giây. `validate()` từ chối giá trị > 9,0 để chặn
+gõ nhầm. Để riêng khỏi `mat_do_toi_thieu` để siết bậc B không vô tình siết luôn bậc A.
+
+Lý do loại nói rõ "quá loãng" thay vì "thiếu hash", tránh việc người dùng đi hạ nhầm
+`min_hash_floor`. Sửa thêm một fixture test dùng mật độ 1,7 hash/s — loãng hơn thực tế
+6 lần nên vô tình đo nhầm rào chắn thay vì đo ngưỡng hash.
+
 ## Vòng bù đa tốc độ — 2026-08-07
 
 Bịt điểm mù đổi tốc độ đã đo ở vòng trên. Chi tiết: [DA_TOC_DO.md](DA_TOC_DO.md).

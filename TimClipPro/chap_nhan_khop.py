@@ -86,9 +86,14 @@ def danh_gia_chap_nhan(m, cfg) -> KetQuaChapNhan:
     mat_do = mat_do_hash(m)
 
     san = int(getattr(cfg, "min_hash_floor", 0) or 0)
+    can_mat_do_a = float(getattr(cfg, "mat_do_bac_a", 0.0) or 0.0)
     if so_hash >= san:
-        return KetQuaChapNhan(True, f"đạt {so_hash} hash ≥ ngưỡng tuyệt đối {san}",
-                              BAC_TUYET_DOI)
+        # Rào chắn cho bậc A: bằng chứng không được loãng tới mức vô nghĩa. Một ứng
+        # viên 1.200 hash trải 2.000 giây (0,6 hash/s) vượt ngưỡng tuyệt đối nhưng
+        # thực chất chỉ là các điểm trùng rải rác bám cùng một align.
+        if can_mat_do_a <= 0 or mat_do >= can_mat_do_a:
+            return KetQuaChapNhan(
+                True, f"đạt {so_hash} hash ≥ ngưỡng tuyệt đối {san}", BAC_TUYET_DOI)
 
     can_ty_le = float(getattr(cfg, "ty_le_chap_nhan", 60.0) or 0.0)
     can_dai = float(getattr(cfg, "min_match_chap_nhan", 20.0) or 0.0)
@@ -103,7 +108,14 @@ def danh_gia_chap_nhan(m, cfg) -> KetQuaChapNhan:
             BAC_PHU_CAO,
         )
 
-    thieu = [f"{so_hash} hash < ngưỡng tuyệt đối {san}"]
+    if so_hash >= san:
+        # Tới đây nghĩa là đủ hash nhưng trượt rào chắn mật độ — nói thẳng ra thế,
+        # đừng báo "thiếu hash" vì như vậy là sai và người dùng sẽ đi hạ nhầm ngưỡng.
+        thieu = [f"đủ {so_hash} hash nhưng bằng chứng quá loãng: "
+                 f"mật độ {mat_do:.1f} < {can_mat_do_a:.1f} hash/s "
+                 f"({so_hash} hash trải {dai:.0f}s)"]
+    else:
+        thieu = [f"{so_hash} hash < ngưỡng tuyệt đối {san}"]
     if can_ty_le > 0:
         if ty_le < can_ty_le:
             thieu.append(f"phủ {ty_le:.1f}% < {can_ty_le:.0f}%")

@@ -269,8 +269,12 @@ def test_ket_qua_van_duoc_sap_theo_thoi_gian(engine):
 
 def test_duoi_nguong_van_bi_loai_nhu_cu(engine):
     engine.config = Config(top_n=5, min_hash_floor=1000)
-    ds = [M("a.opus", start=0.1 * GIO, hashes=999),
-          M("b.opus", start=0.2 * GIO, hashes=1001)]
+    # `matched` phải để mật độ hash ở mức thực tế (đo trên 1.198 match thật:
+    # thấp nhất 9,99 hash/s, trung vị 16,8). Mặc định 600 giây cho ~1.000 hash là
+    # 1,7 hash/s — loãng hơn thực tế 6 lần, và test sẽ đo nhầm rào chắn mật độ
+    # thay vì đo đúng ngưỡng hash tuyệt đối mà nó muốn kiểm.
+    ds = [M("a.opus", start=0.1 * GIO, hashes=999, matched=60.0),
+          M("b.opus", start=0.2 * GIO, hashes=1001, matched=60.0)]
 
     chon_ds, loai = engine._chon_loc(ds, GIO)
 

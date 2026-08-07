@@ -127,6 +127,13 @@ class Config:
     ty_le_chap_nhan: float = 60.0      # % vân tay clip gốc phải khớp được
     min_match_chap_nhan: float = 20.0  # đoạn khớp phải dài tối thiểu (giây)
     mat_do_toi_thieu: float = 3.0      # hash trên mỗi giây khớp
+    # Rào chắn mật độ cho BẬC A (ngưỡng hash tuyệt đối). Đây là tham số duy nhất
+    # trong nhóm này có thể LẤY ĐI kết quả, nên để riêng khỏi `mat_do_toi_thieu`:
+    # siết bậc B không được vô tình siết luôn bậc A. Đo trên 1.198 match đã từng
+    # được báo cáo trong lịch sử: mật độ thấp nhất là 9,99 hash/s, p1 = 11,52.
+    # Mức 3,0 vì vậy loại 0/1.198 kết quả cũ — nó là rào chắn chống ca bệnh lý
+    # (1.200 hash trải 2.000 giây = 0,6 hash/s), không phải bộ lọc. Đặt 0 để tắt.
+    mat_do_bac_a: float = 3.0
     # --- Tìm nhanh một kết quả khi top_n = 1 ---
     top1_tim_nhanh: bool = True   # Quét vùng đầu trước, đủ mạnh thì dừng luôn
     top1_khuc_toi_thieu: int = 3  # Chỉ bật khi video có từ ngần này khúc trở lên
@@ -207,6 +214,15 @@ class Config:
             raise ValueError("ty_le_chap_nhan phải nằm trong khoảng 0..100.")
         if self.min_match_chap_nhan < 0 or self.mat_do_toi_thieu < 0:
             raise ValueError("Tiêu chí chấp nhận theo tỷ lệ không được âm.")
+        if self.mat_do_bac_a < 0:
+            raise ValueError("mat_do_bac_a không được âm.")
+        if self.mat_do_bac_a > 9.0:
+            # Đo trên 1.198 match thật: mật độ thấp nhất là 9,99 hash/s. Vượt 9,0 là
+            # bắt đầu cắt vào bằng chứng thật, gần như chắc chắn do gõ nhầm.
+            raise ValueError(
+                "mat_do_bac_a > 9,0 hash/s sẽ loại cả những đoạn khớp thật "
+                "(đo trên lịch sử: mật độ thấp nhất của match hợp lệ là 9,99)."
+            )
         if self.top1_khuc_toi_thieu < 1:
             raise ValueError("top1_khuc_toi_thieu phải >= 1.")
         if self.top1_hash_dung_som < 0 or self.top1_match_s_dung_som < 0:
