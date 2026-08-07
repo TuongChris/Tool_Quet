@@ -439,9 +439,10 @@ def test_target_three_matches_resolve_in_all_reports_without_network(
     assert len(horizontal) == 1
     row = horizontal[0]
     assert len(row) == len(HEADER_NGANG) == 34
+    # Mốc media cắt phần lẻ chứ không làm tròn (start_s = 404,0 / 4108,5 / 8583,8).
     assert row[8].startswith("00:06:44")
     assert row[9].startswith("01:08:28")
-    assert row[10].startswith("02:23:04")
+    assert row[10].startswith("02:23:03")
     assert [row[index] for index in (14, 18, 22)] == titles
     assert [row[index] for index in (13, 17, 21)] == [
         f"https://youtu.be/{video_id}" for video_id in ids

@@ -356,10 +356,23 @@ def source_from_mapping(
             if raw_date not in (None, "", "00000000") and not upload_date:
                 entry_warnings.append("invalid_upload_date")
 
+        # `duration` của yt-dlp là `lengthSeconds` của YouTube, tức đã LÀM TRÒN độ
+        # dài thật: đo trên 60 clip kho SML thì 58/60 khớp `round(media)`, và 55%
+        # trong số đó cao hơn `floor(media)` đúng 1 giây. Vì trình phát hiển thị
+        # theo kiểu cắt, báo cáo theo số nguyên đó sẽ dư 1 giây ở hơn nửa số clip.
+        # `duration_media` (nếu có) là độ dài đo trực tiếp từ file, ưu tiên hơn.
+        # Kiểm chứng: file .opus của 3ixKzIN0et0 dài 675,858s, còn `video.duration`
+        # trên chính trang YouTube là 675,861s — lệch 3 mili giây.
         raw_duration = raw_value.get("duration")
         duration = _valid_duration(raw_duration)
         if raw_duration not in (None, "", 0, 0.0) and duration is None:
             entry_warnings.append("invalid_duration")
+        raw_media = raw_value.get("duration_media")
+        duration_media = _valid_duration(raw_media)
+        if raw_media not in (None, "", 0, 0.0) and duration_media is None:
+            entry_warnings.append("invalid_duration_media")
+        if duration_media is not None:
+            duration = duration_media
 
         ids = _ids_from_value(raw_key) | _ids_from_value(url)
         if video_id:

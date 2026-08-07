@@ -199,3 +199,50 @@ tinh chỉnh). Ngoài đó thêm mức vào `luoi_tempo`/`luoi_resample`.
    thêm tốn đúng một lượt so khớp, bật khi gặp thực tế.
 2. Cân nhắc siết bậc A bằng điều kiện mật độ (vẫn treo, phải hỏi trước).
 3. Trần `--max-matches 200` vẫn còn; chẩn đoán có cảnh báo khi chạm.
+
+---
+
+## Vòng sửa lệch 1 giây ở thời lượng (2026-08-07, sau `7a6fa4c`)
+
+**Vấn đề**: `D-sVTRR5jm0` báo 5:53:40, YouTube hiển thị 5:53:39. Một số video khác đúng,
+một số clip gốc cũng lệch.
+
+**Giá trị sai đầu tiên**: `engine.py::hhmmss()` dùng `round()`. Không có giá trị nào sai
+trước đó.
+
+**Bằng chứng quyết định** — đọc thẳng trên trang YouTube (`.ytp-time-duration` và
+`video.duration`):
+
+```
+                media thật     lengthSeconds   UI YouTube
+D-sVTRR5jm0     21219,981      21220           5:53:39
+3ixKzIN0et0       675,861        676             11:15
+```
+
+FFprobe của ta **trùng khít** `video.duration` của YouTube. Mô hình:
+`UI = cắt(media)`, `lengthSeconds = round(media)` (đo 60 clip: khớp 58/60).
+
+**Giả thuyết bị bác bỏ**: prompt cho rằng báo cáo đang lấy nhầm thời lượng file audio
+trung gian, nên phải tách `source_duration`/`processing_duration` và lấy yt-dlp làm
+canonical. Số đo cho thấy ngược lại — FFprobe chính xác **hơn** metadata YouTube, và
+làm theo phương án đó sẽ hiển thị 5:53:40, đúng cái đang sai. Vì vậy `ScanResult.duration_s`
+giữ nguyên một ngữ nghĩa, không tách trường.
+
+**Đã làm**:
+1. `hhmmss()` cắt phần lẻ. Mô phỏng 387 job thật: 182 giảm 1 giây (47%), 205 giữ nguyên
+   (53%), **0 tăng**. Nhóm giữ nguyên là video vốn đã đúng.
+2. `clips_meta.json` nhận thêm `duration_media` (độ dài đo từ file), resolver ưu tiên nó
+   hơn `duration`. Cần vì metadata cũ chỉ có số nguyên đã làm tròn — cắt số nguyên vẫn ra
+   chính nó nên sửa formatter không đủ cho clip gốc.
+3. `channel.py` ghi `duration_media` khi sync clip mới.
+4. `kiem_thoi_luong.py` — audit/bổ sung cho kho cũ, mặc định chỉ đọc.
+
+**Tác dụng phụ có chủ ý**: mốc đoạn khớp đổi ở 500/1.199 match (41,7%). Đây là sửa mâu
+thuẫn có sẵn — link `?t=` vốn luôn dùng `int()`, nên trước đây hiển thị 00:24:02 mà link
+nhảy tới 00:24:01.
+
+### Còn lại
+1. **2.600 clip trong 3 kho chưa có `duration_media`** → clip gốc vẫn dư 1 giây ở ~48%
+   ca. Chạy `kiem_thoi_luong.py --sua --that-su` khi được duyệt (có `.bak`, nguyên tử).
+   Sau khi ghi phải khởi động lại app để cache metadata nạp lại.
+2. Chưa quét end-to-end một video mới sau khi sửa (mới dựng lại báo cáo từ job đã lưu).

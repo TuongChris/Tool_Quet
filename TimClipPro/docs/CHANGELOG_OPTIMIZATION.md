@@ -36,6 +36,46 @@ Không thay đổi: `_merge()`, `min_hash_floor`, `min_hash_strong`, thuật to�
 Top-N, `chon_dai_dien()`, schema SQLite, định dạng vân tay, hợp đồng báo cáo/Sheets,
 audfprint vendored. `so_dat_nguong` giữ nguyên ý nghĩa.
 
+## Vòng sửa lệch 1 giây ở thời lượng — 2026-08-07
+
+Báo cáo ghi 5:53:40 cho `D-sVTRR5jm0` trong khi YouTube hiển thị 5:53:39. Chi tiết
+số đo: [DURATION_DRIFT_AUDIT.md](DURATION_DRIFT_AUDIT.md), chính sách:
+[DURATION_ARCHITECTURE.md](DURATION_ARCHITECTURE.md).
+
+**Giá trị sai đầu tiên là formatter, không phải nguồn dữ liệu.** Đọc thẳng trên trang
+YouTube (`.ytp-time-duration` và `video.duration`): media thật dài 21219,981 giây, UI
+hiển thị 5:53:39, còn `lengthSeconds` (nguồn của yt-dlp) là 21220. Giá trị FFprobe mà
+tool đang lưu **trùng khít** `video.duration` của YouTube — tức dữ liệu vốn đã đúng và
+chính xác hơn metadata YouTube. Trình phát hiển thị thời gian media bằng cách **cắt**
+phần lẻ, còn `hhmmss()` lại `round()`.
+
+Giả thuyết được nêu khi giao việc (báo cáo đang lấy nhầm thời lượng file audio trung
+gian, nên phải tách `source_duration`/`processing_duration` và lấy yt-dlp làm canonical)
+**bị bác bỏ bằng số đo** — làm vậy sẽ hiển thị 5:53:40, đúng cái đang sai.
+
+| File | Nội dung và lý do | Rủi ro | Test xác minh | Trước → Sau |
+|---|---|---|---|---|
+| `engine.py` | `hhmmss()` cắt phần lẻ thay vì làm tròn | Medium | 26 test + mô phỏng 387 job thật | 47% video báo dư 1 giây → khớp UI YouTube |
+| `clip_metadata.py` | Đọc `duration_media` (độ dài đo từ file), ưu tiên hơn `duration` | Low | 4 test | Clip gốc chỉ có số nguyên đã làm tròn → có độ dài thật |
+| `channel.py` | `do_dai_media()`; sync mới ghi kèm `duration_media` | Low | Full suite | Clip mới tự có độ dài chính xác |
+| `kiem_thoi_luong.py` (mới) | Kiểm tra/bổ sung `duration_media` cho kho cũ, mặc định chỉ đọc | Low | Chạy thật 3 kho | Không có → audit được 2.600 clip |
+| `tests/test_thoi_luong.py` (mới) | 26 test dựa trên số đo thật từ YouTube | Low | 26 pass | Không có → khoá lại chính sách |
+
+Mô phỏng luật cũ/mới trên **toàn bộ 387 job** trong `lichsu.db`: **182 giảm 1 giây
+(47,0%), 205 giữ nguyên (53,0%), 0 tăng lên.** Nhóm giữ nguyên chính là các video
+người dùng đã thấy đúng từ trước. Video > 24 giờ vẫn đúng (35:01:20).
+
+Mốc đoạn khớp cũng đổi ở 500/1.199 match (41,7%) — đây là **sửa mâu thuẫn có sẵn**:
+link `?t=` vốn luôn dùng `int()`, nên trước đây báo cáo ghi 00:24:02 mà bấm link lại
+nhảy tới 00:24:01. Nay cả hai đều là 00:24:01.
+
+Không thay đổi: `ScanResult.duration_s` giữ nguyên ngữ nghĩa và giá trị; hình học cắt
+khúc/so khớp vẫn dùng float đầy đủ; `app._thoi_luong()` (đã chạy/ETA) không đụng tới;
+tên cột báo cáo giữ nguyên; kho vân tay và `clips_meta.json` chưa bị ghi.
+
+Việc còn lại: 2.600 clip trong 3 kho chưa có `duration_media` nên clip gốc vẫn dư 1
+giây ở khoảng 48% ca — chạy `kiem_thoi_luong.py --sua --that-su` khi người dùng duyệt.
+
 ## Vòng siết bậc A bằng mật độ — 2026-08-07
 
 Theo yêu cầu người dùng. Đây là thay đổi **duy nhất trong cả đợt có thể lấy đi kết

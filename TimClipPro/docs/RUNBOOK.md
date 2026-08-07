@@ -395,3 +395,22 @@ Khôi phục **offline** (không mạng, chỉ dựng lại snapshot từ tên f
 > của yt-dlp, chế độ này không trả `upload_date`). Ngày đăng của nhóm cũ **không thể phục
 > hồi offline** — bắt buộc chạy `vameta`/`vametak`. Không đổi tên file đã có: sẽ làm lệch
 > khoá `clips_meta.json` và `downloaded.txt`.
+
+## Thời lượng video hiển thị lệch 1 giây
+
+Từ 2026-08-07 thời lượng media được **cắt** phần lẻ (giống trình phát) chứ không làm
+tròn. Nếu vẫn thấy lệch, phân biệt hai trường hợp:
+
+**Video vi phạm** — đã sửa hẳn, giá trị lấy từ FFprobe của chính file đang quét (trùng
+`video.duration` của YouTube tới 3 ms).
+
+**Clip gốc** — `clips_meta.json` chỉ lưu `lengthSeconds` của YouTube, vốn đã làm tròn,
+nên khoảng 48% clip dư một giây cho tới khi bổ sung độ dài thật:
+
+```powershell
+& ".\.venv\Scripts\python.exe" kiem_thoi_luong.py                  # chỉ kiểm tra
+& ".\.venv\Scripts\python.exe" kiem_thoi_luong.py --sua --that-su  # ghi thật (có .bak)
+```
+
+Sau khi ghi, khởi động lại app để cache metadata nạp lại.
+Chi tiết: [DURATION_ARCHITECTURE.md](DURATION_ARCHITECTURE.md).

@@ -2,6 +2,38 @@
 
 Ngày: 2026-08-06.
 
+## Vòng sửa lệch 1 giây ở thời lượng — 2026-08-07
+
+| Lệnh/phạm vi | Passed | Failed | Skipped | Ghi chú |
+|---|---:|---:|---:|---|
+| `tests/test_thoi_luong.py` (mới) | 26 | 0 | 0 | Formatter, biên giây/giờ, >24h, metadata, nhất quán exporter |
+| Full fast suite (`pytest -q`) | 600 | 0 | 1 | |
+| `pytest -m slow` | 5 | 0 | 0 | |
+| `ruff check .` | — | 0 finding | — | Pass |
+
+Số liệu trong test lấy từ đo thật, không bịa: hai video được đọc thẳng
+`.ytp-time-duration` và `video.duration` trên trang YouTube.
+
+**Kiểm chứng không hồi quy trên dữ liệu thật.** Mô phỏng luật cũ/mới trên toàn bộ 387
+job trong `lichsu.db`: 182 giảm đúng 1 giây (47,0%), 205 giữ nguyên (53,0%), **0 tăng
+lên**. Nhóm giữ nguyên là các video vốn đã đúng (phần lẻ < 0,5) — yêu cầu "không phá
+video đang đúng" được thoả.
+
+**Quét THẬT end-to-end** `D-sVTRR5jm0` sau khi bổ sung metadata (job 413, 130 giây,
+Fast Top-1 dừng sau khúc đầu):
+
+| Trường | Giá trị | UI YouTube |
+|---|---|---|
+| Thời lượng video vi phạm | **05:53:39** | 5:53:39 ✓ |
+| Thời lượng clip gốc (3ixKzIN0et0) | **00:11:15** | 11:15 ✓ |
+| Đoạn khớp | 00:24:01 – 00:34:38 | — |
+| Link nhảy mốc | `?t=1441` = 00:24:01 | khớp hiển thị ✓ |
+
+Match: 12.301 hash, phủ 76,2%. CSV ngang, CSV dọc và hồ sơ Markdown đều ra cùng con số.
+
+Hai test cũ được cập nhật kèm lý do (không phải sửa cho vừa): `test_dossier` (end_s =
+75,8 → 00:01:15) và `test_metadata_integration` (start_s = 8583,8 → 02:23:03).
+
 ## Vòng điều tra zero-match + Fast Top-1 — 2026-08-07
 
 ### Phạm vi

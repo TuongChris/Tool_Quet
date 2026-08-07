@@ -16,6 +16,7 @@ Lưu ý: file này chỉ lo phần TẢI VỀ. Việc tạo vân tay vẫn do en
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -46,6 +47,28 @@ class VideoInfo:
     duration: float
     url: str
     publication_source: str = ""   # trường metadata đã sinh ra ngày trên
+
+
+def do_dai_media(path: str) -> float | None:
+    """Độ dài thật của file media, đo bằng ffprobe. Không đo được thì trả None.
+
+    Cần trường này vì `duration` của yt-dlp là `lengthSeconds` của YouTube — một số
+    nguyên ĐÃ LÀM TRÒN. Đo trên 60 clip kho SML: 58/60 khớp đúng `round(media)`, và
+    ở 55% số clip nó cao hơn `floor(media)` một giây. Trình phát thì cắt phần lẻ,
+    nên hiển thị theo số nguyên đó sẽ dư 1 giây ở hơn nửa số clip.
+
+    File đã nén vẫn giữ được độ dài rất sát bản gốc: `.opus` của 3ixKzIN0et0 dài
+    675,858 giây, còn `video.duration` trên chính trang YouTube là 675,861 giây.
+    """
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        gia_tri = float(r.stdout.strip().splitlines()[-1])
+    except Exception:  # noqa: BLE001 — thiếu thời lượng chính xác không được làm hỏng sync
+        return None
+    return gia_tri if math.isfinite(gia_tri) and gia_tri > 0 else None
 
 
 def lam_sach_ten(s: str, max_len: int = 80) -> str:
@@ -407,6 +430,7 @@ class ChannelSync:
 
     # ---------- đồng bộ cả kênh ----------
 
+
     def sync(self, url: str, limit: Optional[int] = None,
              progress: Optional[Callable] = None,
              cancel_check: Optional[Callable] = None) -> dict:
@@ -449,7 +473,12 @@ class ChannelSync:
                     "upload_date": ngay,
                     "publication_date": ngay,
                     "publication_date_source": v.publication_source,
-                    "duration": v.duration, "url": f"https://youtu.be/{v.id}",
+                    # `duration` là lengthSeconds của YouTube (đã làm tròn);
+                    # `duration_media` là độ dài đo thẳng từ file vừa tạo, dùng cho
+                    # hiển thị vì trình phát cắt phần lẻ chứ không làm tròn.
+                    "duration": v.duration,
+                    "duration_media": do_dai_media(f),
+                    "url": f"https://youtu.be/{v.id}",
                 }
                 self.save_meta(meta)
                 self._mark_done(v.id)

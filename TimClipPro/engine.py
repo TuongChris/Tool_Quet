@@ -306,7 +306,28 @@ class Cancelled(Exception):
 # =====================================================================
 
 def hhmmss(giay: float) -> str:
-    giay = max(0, int(round(giay)))
+    """Định dạng một mốc/độ dài MEDIA thành HH:MM:SS, CẮT phần lẻ (không làm tròn).
+
+    VÌ SAO CẮT CHỨ KHÔNG LÀM TRÒN
+
+    Trình phát hiển thị giây theo kiểu cắt: khi playhead ở giây 1441,8 thì đồng hồ
+    ghi 24:01, không phải 24:02. Thời lượng cũng vậy — video còn 0,019 giây cuối vẫn
+    hiển thị mốc giây trước. Đo trực tiếp trên YouTube (đọc `.ytp-time-duration` và
+    `video.duration` trong trang):
+
+        video           duration thật   UI YouTube   round()    cắt
+        D-sVTRR5jm0     21219,981       5:53:39      5:53:40 ✗  5:53:39 ✓
+        3ixKzIN0et0       675,861         11:15        11:16 ✗    11:15 ✓
+
+    Làm tròn khiến 43,3% video quét được (đo trên 60 file đã tải) bị báo dư 1 giây.
+
+    Cắt còn khớp với link nhảy mốc `?t=`, vốn đã dùng ``int(giay)``: trước đây báo
+    cáo ghi 00:24:02 nhưng link lại nhảy tới 00:24:01 — lệch nhau một giây.
+
+    Hàm này dành cho THỜI GIAN MEDIA (độ dài, mốc trong video). Thời gian vận hành
+    (đã chạy, ETA) dùng ``app._thoi_luong()`` và không đi qua đây.
+    """
+    giay = max(0, int(giay))
     return f"{giay // 3600:02d}:{(giay % 3600) // 60:02d}:{giay % 60:02d}"
 
 

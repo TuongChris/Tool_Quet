@@ -64,8 +64,11 @@ def test_dung_day_du_ho_so_va_meta():
     assert len(h.muc) == 1
     assert h.muc[0].tieu_de_goc == "Video gốc"
     assert h.muc[0].link_goc == "https://youtu.be/goc12345678"
-    assert h.muc[0].tu_hhmmss == "00:01:05"
-    assert h.muc[0].den_hhmmss == "00:01:16"
+    # Mốc media được CẮT phần lẻ, không làm tròn: đoạn kết thúc ở giây 75,8 thì
+    # trình phát hiển thị 01:15. Nhờ vậy mốc hiển thị khớp đúng link ?t= bên dưới,
+    # vốn đã luôn dùng int(). Xem docs/DURATION_ARCHITECTURE.md.
+    assert h.muc[0].tu_hhmmss == "00:01:05"          # start_s = 65,2
+    assert h.muc[0].den_hhmmss == "00:01:15"         # end_s   = 75,8
     assert h.muc[0].link_moc == "https://youtu.be/abc?t=65"
     assert h.muc[0].do_dai_giay == 11
     assert h.muc[0].ty_le == 87.5
