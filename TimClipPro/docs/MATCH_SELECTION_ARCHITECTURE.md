@@ -154,10 +154,77 @@ Tỉ lệ đổi 6 % nằm xa ngưỡng cảnh báo — chính sách chỉ chạ
 - Chưa dùng tín hiệu **liên tục** (`matched_s / (end_s - start_s)`). `_merge` đã gộp
   theo hợp interval nên đa số đoạn vốn đã liền; thêm tín hiệu này lúc chưa có bằng
   chứng nó phân biệt được ca thật sẽ là phức tạp không cần thiết.
-- Chưa dùng `ty_le` (% vân tay clip khớp được) làm khoá chất lượng chính, dù CLAUDE.md
-  ghi đó mới là chỉ số **chuẩn hoá** còn `hashes` phụ thuộc độ dài clip. Đổi khoá chính
-  là đổi định nghĩa "tốt nhất" — việc riêng, cần dữ liệu và nghiệm thu riêng.
-  **Đây là hướng tối ưu tiếp theo đáng giá nhất.**
+- ~~Chưa dùng `ty_le` làm khoá chất lượng chính~~ — **ĐÃ LÀM**, xem mục 8.
 - Ngưỡng `dung_sai_gan_bang` hiệu chỉnh trên 200 job của một số kênh; kênh có đặc tính
   âm thanh khác có thể cần giá trị khác. Đã đưa thành trường `Config` để chỉnh được
   mà không phải sửa code.
+
+
+---
+
+## 8. Khoá chất lượng: `ty_le` + sàn bằng chứng
+
+### Vì sao đổi
+
+`CLAUDE.md` ghi rõ: `ty_le` (% vân tay của clip gốc khớp được) là chỉ số **chuẩn hoá**,
+dùng khi so sánh các clip dài ngắn khác nhau; `hashes` tuyệt đối phụ thuộc độ dài và
+độ phong phú âm thanh. Xếp hạng bằng `hashes` vì thế thiên vị clip dài.
+
+### Vì sao không đổi thuần
+
+Đo trên **283 job thật** (dựng lại `ty_le` từ kho vân tay, chỉ đọc): đổi thẳng sang
+`ty_le` làm **58 %** Top-1 thay đổi. Phân loại 163 ca đổi đó:
+
+| Nhóm | Số ca | Tỉ lệ |
+| --- | ---: | ---: |
+| **Xấu** — mất >30 % hash hoặc >30 % thời lượng | **30** | 18 % |
+| Tốt — giữ bằng chứng, `ty_le` tăng ≥10 điểm | 26 | 16 % |
+| Trung tính | 107 | 66 % |
+
+Ca tệ nhất (job 316): thay đoạn **22,8 phút / 36.939 hash** bằng đoạn
+**9,4 phút / 13.129 hash** chỉ vì tỉ lệ phần trăm cao hơn (17,3 → 27,5).
+
+Nguyên nhân: `ty_le` **cố tình bỏ qua độ lớn**. Với hồ sơ khiếu nại, 22,8 phút vi phạm
+là bằng chứng mạnh hơn 9,4 phút, dù phần trăm thấp hơn. Hai chỉ số đo hai thứ khác nhau:
+
+- `hashes` → **độ lớn** bằng chứng (bao nhiêu nội dung đã khớp)
+- `ty_le` → **mức độ trọn vẹn** (tác phẩm gốc bị sao chép bao nhiêu phần)
+
+### Giải pháp: sàn bằng chứng
+
+`loc_du_bang_chung()` loại ứng viên có bằng chứng tuyệt đối sụp đổ so với ứng viên
+mạnh nhất **trong cùng nhóm**, trước khi xếp hạng bằng `ty_le`:
+
+```
+giữ lại nếu   hashes >= 0,70 × hashes(mạnh nhất)
+        VÀ   matched_s >= 0,70 × matched_s(mạnh nhất)
+```
+
+Ứng viên mạnh nhất về hash luôn tự thoả sàn nên danh sách không bao giờ rỗng.
+
+Sàn chỉ áp dụng khi xếp hạng bằng chỉ số **chuẩn hoá**; đặt `khoa_chat_luong="hashes"`
+thì bản thân khoá đã là độ lớn tuyệt đối rồi nên sàn bị tắt.
+
+### Lùi an toàn
+
+`ty_le` chỉ có giá trị sau khi `_gan_chi_so()` chạy. Nếu mọi `ty_le` đều bằng 0 (gọi
+`_chon_loc` trực tiếp, hoặc không tra được số hash gốc của clip) thì tự lùi về `hashes`
+thay vì im lặng cho ra thứ tự tuỳ tiện.
+
+### Kết quả đo được
+
+| | Đổi Top-1 | Ca đánh đổi nặng |
+| --- | ---: | ---: |
+| `ty_le` thuần, không sàn | 58 % | 30 |
+| **`ty_le` + sàn 0,70** | **46 %** | **0** (28 ca bị sàn chặn lại) |
+
+Ví dụ vẫn đổi (đúng ý đồ) — job 315: hash chỉ kém 6 % nhưng `ty_le` từ 9,7 lên 48,6.
+
+### Cấu hình
+
+| Trường | Mặc định | Ý nghĩa |
+| --- | --- | --- |
+| `khoa_chat_luong` | `"ty_le"` | `"hashes"` để khôi phục hành vi cũ |
+| `san_bang_chung` | `0.70` | `0` để tắt sàn |
+
+Cả hai có validate, đổi được mà không phải sửa code.

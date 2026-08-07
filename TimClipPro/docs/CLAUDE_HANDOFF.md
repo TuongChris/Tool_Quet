@@ -110,9 +110,8 @@ hash lẫn thời lượng).
 **Đo trên 200 job thật**: 94% giữ nguyên, 6% đổi. **496 passed, 1 skipped.**
 
 ### Còn lại
-1. Cân nhắc đổi khoá chất lượng chính từ `hashes` sang `ty_le` — CLAUDE.md ghi `ty_le`
-   mới là chỉ số chuẩn hoá, `hashes` phụ thuộc độ dài clip. Đây là đổi định nghĩa
-   "tốt nhất", cần dữ liệu và nghiệm thu riêng. **Hướng tối ưu tiếp theo đáng giá nhất.**
+1. ~~Đổi khoá chất lượng sang `ty_le`~~ — **ĐÃ LÀM** kèm sàn bằng chứng 0,70.
+   Đo 283 job: 46 % Top-1 đổi, 28 ca đánh đổi nặng bị sàn chặn. **504 passed.**
 2. Smoke Scan Pipeline V2 với video YouTube thật (chưa chạy).
 3. Outbox bền vững cho hàng đợi Sheets.
 

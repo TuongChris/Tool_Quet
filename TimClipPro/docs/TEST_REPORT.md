@@ -315,3 +315,21 @@ ngưỡng · `Config` từ chối dung sai vô lý.
 
 Đối chứng trên 200 job thật trong `lichsu.db`: 188 giữ nguyên (94%), 12 đổi (6%) —
 xa ngưỡng cảnh báo 80–90%, đúng vùng near-tie.
+
+
+---
+
+## Vòng đổi khoá chất lượng sang ty_le — 2026-08-07
+
+| Bộ | Kết quả |
+|---|---|
+| `tests/test_match_selection.py` | 34 passed (26 cũ + 8 mới) |
+| **Fast suite toàn bộ** | **504 passed, 1 skipped, 5 deselected** |
+| `ruff` · `compileall` · `pip check` | sạch |
+
+Test mới tái hiện đúng hai ca thật: job 316 (sàn phải chặn) và job 315 (sàn phải cho
+qua), cộng test chứng minh bỏ sàn thì `ty_le` thắng luôn — tức chính cái sàn tạo ra
+khác biệt chứ không phải thứ khác.
+
+Đối chứng 283 job thật: `ty_le` thuần đổi 58 % Top-1 với 30 ca đánh đổi nặng;
+`ty_le` + sàn 0,70 đổi 46 % với **0** ca đánh đổi nặng (28 ca bị chặn).

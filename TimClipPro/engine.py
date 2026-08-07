@@ -116,6 +116,16 @@ class Config:
     # dung sai lỏng sẽ đảo phần lớn kết quả. Ở mức 0,03 chỉ 24% job có ứng viên
     # lọt dải, và chỉ một phần trong đó thực sự sớm hơn.
     dung_sai_gan_bang: float = 0.03
+    # "ty_le" = % vân tay của clip gốc khớp được — chỉ số CHUẨN HOÁ, so sánh công
+    # bằng giữa clip dài và clip ngắn. "hashes" = số hash tuyệt đối, phụ thuộc độ
+    # dài và độ phong phú âm thanh. Đổi được mà không phải sửa code.
+    khoa_chat_luong: str = "ty_le"
+    # Sàn bằng chứng cho khoá chuẩn hoá: ứng viên chỉ được phép thắng nhờ ty_le nếu
+    # bằng chứng TUYỆT ĐỐI của nó không sụp đổ so với ứng viên mạnh nhất trong nhóm.
+    # Đo trên 283 job thật: bỏ sàn thì 18% số ca đổi là đánh đổi nặng — ví dụ thay
+    # đoạn 22,8 phút / 36.939 hash bằng đoạn 9,4 phút / 13.129 hash chỉ vì tỉ lệ
+    # phần trăm cao hơn. Ở mức 0,70 những ca đó bị chặn, các ca cải thiện vẫn giữ.
+    san_bang_chung: float = 0.70
 
     def validate(self, overlap_s: Optional[int] = None) -> None:
         if self.chunk_s <= 60:
@@ -148,6 +158,10 @@ class Config:
             raise ValueError("top_n phải >= 1.")
         if not 0.0 <= self.dung_sai_gan_bang <= 0.5:
             raise ValueError("dung_sai_gan_bang phải nằm trong khoảng 0..0.5.")
+        if self.khoa_chat_luong not in {"hashes", "ty_le"}:
+            raise ValueError("khoa_chat_luong phải là 'hashes' hoặc 'ty_le'.")
+        if not 0.0 <= self.san_bang_chung <= 1.0:
+            raise ValueError("san_bang_chung phải nằm trong khoảng 0..1.")
         if self.min_hash_floor < 0 or self.min_hash_strong < 0:
             raise ValueError("Ngưỡng hash chọn lọc không được âm.")
         if self.dem_max_gb < 0 or self.dem_max_ngay < 0:
@@ -227,7 +241,39 @@ def chi_phi_kiem_tra(m, duration: float) -> tuple:
     return (round(max(0.0, min(1.0, ty_le)), 4), bat_dau)
 
 
-def chon_dai_dien(ung_vien: list, duration: float, dung_sai: float, khoa_chat_luong):
+def loc_du_bang_chung(ung_vien: list, san: float) -> list:
+    """Bỏ ứng viên có bằng chứng TUYỆT ĐỐI sụp đổ so với ứng viên mạnh nhất nhóm.
+
+    Cần thiết khi xếp hạng bằng chỉ số **chuẩn hoá** như ``ty_le`` (% vân tay của
+    clip gốc khớp được): tỉ lệ cố tình bỏ qua độ lớn, nên một đoạn 9 phút có thể
+    có tỉ lệ cao hơn một đoạn 23 phút. Với hồ sơ khiếu nại thì 23 phút vi phạm là
+    bằng chứng mạnh hơn, dù phần trăm thấp hơn.
+
+    Đo trên 283 job thật: không có sàn thì 18% số ca đổi là đánh đổi nặng
+    (mất >30% hash hoặc >30% thời lượng).
+
+    Ứng viên mạnh nhất về hash luôn tự thoả sàn nên danh sách không bao giờ rỗng.
+    """
+    if san <= 0 or len(ung_vien) <= 1:
+        return list(ung_vien)
+
+    def so_hash(m) -> float:
+        return float(getattr(m, "hashes", 0) or 0)
+
+    def do_dai(m) -> float:
+        return float(getattr(m, "matched_s", 0) or 0)
+
+    moc = max(ung_vien, key=so_hash)
+    nguong_hash, nguong_dai = so_hash(moc) * san, do_dai(moc) * san
+    giu = [
+        m for m in ung_vien
+        if so_hash(m) >= nguong_hash and do_dai(m) >= nguong_dai
+    ]
+    return giu or [moc]
+
+
+def chon_dai_dien(ung_vien: list, duration: float, dung_sai: float, khoa_chat_luong,
+                  san_bang_chung: float = 0.0):
     """Chọn ứng viên ĐẠI DIỆN tốt nhất trong một nhóm.
 
     Thứ tự giá trị, không được đảo:
@@ -246,6 +292,10 @@ def chon_dai_dien(ung_vien: list, duration: float, dung_sai: float, khoa_chat_lu
     """
     if not ung_vien:
         raise ValueError("Không có ứng viên nào để chọn.")
+    if len(ung_vien) == 1:
+        return ung_vien[0]
+
+    ung_vien = loc_du_bang_chung(ung_vien, san_bang_chung)
     if len(ung_vien) == 1:
         return ung_vien[0]
 
@@ -2089,17 +2139,30 @@ class Engine:
         if not dat:
             return [], loai
 
+        # `ty_le` chỉ dùng được khi _gan_chi_so đã chạy. Nếu chưa (gọi trực tiếp,
+        # hoặc kho không tra được số hash gốc) thì mọi ty_le đều bằng 0 và xếp hạng
+        # sẽ vô nghĩa — lúc đó lùi về `hashes` thay vì im lặng cho ra thứ tự tuỳ tiện.
+        dung_ty_le = cfg.khoa_chat_luong == "ty_le" and any(
+            float(getattr(m, "ty_le", 0.0) or 0.0) > 0 for m in dat
+        )
+
+        def do_manh(m) -> float:
+            return float(m.ty_le) if dung_ty_le else float(m.hashes)
+
         def uu_tien(m, da_dung: set) -> tuple:
-            """Xếp hạng: mạnh trước, clip chưa dùng trước, rồi tới số hash."""
+            """Xếp hạng: mạnh trước, clip chưa dùng trước, rồi tới độ mạnh khớp."""
             return (m.hashes >= cfg.min_hash_strong,
                     (m.clip not in da_dung) if cfg.uu_tien_clip_khac_nhau else True,
-                    m.hashes)
+                    do_manh(m))
 
         def dai_dien(ung_vien: list, da_dung: set):
             """Chọn một đại diện: chất lượng trước, dễ kiểm tra chỉ để phá hoà."""
             return chon_dai_dien(
                 ung_vien, duration, cfg.dung_sai_gan_bang,
                 lambda m: uu_tien(m, da_dung),
+                # Sàn chỉ có ý nghĩa khi xếp hạng bằng chỉ số chuẩn hoá; xếp bằng
+                # `hashes` thì bản thân khoá đã là độ lớn tuyệt đối rồi.
+                san_bang_chung=cfg.san_bang_chung if dung_ty_le else 0.0,
             )
 
         n = max(1, cfg.top_n)

@@ -354,3 +354,27 @@ Không đụng: `_merge`, audfprint, ngưỡng, shifts, ngữ nghĩa `top_n`, ph
 vùng, cột báo cáo, contract Sheets.
 
 Test mới: `tests/test_match_selection.py` (26).
+
+### Khoá chất lượng đổi sang ty_le, kèm sàn bằng chứng
+
+`CLAUDE.md` ghi `ty_le` (% vân tay clip gốc khớp được) mới là chỉ số **chuẩn hoá**;
+`hashes` tuyệt đối phụ thuộc độ dài clip nên xếp hạng bằng nó thiên vị clip dài.
+
+Đo trên **283 job thật** trước khi đổi: chuyển thuần sang `ty_le` làm 58 % Top-1 thay
+đổi, trong đó **18 % là đánh đổi nặng** — ví dụ job 316 thay đoạn 22,8 phút / 36.939
+hash bằng đoạn 9,4 phút / 13.129 hash chỉ vì phần trăm cao hơn. `ty_le` cố tình bỏ qua
+độ lớn, mà với hồ sơ khiếu nại thì 22,8 phút vi phạm mạnh hơn 9,4 phút.
+
+- **`engine.loc_du_bang_chung()`** (mới): loại ứng viên có `hashes` hoặc `matched_s`
+  dưới 70 % của ứng viên mạnh nhất trong nhóm, trước khi xếp hạng bằng `ty_le`. Ứng
+  viên mạnh nhất luôn tự thoả sàn nên không bao giờ trả về rỗng.
+- **`Config.khoa_chat_luong = "ty_le"`** — đặt `"hashes"` để khôi phục hành vi cũ.
+- **`Config.san_bang_chung = 0.70`** — đặt `0` để tắt sàn.
+- Tự lùi về `hashes` khi mọi `ty_le` bằng 0 (`_gan_chi_so` chưa chạy) thay vì cho ra
+  thứ tự tuỳ tiện.
+
+Kết quả: tỉ lệ đổi Top-1 từ 58 % xuống **46 %**, và **28 ca đánh đổi nặng bị sàn chặn**.
+Các ca cải thiện vẫn giữ — job 315 hash chỉ kém 6 % mà `ty_le` tăng từ 9,7 lên 48,6.
+
+Test mới: 8 test trong `tests/test_match_selection.py`, gồm tái hiện đúng job 316 và
+job 315, và test chứng minh chính cái sàn tạo ra khác biệt.

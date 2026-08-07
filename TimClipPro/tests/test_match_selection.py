@@ -286,6 +286,102 @@ def test_khong_co_ung_vien_dat_nguong_thi_khong_bia_ket_qua(engine):
     assert len(loai) == 1
 
 
+# ---------------------------------------------------------------------------
+# Khoá chất lượng ty_le + sàn bằng chứng
+# ---------------------------------------------------------------------------
+
+def _voi_ty_le(m, ty_le):
+    m.ty_le = ty_le
+    return m
+
+
+def test_ty_le_la_khoa_chat_luong_mac_dinh(engine):
+    """Clip ngắn bị copy gần trọn thắng clip dài bị copy một phần, khi bằng chứng tương đương."""
+    engine.config = Config(top_n=1, min_hash_floor=1000)
+    it_ty_le = _voi_ty_le(M("a.opus", start=0.1 * GIO, hashes=12000, matched=800.0), 20.0)
+    nhieu_ty_le = _voi_ty_le(M("b.opus", start=0.5 * GIO, hashes=11000, matched=760.0), 75.0)
+
+    chon_ds, _ = engine._chon_loc([it_ty_le, nhieu_ty_le], GIO)
+
+    assert chon_ds[0] is nhieu_ty_le
+
+
+def test_san_chan_ung_vien_co_bang_chung_sup_do(engine):
+    """Ca thật job 316: 22,8 phút/36.939 hash không được thay bằng 9,4 phút/13.129 hash."""
+    engine.config = Config(top_n=1, min_hash_floor=1000, san_bang_chung=0.70)
+    manh = _voi_ty_le(M("a.opus", start=0.5 * GIO, hashes=36939, matched=1368.0), 17.3)
+    ty_le_cao = _voi_ty_le(M("b.opus", start=0.2 * GIO, hashes=13129, matched=562.0), 27.5)
+
+    chon_ds, _ = engine._chon_loc([manh, ty_le_cao], GIO)
+
+    assert chon_ds[0] is manh, "Sàn bằng chứng phải chặn ca đánh đổi nặng"
+
+
+def test_bo_san_thi_ty_le_thang_luon(engine):
+    """Chứng minh chính cái sàn tạo ra khác biệt, không phải thứ khác."""
+    engine.config = Config(top_n=1, min_hash_floor=1000, san_bang_chung=0.0)
+    manh = _voi_ty_le(M("a.opus", start=0.5 * GIO, hashes=36939, matched=1368.0), 17.3)
+    ty_le_cao = _voi_ty_le(M("b.opus", start=0.2 * GIO, hashes=13129, matched=562.0), 27.5)
+
+    chon_ds, _ = engine._chon_loc([manh, ty_le_cao], GIO)
+
+    assert chon_ds[0] is ty_le_cao
+
+
+def test_san_cho_qua_khi_bang_chung_van_con_nguyen(engine):
+    """Ca thật job 315: hash chỉ kém 6% mà ty_le tăng 9,7 -> 48,6 thì phải đổi."""
+    engine.config = Config(top_n=1, min_hash_floor=1000, san_bang_chung=0.70)
+    ty_le_thap = _voi_ty_le(M("a.opus", start=0.5 * GIO, hashes=37451, matched=1430.0), 9.7)
+    ty_le_cao = _voi_ty_le(M("b.opus", start=0.6 * GIO, hashes=35303, matched=1235.0), 48.6)
+
+    chon_ds, _ = engine._chon_loc([ty_le_thap, ty_le_cao], GIO)
+
+    assert chon_ds[0] is ty_le_cao
+
+
+def test_lui_ve_hashes_khi_chua_tinh_ty_le(engine):
+    """_gan_chi_so chưa chạy -> mọi ty_le = 0 -> không được xếp hạng tuỳ tiện."""
+    engine.config = Config(top_n=1, min_hash_floor=1000)
+    yeu = M("a.opus", start=0.1 * GIO, hashes=6000)      # ty_le mặc định 0.0
+    manh = M("b.opus", start=0.5 * GIO, hashes=20000)
+
+    chon_ds, _ = engine._chon_loc([yeu, manh], GIO)
+
+    assert chon_ds[0] is manh
+
+
+def test_dat_khoa_ve_hashes_khoi_phuc_hanh_vi_cu(engine):
+    engine.config = Config(top_n=1, min_hash_floor=1000, khoa_chat_luong="hashes",
+                           dung_sai_gan_bang=0.0)
+    nhieu_hash = _voi_ty_le(M("a.opus", start=0.5 * GIO, hashes=20000, matched=900.0), 10.0)
+    nhieu_ty_le = _voi_ty_le(M("b.opus", start=0.2 * GIO, hashes=19000, matched=880.0), 90.0)
+
+    chon_ds, _ = engine._chon_loc([nhieu_hash, nhieu_ty_le], GIO)
+
+    assert chon_ds[0] is nhieu_hash
+
+
+def test_loc_du_bang_chung_khong_bao_gio_tra_rong():
+    from engine import loc_du_bang_chung
+
+    ds = [M("a.opus", start=0.0, hashes=100, matched=10.0),
+          M("b.opus", start=0.0, hashes=100000, matched=5000.0)]
+
+    giu = loc_du_bang_chung(ds, san=0.99)
+
+    assert len(giu) >= 1
+    assert giu[0].clip == "b.opus"
+
+
+def test_config_tu_choi_khoa_va_san_vo_ly():
+    with pytest.raises(ValueError, match="khoa_chat_luong"):
+        Config(khoa_chat_luong="linh_tinh").validate()
+    with pytest.raises(ValueError, match="san_bang_chung"):
+        Config(san_bang_chung=1.5).validate()
+    with pytest.raises(ValueError, match="san_bang_chung"):
+        Config(san_bang_chung=-0.1).validate()
+
+
 def test_config_tu_choi_dung_sai_vo_ly():
     with pytest.raises(ValueError, match="dung_sai_gan_bang"):
         Config(dung_sai_gan_bang=0.9).validate()
