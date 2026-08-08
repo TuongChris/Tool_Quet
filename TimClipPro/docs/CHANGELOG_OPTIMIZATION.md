@@ -36,6 +36,34 @@ Không thay đổi: `_merge()`, `min_hash_floor`, `min_hash_strong`, thuật to�
 Top-N, `chon_dai_dien()`, schema SQLite, định dạng vân tay, hợp đồng báo cáo/Sheets,
 audfprint vendored. `so_dat_nguong` giữ nguyên ý nghĩa.
 
+## Vòng đóng gói triển khai máy phụ — 2026-08-08
+
+Mục tiêu: đem bản mới nhất sang các máy Windows nhàn rỗi để chúng tự quét theo lịch.
+Hướng dẫn: [TRIEN_KHAI_MAY_PHU.md](TRIEN_KHAI_MAY_PHU.md).
+
+**Phát hiện quan trọng: máy phụ không cần clip gốc.** `kho_thu_muc` chỉ được đọc để lấy
+`clips_meta.json`; `liet_ke_media()` duy nhất chạy trong `build_database()`. Nhờ vậy gói
+là **543 MB** (kho vân tay + metadata + ffmpeg + mã nguồn) thay vì gần **200 GB** nếu
+kéo theo 23 GB clip gốc và 173 GB `data/downloads`.
+
+| File | Nội dung và lý do | Rủi ro | Test xác minh | Trước → Sau |
+|---|---|---|---|---|
+| `dong_goi.py` | **Sửa bug**: loại môi trường ảo theo tiền tố thay vì tên chính xác | Low | 12 test | `.venv-claude` lọt vào gói (7.214 file / 108 MB) → bị loại |
+| `dong_goi_may_chay.py` (mới) | Gói bản chạy được: mã nguồn + kho chọn lọc + metadata + ffmpeg | Low | 11 test + gói thật 413 MB | Không có → triển khai được sang máy khác |
+| `thiet_lap_may_phu.py` (mới) | Trỏ lại đường dẫn kho trên máy đích, tự kiểm tra thiếu gì | Low | Chạy thật trên bản giải nén | Không có → khỏi sửa tay `khos.json` |
+| `chia_watchlist.py` (mới) | Chia watchlist luân phiên cho N máy | Low | 6 test | Không có → N máy khỏi quét trùng |
+| `ChayMayPhu.bat` (mới) | Điểm vào cho Task Scheduler; chỉ bật Sheets khi thật sự có khoá | Low | — | Không có |
+
+**Vấn đề kiến trúc đã nêu rõ thay vì che đi:** `watch` lọc video đã quét bằng
+`ids_da_quet()` đọc `lichsu.db` **cục bộ**, nên chép nguyên watchlist sang N máy sẽ khiến
+cả N máy quét trùng. Giải pháp chọn là chia watchlist trước — không cần sửa code, không
+có tranh chấp. Đã bác bỏ phương án dùng chung `lichsu.db` qua ổ mạng vì SQLite trên SMB
+hay lỗi khoá file.
+
+**An toàn:** `google_key.json` và mọi file có từ khoá bí mật **không bao giờ** được đóng
+gói, kể cả khi được yêu cầu — dùng chung bộ nhận dạng với `dong_goi.py` và kiểm lại lần
+nữa sau khi zip đã tạo. Khoá phải tự chép sang bằng kênh riêng.
+
 ## Vòng sửa lệch 1 giây ở thời lượng — 2026-08-07
 
 Báo cáo ghi 5:53:40 cho `D-sVTRR5jm0` trong khi YouTube hiển thị 5:53:39. Chi tiết

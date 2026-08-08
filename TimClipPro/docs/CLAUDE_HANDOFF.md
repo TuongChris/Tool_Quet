@@ -246,3 +246,29 @@ nhảy tới 00:24:01.
    ca. Chạy `kiem_thoi_luong.py --sua --that-su` khi được duyệt (có `.bak`, nguyên tử).
    Sau khi ghi phải khởi động lại app để cache metadata nạp lại.
 2. Chưa quét end-to-end một video mới sau khi sửa (mới dựng lại báo cáo từ job đã lưu).
+
+---
+
+## Vòng đóng gói triển khai máy phụ (2026-08-08, sau `eb4a947`)
+
+**Yêu cầu**: đem bản mới nhất sang máy Windows nhàn rỗi để tự quét theo lịch.
+
+**Phát hiện quyết định kích thước gói**: máy phụ KHÔNG cần clip gốc. `kho_thu_muc` chỉ
+được đọc để lấy `clips_meta.json`; `liet_ke_media()` duy nhất chạy trong
+`build_database()`. Gói 543 MB thay vì ~200 GB.
+
+**Bug có sẵn đã sửa**: `dong_goi.py` loại môi trường ảo theo TÊN CHÍNH XÁC (`.venv`,
+`venv`) nên `.venv-claude` lọt lưới, kéo 7.214 file / 108 MB site-packages vào gói "mã
+nguồn" — đó là lý do `TimClipPro_source.zip` nặng 26 MB. Đổi sang bắt theo tiền tố.
+
+**Vấn đề kiến trúc đã nêu rõ**: `watch` lọc bằng `ids_da_quet()` đọc `lichsu.db` cục bộ
+→ N máy cùng watchlist sẽ quét trùng. Giải pháp: `chia_watchlist.py` chia luân phiên.
+Đã bác bỏ dùng chung `lichsu.db` qua ổ mạng (SQLite trên SMB hay hỏng).
+
+**Kiểm chứng**: gói thật 413 MB, giải nén ra thư mục sạch, `Engine(root=...)` nạp được
+744 + 1.717 clip, metadata đủ tên/link/thời lượng, 0 file bí mật/môi trường ảo/audio.
+
+### Còn lại
+1. Chưa chạy thử `cai_dat.bat` trên một máy Windows sạch thật (mới kiểm phần Python).
+2. Nhiều máy cùng ghi một Google Sheet có thể chạm quota API — chưa đo.
+3. Kho vân tay trong gói là ảnh chụp; thêm clip gốc mới ở máy nguồn thì phải đóng gói lại.

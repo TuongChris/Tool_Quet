@@ -2,12 +2,38 @@
 
 Ngày: 2026-08-06.
 
+## Vòng đóng gói triển khai máy phụ — 2026-08-08
+
+| Lệnh/phạm vi | Passed | Failed | Skipped | Ghi chú |
+|---|---:|---:|---:|---|
+| `tests/test_dong_goi_may_chay.py` (mới) | 33 | 0 | 0 | An toàn khoá bí mật, bỏ môi trường ảo, chia watchlist |
+| Full fast suite (`pytest -q`) | 643 | 0 | 1 | |
+| `pytest -m slow` | 5 | 0 | 0 | |
+| `ruff check .` | — | 0 finding | — | Pass |
+
+**Bug có sẵn được phát hiện và sửa.** `dong_goi.py` chỉ loại `.venv` và `venv` theo tên
+chính xác, nên `.venv-claude` lọt lưới và kéo **7.214 file / 108 MB** site-packages vào
+gói "mã nguồn" (đó là lý do `TimClipPro_source.zip` nặng 26 MB). Đã đổi sang bắt theo
+tiền tố; kết quả liệt kê: **7.368 file / 109 MB → 154 file / 1,5 MB**.
+
+**Kiểm chứng đầu-cuối gói thật** (SML + Cory, 413 MB): giải nén ra thư mục sạch, chạy
+`thiet_lap_may_phu.py`, rồi dựng `Engine(root=...)` trên bản giải nén:
+
+| Kiểm tra | Kết quả |
+|---|---|
+| Khoá bí mật / môi trường ảo / audio / lịch sử trong zip | **0 file** |
+| Nạp kho vân tay | 744 clip (SML), 1.717 clip (Cory) |
+| `check_env()` | ffmpeg, ffprobe, yt_dlp, audfprint, database đều True |
+| Metadata clip gốc | 3/3 đủ tên + link + thời lượng (dùng `duration_media`) |
+| Đổi kho | hoạt động |
+
 ## Vòng sửa lệch 1 giây ở thời lượng — 2026-08-07
 
 | Lệnh/phạm vi | Passed | Failed | Skipped | Ghi chú |
 |---|---:|---:|---:|---|
 | `tests/test_thoi_luong.py` (mới) | 26 | 0 | 0 | Formatter, biên giây/giờ, >24h, metadata, nhất quán exporter |
-| Full fast suite (`pytest -q`) | 600 | 0 | 1 | |
+| `tests/test_kiem_thoi_luong.py` (mới) | 10 | 0 | 0 | Công cụ bổ sung `duration_media`, cờ `--ghi-de`, biên |
+| Full fast suite (`pytest -q`) | 610 | 0 | 1 | |
 | `pytest -m slow` | 5 | 0 | 0 | |
 | `ruff check .` | — | 0 finding | — | Pass |
 

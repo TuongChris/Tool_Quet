@@ -35,6 +35,19 @@ BO_QUA_TM = {"data", "ketqua", "bin", "__pycache__",
               ".pytest_cache", ".ruff_cache", ".git", ".venv", "venv",
               "node_modules"}
 
+# Môi trường ảo có thể mang tên bất kỳ. Liệt kê cứng là không đủ: `.venv-claude`
+# từng lọt qua và kéo theo 7.214 file / 108 MB site-packages vào gói "mã nguồn".
+# Bắt theo TIỀN TỐ tên để không phải đoán trước mọi biến thể.
+TIEN_TO_MOI_TRUONG_AO = (".venv", "venv", ".env", "env-", "virtualenv")
+
+
+def la_thu_muc_bo_qua(ten: str) -> bool:
+    """Thư mục này có bị loại hoàn toàn khỏi gói không?"""
+    ten_thuong = ten.casefold()
+    if ten_thuong in {x.casefold() for x in BO_QUA_TM}:
+        return True
+    return any(ten_thuong.startswith(t) for t in TIEN_TO_MOI_TRUONG_AO)
+
 # File runtime/cá nhân không thuộc source package.
 BO_QUA_FILE = {"requirements-lock.txt", "session.log", "watchlist.json"}
 
@@ -58,7 +71,7 @@ def nen_lay(duong_dan_tuong_doi: str) -> bool:
     ten_thuong = ten.casefold()
     if la_file_nhay_cam(ten) or ten_thuong in BO_QUA_FILE:
         return False
-    if any(p in BO_QUA_TM for p in phan[:-1]):
+    if any(la_thu_muc_bo_qua(p) for p in phan[:-1]):
         return False
     if (
         os.path.splitext(ten)[1].lower() not in DUOI_OK
@@ -79,7 +92,7 @@ def liet_ke_source(goc_du_an: str = GOC) -> tuple[list, int]:
     """Trả danh sách file được phép và tổng byte, không ghi gì ra đĩa."""
     ds, tong = [], 0
     for goc, thu_muc, files in os.walk(goc_du_an):
-        thu_muc[:] = [d for d in thu_muc if d not in BO_QUA_TM]
+        thu_muc[:] = [d for d in thu_muc if not la_thu_muc_bo_qua(d)]
         for ten_file in files:
             day_du = os.path.join(goc, ten_file)
             tuong_doi = os.path.relpath(day_du, goc_du_an)
