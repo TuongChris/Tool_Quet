@@ -126,3 +126,17 @@ Giá trị `duration_media` không hợp lệ (âm, 0, NaN, chuỗi) bị bỏ q
 
 Ghi qua `ghi_json_an_toan()` nên có bản sao `.bak` và ghi nguyên tử. Không đụng kho
 vân tay, không tải lại gì, không gọi mạng.
+
+### Khi kho được nạp lại hoặc đổi tham số nén
+
+Mặc định công cụ **bỏ qua** mục đã có `duration_media`, nên nạp lại kho xong thì giá
+trị cũ vẫn còn và có thể không khớp file mới. Dùng `--ghi-de` để đo lại:
+
+```powershell
+& ".\.venv\Scripts\python.exe" kiem_thoi_luong.py --ghi-de                 # xem trước
+& ".\.venv\Scripts\python.exe" kiem_thoi_luong.py --ghi-de --sua --that-su # ghi đè
+```
+
+Ở chế độ này, cột "ĐỔI hiển thị" so với `duration_media` **cũ** (thứ đang thực sự điều
+khiển hiển thị), không phải so với `duration` của yt-dlp. `--ghi-de` không kèm `--sua`
+chỉ để xem trước, tuyệt đối không ghi. `duration` gốc không bao giờ bị đụng tới.

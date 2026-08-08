@@ -19,6 +19,8 @@ CÁCH DÙNG
     python kiem_thoi_luong.py --kho SML          # chỉ một kho
     python kiem_thoi_luong.py --sua              # thử ghi (vẫn chỉ in ra)
     python kiem_thoi_luong.py --sua --that-su    # ghi thật, có bản sao .bak
+    python kiem_thoi_luong.py --ghi-de           # xem trước việc đo lại mục đã có
+    python kiem_thoi_luong.py --ghi-de --sua --that-su   # đo lại và ghi đè
 
 Không đụng tới kho vân tay, không tải lại gì, không gọi mạng.
 """
@@ -61,8 +63,13 @@ def _so_hop_le(x) -> float | None:
 
 
 def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
-                 gioi_han: int) -> dict:
-    """Kiểm tra một kho. Trả về thống kê; chỉ ghi khi ``that_su`` bật."""
+                 gioi_han: int, ghi_de: bool = False) -> dict:
+    """Kiểm tra một kho. Trả về thống kê; chỉ ghi khi ``that_su`` bật.
+
+    ``ghi_de`` cho đo lại cả những mục ĐÃ có ``duration_media``. Cần khi kho
+    được nạp lại hoặc đổi tham số nén, vì lúc đó giá trị cũ không còn khớp file.
+    Cờ này chạy được cả ở chế độ chỉ-kiểm-tra để xem trước sẽ đổi những gì.
+    """
     meta_path = os.path.join(thu_muc, "clips_meta.json")
     if not os.path.isfile(meta_path):
         print(f"\n### {ten_kho}: không có clips_meta.json tại {thu_muc}")
@@ -74,7 +81,7 @@ def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
         return {}
 
     tk = {"tong": len(meta), "co_duration": 0, "co_media": 0, "thieu_file": 0,
-          "do_duoc": 0, "doi_hien_thi": 0, "da_ghi": 0}
+          "do_duoc": 0, "doi_hien_thi": 0, "da_ghi": 0, "do_lai": 0}
     doi = []
     for ten, muc in meta.items():
         if not isinstance(muc, dict):
@@ -82,9 +89,12 @@ def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
         d = _so_hop_le(muc.get("duration"))
         if d is not None:
             tk["co_duration"] += 1
-        if _so_hop_le(muc.get(TRUONG)) is not None:
+        da_co = _so_hop_le(muc.get(TRUONG))
+        if da_co is not None:
             tk["co_media"] += 1
-            continue
+            if not ghi_de:
+                continue
+            tk["do_lai"] += 1
         path = os.path.join(thu_muc, ten)
         if not os.path.exists(path):
             tk["thieu_file"] += 1
@@ -95,9 +105,12 @@ def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
         if media is None:
             continue
         tk["do_duoc"] += 1
-        if d is not None and hhmmss(d) != hhmmss(media):
+        # So với giá trị ĐANG điều khiển hiển thị, không phải luôn so với `duration`:
+        # ở chế độ ghi đè thì cái đang hiển thị là `duration_media` cũ.
+        cu = da_co if da_co is not None else d
+        if cu is not None and hhmmss(cu) != hhmmss(media):
             tk["doi_hien_thi"] += 1
-            doi.append((ten, d, media))
+            doi.append((ten, cu, media))
         if sua:
             muc[TRUONG] = round(media, 3)
             tk["da_ghi"] += 1
@@ -106,13 +119,16 @@ def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
     print(f"  tổng mục                    : {tk['tong']}")
     print(f"  có `duration` (yt-dlp)      : {tk['co_duration']}")
     print(f"  đã có `{TRUONG}`      : {tk['co_media']}")
+    if ghi_de:
+        print(f"  trong đó ĐO LẠI (--ghi-de)  : {tk['do_lai']}")
     print(f"  đo được từ file             : {tk['do_duoc']}")
     print(f"  thiếu file trong kho        : {tk['thieu_file']}")
     if tk["do_duoc"]:
         pt = 100 * tk["doi_hien_thi"] / tk["do_duoc"]
-        print(f"  ĐỔI hiển thị sau khi bổ sung: {tk['doi_hien_thi']} ({pt:.1f}%)")
-    for ten, d, media in doi[:8]:
-        print(f"      {hhmmss(d)} → {hhmmss(media)}   ({d:.0f} → {media:.3f})  "
+        nhan = "ĐỔI hiển thị sau khi đo lại" if ghi_de else "ĐỔI hiển thị sau khi bổ sung"
+        print(f"  {nhan}: {tk['doi_hien_thi']} ({pt:.1f}%)")
+    for ten, cu, media in doi[:8]:
+        print(f"      {hhmmss(cu)} → {hhmmss(media)}   ({cu:.3f} → {media:.3f})  "
               f"{ten[:44]}")
 
     if sua and that_su and tk["da_ghi"]:
@@ -130,6 +146,8 @@ def main() -> None:
                     help=f"Bổ sung `{TRUONG}` (mặc định chỉ in ra)")
     ap.add_argument("--that-su", action="store_true",
                     help="Ghi thật xuống đĩa; không có cờ này thì chỉ thử")
+    ap.add_argument("--ghi-de", action="store_true",
+                    help=f"Đo lại cả mục đã có `{TRUONG}` (dùng khi kho được nạp lại)")
     ap.add_argument("--gioi-han", type=int, default=0,
                     help="Chỉ đo tối đa ngần này clip mỗi kho (0 = tất cả)")
     args = ap.parse_args()
@@ -151,13 +169,13 @@ def main() -> None:
             print(f"\n### {k.get('ten')}: chưa gán thư mục, bỏ qua")
             continue
         tk = kiem_mot_kho(k.get("ten", "?"), thu_muc, args.sua, args.that_su,
-                          args.gioi_han)
+                          args.gioi_han, args.ghi_de)
         for khoa, v in tk.items():
             tong[khoa] = tong.get(khoa, 0) + v
 
     if tong:
         print("\n=== TỔNG ===")
-        for khoa in ("tong", "co_duration", "co_media", "do_duoc",
+        for khoa in ("tong", "co_duration", "co_media", "do_lai", "do_duoc",
                      "thieu_file", "doi_hien_thi", "da_ghi"):
             print(f"  {khoa:<14}{tong.get(khoa, 0)}")
 

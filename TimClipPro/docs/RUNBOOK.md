@@ -412,5 +412,12 @@ nên khoảng 48% clip dư một giây cho tới khi bổ sung độ dài thật
 & ".\.venv\Scripts\python.exe" kiem_thoi_luong.py --sua --that-su  # ghi thật (có .bak)
 ```
 
+**Sau khi nạp lại kho hoặc đổi tham số nén** thì giá trị cũ không còn khớp file; mặc
+định công cụ bỏ qua mục đã có, phải thêm `--ghi-de` để đo lại:
+
+```powershell
+& ".\.venv\Scripts\python.exe" kiem_thoi_luong.py --ghi-de --sua --that-su
+```
+
 Sau khi ghi, khởi động lại app để cache metadata nạp lại.
 Chi tiết: [DURATION_ARCHITECTURE.md](DURATION_ARCHITECTURE.md).
