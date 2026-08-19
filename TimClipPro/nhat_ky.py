@@ -9,6 +9,37 @@ from datetime import datetime, timedelta
 from typing import IO, Optional
 
 
+# Các dòng yt-dlp in THẲNG ra sys.stderr (không qua logger nên cờ `quiet` không chặn
+# được) mà nội dung chính là bí mật. Điển hình:
+#     WARNING: skipping cookie file entry due to invalid length 1: '.youtube.com ... __Secure-1PSID <giá trị>'
+# Chỉ một dòng cookies.txt sai định dạng — hay gặp khi mở bằng Notepad làm TAB thành
+# dấu cách — là giá trị phiên đăng nhập bị ghi vào ketqua/giamsat_*.log, file giữ 30
+# ngày nằm chung thư mục với CSV mà người dùng hay nén gửi đi khi nhờ hỗ trợ.
+# `ytdlp_chung.kiem_tra_file_cookie()` đã chặn từ đầu nguồn; đây là lớp thứ hai, phòng
+# khi yt-dlp thêm cảnh báo tương tự hoặc file bị đổi giữa chừng.
+TIEN_TO_CAN_CHE = (
+    "WARNING: skipping cookie file entry",
+    "WARNING: Failed to parse cookie",
+)
+THAY_THE = "[đã ẩn: dòng này chứa nội dung cookie]"
+
+
+def che_bi_mat(noi_dung: str) -> str:
+    """Thay các dòng chứa bí mật bằng ghi chú, giữ nguyên phần còn lại.
+
+    Cắt theo từng dòng chứ không bỏ cả khối, để thông tin chẩn đoán khác không mất.
+    """
+    if not any(t in noi_dung for t in TIEN_TO_CAN_CHE):
+        return noi_dung
+    ra = []
+    for dong in noi_dung.splitlines(keepends=True):
+        if any(t in dong for t in TIEN_TO_CAN_CHE):
+            ra.append(THAY_THE + ("\n" if dong.endswith("\n") else ""))
+        else:
+            ra.append(dong)
+    return "".join(ra)
+
+
 class _GhiSongSong:
     def __init__(self, man_hinh: IO[str], file_log: IO[str]) -> None:
         self.man_hinh = man_hinh
@@ -20,6 +51,7 @@ class _GhiSongSong:
         return getattr(self.man_hinh, "encoding", None)
 
     def write(self, noi_dung: str) -> int:
+        noi_dung = che_bi_mat(noi_dung)
         ket_qua = self.man_hinh.write(noi_dung)
         try:
             self.file_log.write(noi_dung)

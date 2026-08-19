@@ -252,6 +252,21 @@ def lay_ung_vien(
     return ung_vien, loi
 
 
+def _lister_theo_cau_hinh(engine: Any) -> Callable:
+    """`(url, limit) -> list[VideoInfo]` mang theo cookie và nhịp tải của engine.
+
+    Giữ đúng chữ ký hai đối số mà `mo_rong_watchlist` mong đợi để test vẫn thay được
+    bằng bản giả.
+    """
+    lay_cau_hinh = getattr(engine, "cau_hinh_mang", None)
+    cau_hinh = lay_cau_hinh() if callable(lay_cau_hinh) else None
+
+    def lister(url: str, limit: Optional[int] = None) -> list:
+        return ChannelSync.list_channel(url, limit, cau_hinh_mang=cau_hinh)
+
+    return lister
+
+
 def chay_giam_sat(
     engine: Any,
     wl: WatchList,
@@ -262,6 +277,12 @@ def chay_giam_sat(
     dung_lai: Any = None,
 ) -> BaoCao:
     """Chạy một lượt giám sát đầy đủ."""
+    # Vòng giám sát chạy lặp lại theo lịch nên là nơi tích luỹ nguy cơ bị YouTube coi
+    # là bot cao nhất. `mo_rong_watchlist` mặc định dùng `ChannelSync.list_channel`
+    # trần, tức mất cookie và mất nhịp người dùng đã đặt; dựng sẵn lister mang cấu
+    # hình của engine ngay tại đây — chỗ gần nhất còn nhìn thấy `engine`.
+    if lister is None:
+        lister = _lister_theo_cau_hinh(engine)
     try:
         with KhoaTienTrinh(
             os.path.join(engine.data_dir, "tool.lock"),

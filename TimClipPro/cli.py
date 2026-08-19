@@ -22,7 +22,8 @@ import watch
 from channel import ChannelSync
 from clip_metadata import configure_metadata_logging
 from dung_lai import YeuCauDung
-from engine import Engine, liet_ke_media
+from engine import Engine, liet_ke_media, thu_muc_data_mac_dinh
+from ytdlp_chung import CauHinhMang
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -163,7 +164,12 @@ def main():
     if a.lenh == "vameta":
         if not a.kho:
             ap.error("Lệnh vameta cần --kho trỏ tới thư mục kho clip gốc.")
-        ket_qua = ChannelSync(a.kho).va_metadata(in_tien_do)
+        # Lệnh này cố tình KHÔNG dựng Engine (xem test_cli_watch), nhưng vẫn gọi
+        # mạng một lượt mỗi video nên vẫn cần cookie và nhịp tải đã cấu hình.
+        ket_qua = ChannelSync(
+            a.kho,
+            cau_hinh_mang=CauHinhMang.tu_file_cau_hinh(thu_muc_data_mac_dinh()),
+        ).va_metadata(in_tien_do)
         print(
             f"\nXONG: đã vá {ket_qua['da_va']}/{ket_qua['tong']} mục metadata, "
             f"bỏ qua {ket_qua['bo_qua']} mục đã đủ, "
@@ -218,7 +224,9 @@ def main():
     if a.lenh == "kenh":
         if not a.muc or not a.kho:
             ap.error('Dùng: python cli.py kenh "https://youtube.com/@Kenh" --kho "D:\\KhoClipGoc"')
-        cs = ChannelSync(a.kho)
+        cs = ChannelSync(a.kho,
+                         player_clients=list(eng.config.ytdlp_player_clients),
+                         cau_hinh_mang=eng.cau_hinh_mang())
         r = cs.sync(a.muc[0], a.limit, in_tien_do)
         trang_thai = "ĐÃ DỪNG" if r.get("da_huy") else "XONG"
         print(f"\n{trang_thai}: tải mới {r['moi']} video, "

@@ -20,9 +20,13 @@ class _ChannelSyncGia:
         "tong": 2, "da_va": 1, "bo_qua": 1, "da_them_tu_dia": 1, "loi": [],
     }
     kho = ""
+    cau_hinh_mang = None
 
-    def __init__(self, kho):
+    def __init__(self, kho, cau_hinh_mang=None, **kw):
         type(self).kho = kho
+        # vameta gọi mạng một lượt mỗi video nên PHẢI nhận cấu hình cookie/nhịp tải,
+        # dù nó cố tình không dựng Engine. Giữ lại để test khẳng định điều đó.
+        type(self).cau_hinh_mang = cau_hinh_mang
 
     def va_metadata(self, progress=None):
         return self.ket_qua
@@ -170,6 +174,9 @@ def test_cli_vameta_goi_dung_thu_muc_va_in_tom_tat(monkeypatch, capsys):
     cli.main()
 
     assert _ChannelSyncGia.kho == "D:/KhoClipGoc"
+    assert _ChannelSyncGia.cau_hinh_mang is not None, (
+        "vameta gọi mạng nên phải mang theo cookie và nhịp tải đã cấu hình"
+    )
     ra = capsys.readouterr().out
     assert "đã vá 1/2 mục metadata" in ra
     assert "bổ sung 1 mục lấy từ tên file trên đĩa" in ra

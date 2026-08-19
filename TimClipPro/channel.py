@@ -21,12 +21,20 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Mapping, Optional
 
 from clip_metadata import filename_fallback_parts, valid_upload_date
 from luu_tru import doc_json_an_toan, ghi_json_an_toan
 from publication_date import resolve_publication_date
+from ytdlp_chung import (
+    PLAYER_CLIENTS_MAC_DINH,
+    CauHinhMang,
+    chay_kem_duong_lui_cookie,
+    giai_thich_loi,
+    go_ma_mau,
+    thu_tung_client,
+)
 
 # Ký tự Windows không cho phép đặt trong tên file
 RE_XAU = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -37,6 +45,14 @@ AUDIO_BITRATE = "64k"
 AUDIO_RATE = "16000"   # audfprint chỉ dùng tới ~5.5 kHz nên 16 kHz là dư
 AUDIO_EXT = "opus"
 NETWORK_TIMEOUT_S = 30
+
+# Danh sách client, hàm dọn mã màu và hàm diễn giải lỗi nay nằm ở `ytdlp_chung` để
+# đường quét (engine.py) và đường đồng bộ kênh (file này) dùng CHUNG một bản. Giữ tên
+# ở đây làm alias vì mã cũ và test đang tham chiếu qua `channel.*`.
+__all__ = [
+    "PLAYER_CLIENTS_MAC_DINH", "CauHinhMang", "ChannelSync", "VideoInfo",
+    "giai_thich_loi", "go_ma_mau",
+]
 
 
 @dataclass
@@ -119,11 +135,34 @@ def bo_sung_video_info(v: VideoInfo, info: Mapping | None) -> VideoInfo:
 class ChannelSync:
     """Đồng bộ kênh YouTube về thư mục kho clip gốc."""
 
-    def __init__(self, dest: str, network_timeout_s: int = NETWORK_TIMEOUT_S):
+    def __init__(self, dest: str, network_timeout_s: Optional[int] = None,
+                 player_clients: Optional[list] = None,
+                 cau_hinh_mang: Optional[CauHinhMang] = None):
+        # Mặc định là None chứ KHÔNG phải NETWORK_TIMEOUT_S: nếu để giá trị cứng thì
+        # mọi lượt khởi tạo đều ghi đè timeout mà người dùng đã đặt trong cau_hinh.json
+        # lên 30 giây, và không cách nào phân biệt "người gọi chỉ định 30" với
+        # "người gọi không quan tâm".
+        goc = cau_hinh_mang or CauHinhMang()
+        if network_timeout_s is None:
+            network_timeout_s = goc.network_timeout_s
         if not 5 <= network_timeout_s <= 300:
             raise ValueError("network_timeout_s phải nằm trong khoảng 5..300 giây.")
+        if player_clients is not None and (
+            not isinstance(player_clients, list)
+            or not all(isinstance(x, str) for x in player_clients)
+            or not player_clients
+        ):
+            raise ValueError(
+                "player_clients phải là danh sách chuỗi không rỗng; "
+                "dùng [\"\"] để giữ mặc định yt-dlp."
+            )
         self.dest = os.path.abspath(dest)
         self.network_timeout_s = network_timeout_s
+        self.cau_hinh_mang = replace(goc, network_timeout_s=network_timeout_s)
+        # Có cookie thì các client không hỗ trợ cookie bị yt-dlp gỡ; xếp lại để khỏi
+        # mất lượt thử vô ích cho mỗi video.
+        self.player_clients = self.cau_hinh_mang.player_clients(
+            list(player_clients or PLAYER_CLIENTS_MAC_DINH))
         os.makedirs(self.dest, exist_ok=True)
         # File archive theo đúng định dạng chuẩn của yt-dlp ("youtube <id>" mỗi dòng)
         self.archive = os.path.join(self.dest, "downloaded.txt")
@@ -196,7 +235,9 @@ class ChannelSync:
 
         if fetcher is None:
             def fetcher(video_id: str) -> dict:
-                info = ChannelSync.lay_info_video(video_id, self.network_timeout_s)
+                info = ChannelSync.lay_info_video(
+                    video_id, self.network_timeout_s,
+                    cau_hinh_mang=self.cau_hinh_mang)
                 return {
                     # Dùng chung cách rút ngày với list_channel/sync để ba đường
                     # không hiểu khác nhau (kể cả trường hợp chỉ có timestamp).
@@ -248,7 +289,7 @@ class ChannelSync:
                         chua_ghi = 0
                     da_va += 1
                 except Exception as e:  # noqa: BLE001
-                    loi.append(f"{ten_file}: {e}")
+                    loi.append(f"{ten_file}: {giai_thich_loi(e)}")
                 if progress:
                     progress(
                         i / tong_can_va,
@@ -287,17 +328,14 @@ class ChannelSync:
     def lay_info_video(
         video_id: str,
         network_timeout_s: int = NETWORK_TIMEOUT_S,
+        cau_hinh_mang: Optional[CauHinhMang] = None,
     ) -> dict:
         """Trích xuất ĐẦY ĐỦ một video (có upload_date/duration). Không tải file."""
         import yt_dlp
 
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": True,
-            "noplaylist": True,
-            "socket_timeout": network_timeout_s,
-        }
+        goc = cau_hinh_mang or CauHinhMang()
+        opts = replace(goc, network_timeout_s=network_timeout_s).tuy_chon(
+            skip_download=True, noplaylist=True)
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(f"https://youtu.be/{video_id}", download=False) or {}
 
@@ -309,6 +347,7 @@ class ChannelSync:
         lay_ngay_dang: bool = False,
         chi_tiet: Optional[Callable[[str], dict]] = None,
         progress: Optional[Callable] = None,
+        cau_hinh_mang: Optional[CauHinhMang] = None,
     ) -> list:
         """
         Lấy danh sách video của kênh mà CHƯA tải gì.
@@ -334,9 +373,8 @@ class ChannelSync:
         if "/@" in url and "/videos" not in url and "/playlist" not in url:
             url = url.rstrip("/") + "/videos"
 
-        opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist",
-                "ignoreerrors": True, "skip_download": True,
-                "socket_timeout": NETWORK_TIMEOUT_S}
+        opts = (cau_hinh_mang or CauHinhMang()).tuy_chon(
+            extract_flat="in_playlist", ignoreerrors=True, skip_download=True)
         if limit:
             opts["playlistend"] = limit
 
@@ -358,7 +396,17 @@ class ChannelSync:
         if not lay_ngay_dang:
             return ds
 
-        lay = chi_tiet or ChannelSync.lay_info_video
+        # Nhánh mặc định PHẢI mang theo cau_hinh_mang: đây là vòng lặp một request MỖI
+        # video — nặng hơn hẳn lượt extract_flat ở trên, và đúng chỗ bot-check đánh.
+        # Gọi trần `ChannelSync.lay_info_video` sẽ rơi về cấu hình mặc định, tức mất
+        # cookie và mất nhịp người dùng đặt, ngay tại nơi cần chúng nhất.
+        # `chi_tiet` do người gọi truyền vào giữ nguyên chữ ký (video_id) -> dict.
+        def _lay_mac_dinh(video_id: str) -> dict:
+            goc = cau_hinh_mang or CauHinhMang()
+            return ChannelSync.lay_info_video(
+                video_id, goc.network_timeout_s, cau_hinh_mang=goc)
+
+        lay = chi_tiet or _lay_mac_dinh
         con_thieu = [i for i, v in enumerate(ds) if not v.upload_date]
         for thu_tu, i in enumerate(con_thieu, start=1):
             if progress:
@@ -388,6 +436,48 @@ class ChannelSync:
                 return os.path.join(self.dest, f)
         return None
 
+    def _tai_thu_tung_client(self, url: str, rieng: dict):
+        """Tải bằng yt-dlp với hai lớp đường lui: cookie ở ngoài, player client ở trong.
+
+        Nhận ``rieng`` (phần tuỳ chọn riêng của lượt tải) chứ không nhận dict tuỳ chọn
+        đã dựng sẵn, vì đường lui cookie phải DỰNG LẠI toàn bộ tuỳ chọn với một cấu
+        hình mạng khác — sửa tại chỗ trên dict cũ sẽ để sót khoá cookie.
+
+        Đúng cùng cặp đường lui mà :meth:`engine.Engine.download_audio` dùng; cả hai
+        gọi chung `ytdlp_chung` để không đường nào bị bỏ sót khi vá.
+        """
+        import yt_dlp
+
+        def chay(rieng: dict):
+            with yt_dlp.YoutubeDL(rieng) as ydl:
+                return ydl.extract_info(url, download=True)
+
+        def don_file_do_dang() -> None:
+            """Xoá .part/.ytdl trước khi đổi client.
+
+            Mỗi client trả một format khác nhau; `continuedl=True` gặp .part cũ sẽ nối
+            byte của luồng MỚI vào luồng CŨ, ra file audio hỏng mà không báo lỗi — và
+            với kho đối chiếu thì vân tay hỏng còn tệ hơn tải thất bại.
+            """
+            if not os.path.isdir(self.tmp_dir):
+                return
+            for ten in os.listdir(self.tmp_dir):
+                if ten.endswith((".part", ".ytdl")):
+                    try:
+                        os.remove(os.path.join(self.tmp_dir, ten))
+                    except OSError:
+                        pass
+
+        def tai_voi(cau_hinh):
+            return thu_tung_client(
+                cau_hinh.player_clients(self.player_clients), chay,
+                cau_hinh.tuy_chon(**rieng), truoc_khi_thu_lai=don_file_do_dang)
+
+        # Cookie hết hiệu lực làm YouTube chỉ trả storyboard nên MỌI client đều hỏng;
+        # đường lui cookie phải bọc NGOÀI đường lui client. Đường quét (engine.py) làm
+        # y hệt — hai đường dùng chung `chay_kem_duong_lui_cookie`.
+        return chay_kem_duong_lui_cookie(self.cau_hinh_mang, tai_voi)
+
     def _tai_va_nen(self, v: VideoInfo) -> tuple:
         """Tải bestaudio rồi nén sang opus mono.
 
@@ -396,18 +486,12 @@ class ChannelSync:
         **miễn phí** — không tốn thêm request nào. Đây là lý do ``sync()`` không cần
         bật ``list_channel(lay_ngay_dang=True)``.
         """
-        import yt_dlp
-
         os.makedirs(self.tmp_dir, exist_ok=True)
-        opts = {
-            "format": "ba/b",
-            "outtmpl": os.path.join(self.tmp_dir, "%(id)s.%(ext)s"),
-            "noplaylist": True, "quiet": True, "no_warnings": True,
-            "continuedl": True, "retries": 10, "fragment_retries": 10,
-            "socket_timeout": self.network_timeout_s,
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(v.url, download=True)
+        info = self._tai_thu_tung_client(v.url, dict(
+            format="ba/b",
+            outtmpl=os.path.join(self.tmp_dir, "%(id)s.%(ext)s"),
+            noplaylist=True, continuedl=True, retries=10, fragment_retries=10,
+        ))
         v = bo_sung_video_info(v, info if isinstance(info, Mapping) else None)
 
         tho = [os.path.join(self.tmp_dir, f) for f in os.listdir(self.tmp_dir)
@@ -443,7 +527,7 @@ class ChannelSync:
                 progress(max(0.0, min(1.0, pct)), msg)
 
         bao(0.0, "Đang lấy danh sách video của kênh...")
-        ds = self.list_channel(url, limit)
+        ds = self.list_channel(url, limit, cau_hinh_mang=self.cau_hinh_mang)
         if not ds:
             raise RuntimeError("Không lấy được video nào từ kênh. Kiểm tra lại link kênh.")
 
@@ -484,7 +568,9 @@ class ChannelSync:
                 self._mark_done(v.id)
                 da_tai += 1
             except Exception as e:  # noqa: BLE001
-                loi.append(f"{v.title[:40]}: {e}")
+                # giai_thich_loi: bỏ mã màu ANSI của yt-dlp (Streamlit hiện ra rác)
+                # và nói rõ trường hợp nào là YouTube chặn chứ không phải tool hỏng.
+                loi.append(f"{v.title[:40]}: {giai_thich_loi(e, self.cau_hinh_mang.co_cookie)}")
 
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         bao(1.0, "Đồng bộ xong.")
@@ -546,7 +632,7 @@ class ChannelSync:
         Đối chiếu kênh YouTube với thư mục kho: còn thiếu đúng những video nào.
         Không tải gì cả — chỉ đọc danh sách.
         """
-        ds = self.list_channel(url, limit)
+        ds = self.list_channel(url, limit, cau_hinh_mang=self.cau_hinh_mang)
         tren_dia = self.quet_id_tren_dia()
         thieu = [v for v in ds if v.id not in tren_dia]
         return {"tong_kenh": len(ds), "co_roi": len(ds) - len(thieu),

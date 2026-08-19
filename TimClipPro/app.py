@@ -20,6 +20,7 @@ import streamlit as st
 import bang_ngang
 from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
 from clip_metadata import configure_metadata_logging
+import ytdlp_chung
 from engine import Engine, ScanResult, hhmmss, o_bang_tinh_an_toan
 from fingerprint_progress import FingerprintJobController
 from scan_jobs import ScanJobController, ScanLaunchConfig
@@ -321,6 +322,34 @@ def bao_cao_khong_co_ket_qua(results: list[ScanResult]) -> None:
             st.caption(cd.tom_tat())
 
 
+def df_ket_qua(rows: list) -> pd.DataFrame:
+    """Dựng DataFrame kết quả quét với các cột số ĐÚNG KIỂU.
+
+    Dòng của nguồn bị lỗi hoặc không có kết quả điền chuỗi rỗng vào đúng các cột số.
+    Khi một lượt quét trộn cả hai loại, cột thành dtype `object` lẫn số với chuỗi, và
+    PyArrow — thứ Streamlit dùng để vẽ bảng — ném ArrowInvalid, làm sập cả trang kết
+    quả chỉ vì một nguồn hỏng.
+
+    `to_numeric(errors="coerce")` biến chuỗi rỗng thành NaN (Streamlit hiện ô trống)
+    và cho cột kiểu số thật, nên bảng sắp xếp theo giá trị chứ không theo thứ tự chữ.
+    Ép theo `Engine.COT_SO` chứ không liệt kê tay, để thêm cột số mới sau này không
+    phải nhớ sửa chỗ này.
+    """
+    df = pd.DataFrame(rows, columns=eng.HEADER)
+    for cot in eng.COT_SO:
+        if cot not in df.columns:
+            continue
+        so = pd.to_numeric(df[cot], errors="coerce")
+        # Cột đếm (số hash, số giây) phải hiện là 1234 chứ không phải 1234.0. float64
+        # không có giá trị rỗng nên NaN kéo cả cột lên float; kiểu "Int64" của pandas
+        # có NA thật nên giữ được nguyên. Cột tỉ lệ vốn là số thực thì để nguyên.
+        khong_rong = so.dropna()
+        if not khong_rong.empty and (khong_rong % 1 == 0).all():
+            so = so.astype("Int64")
+        df[cot] = so
+    return df
+
+
 def bang_ket_qua(results: list[ScanResult]) -> None:
     """Vẽ bảng kết quả + các nút xuất báo cáo và đẩy lên Google Sheets."""
     matches = [
@@ -357,8 +386,7 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
                 f"{len(matches)} đoạn được chọn để xuất. Hai số này có chủ đích khác nhau."
             )
     rows = eng.to_rows(results)
-    df = pd.DataFrame(rows, columns=eng.HEADER)
-    st.dataframe(df, width="stretch", hide_index=True)
+    st.dataframe(df_ket_qua(rows), width="stretch", hide_index=True)
     df_csv = pd.DataFrame(
         [[o_bang_tinh_an_toan(o) for o in dong] for dong in rows],
         columns=eng.HEADER,
@@ -492,6 +520,55 @@ with st.sidebar:
         st.caption(
             f"Khúc gối hiệu lực tối đa hiện tại: {c.overlap_max_s} giây; "
             "clip dài có thể được ghép lại từ nhiều mảnh ở ranh giới."
+        )
+
+    st.divider()
+    st.subheader("🔐 Kết nối YouTube")
+    with st.expander("Cookie và nhịp tải (mở khi bị báo «nghi là bot»)", expanded=False):
+        st.caption(
+            "YouTube chặn theo ĐỊA CHỈ MẠNG khi thấy tải quá nhanh hoặc quá nhiều. "
+            "Lúc đó mọi cách tải đều hỏng, kể cả video hôm qua vừa tải được. "
+            "Hai cách xử lý: giãn nhịp cho đỡ bị để ý, và nạp cookie để YouTube "
+            "coi bạn là người dùng đã đăng nhập."
+        )
+        c.ytdlp_sleep_requests_s = st.number_input(
+            "Nghỉ giữa các lượt hỏi YouTube (giây)", 0.0, 60.0,
+            float(c.ytdlp_sleep_requests_s), 0.5,
+            help="Áp cho khâu LẤY THÔNG TIN video — đúng chỗ YouTube chặn bot. "
+                 "0 = tắt (dễ bị chặn). 1 giây là mức an toàn mà gần như không chậm thêm.")
+        c1_ns, c2_ns = st.columns(2)
+        with c1_ns:
+            c.ytdlp_sleep_min_s = st.number_input(
+                "Nghỉ trước mỗi lượt TẢI, tối thiểu (giây)", 0.0, 60.0,
+                float(c.ytdlp_sleep_min_s), 1.0)
+        with c2_ns:
+            c.ytdlp_sleep_max_s = st.number_input(
+                "…tối đa (giây)", 0.0, 60.0, float(c.ytdlp_sleep_max_s), 1.0,
+                help="Nghỉ ngẫu nhiên trong khoảng này. Để 0 cả hai là tắt.")
+        st.markdown("**Cookie** — chỉ cần một trong hai cách:")
+        c.ytdlp_cookies_browser = st.text_input(
+            "Lấy thẳng từ trình duyệt", c.ytdlp_cookies_browser,
+            placeholder="chrome",
+            help="Gõ tên trình duyệt bạn đang đăng nhập YouTube: "
+                 + ", ".join(ytdlp_chung.TRINH_DUYET_HO_TRO)
+                 + ". Có nhiều profile thì thêm dấu hai chấm, ví dụ «edge:Profile 1». "
+                   "Đóng hẳn trình duyệt trước khi quét, nếu không nó khoá file cookie.")
+        c.ytdlp_cookiefile = st.text_input(
+            "Hoặc đường dẫn file cookies.txt", c.ytdlp_cookiefile,
+            placeholder=r"D:\cookies.txt",
+            help="File xuất từ tiện ích «Get cookies.txt». Tool chỉ lưu ĐƯỜNG DẪN, "
+                 "không bao giờ đọc hay lưu lại nội dung cookie vào cấu hình.")
+        duong_dan = (c.ytdlp_cookiefile or "").strip()
+        if duong_dan and not os.path.isfile(duong_dan):
+            st.warning("Chưa thấy file cookie ở đường dẫn này — kiểm tra lại.")
+        elif duong_dan or (c.ytdlp_cookies_browser or "").strip():
+            st.success(
+                "Đã bật cookie. Các cách tải không dùng được cookie "
+                "(android, ios) sẽ tự động lùi xuống cuối danh sách."
+            )
+        st.caption(
+            "⚠️ Cookie là chìa khoá vào tài khoản của bạn — đừng chia sẻ file đó, "
+            "và nên dùng tài khoản phụ. Cookie có thể hết hạn sau vài tuần."
         )
 
     st.divider()
@@ -841,7 +918,8 @@ with tab0:
         with st.spinner("Đang lấy danh sách (không tải gì cả)..."):
             try:
                 ds = ChannelSync.list_channel(
-                    kenh_url.strip(), gioi_han or None, lay_ngay_dang=lay_ngay
+                    kenh_url.strip(), gioi_han or None, lay_ngay_dang=lay_ngay,
+                    cau_hinh_mang=eng.cau_hinh_mang(),
                 )
                 st.success(f"Kênh có {len(ds)} video.")
                 thieu_ngay = sum(1 for v in ds if not v.upload_date)
@@ -863,7 +941,11 @@ with tab0:
 
     if st.button("⬇️ Bắt đầu đồng bộ kênh", type="primary",
                  disabled=not (kenh_url and st.session_state.kho_dir)):
-        cs = ChannelSync(st.session_state.kho_dir.strip('" '))
+        # Truyền cả player_clients lẫn cấu hình mạng (cookie, giãn nhịp) để mọi mẹo
+        # trong data\cau_hinh.json có tác dụng cho cả đồng bộ kênh, không chỉ cho quét.
+        cs = ChannelSync(st.session_state.kho_dir.strip('" '),
+                         player_clients=list(eng.config.ytdlp_player_clients),
+                         cau_hinh_mang=eng.cau_hinh_mang())
         chay_nen("channel", cs.sync, kenh_url.strip(), gioi_han or None,
                  cancel_check=lambda: eng.cancel_event.is_set())
 
@@ -885,7 +967,8 @@ with tab0:
                      disabled=not (kenh_url and st.session_state.kho_dir)):
             with st.spinner("Đang đối chiếu kênh với thư mục kho..."):
                 try:
-                    cs = ChannelSync(st.session_state.kho_dir.strip('" '))
+                    cs = ChannelSync(st.session_state.kho_dir.strip('" '),
+                                     cau_hinh_mang=eng.cau_hinh_mang())
                     r = cs.kiem_tra_thieu(kenh_url.strip(), gioi_han or None)
                     st.success(f"Kênh có {r['tong_kenh']} video — đã có **{r['co_roi']}**, "
                                f"còn thiếu **{len(r['thieu'])}**.")

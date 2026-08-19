@@ -101,7 +101,9 @@ def test_dong_bo_huy_truoc_video_dau_khong_bao_tai_thanh_cong(tmp_path, monkeypa
         VideoInfo("abc123", "Một", "20250101", 10, "u1"),
         VideoInfo("def456", "Hai", "20250102", 10, "u2"),
     ]
-    monkeypatch.setattr(cs, "list_channel", lambda url, limit: videos)
+    # **kwargs: sync() nay truyền thêm cau_hinh_mang (cookie + giãn nhịp) xuống
+    # list_channel; bản giả chỉ quan tâm tới danh sách trả về.
+    monkeypatch.setattr(cs, "list_channel", lambda url, limit, **kw: videos)
     monkeypatch.setattr(cs, "done_ids", lambda: set())
     monkeypatch.setattr(cs, "quet_id_tren_dia", lambda: {})
     monkeypatch.setattr(

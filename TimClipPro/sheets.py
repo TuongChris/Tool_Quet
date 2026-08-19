@@ -56,6 +56,26 @@ def _lay_sheet_id(s: str) -> str:
     return m.group(1) if m else (s or "").strip()
 
 
+def _o_sheets(gia_tri):
+    """Ép một ô về dạng gửi lên Google Sheets.
+
+    Ghi bằng ``value_input_option="RAW"`` nên Sheets lưu ĐÚNG kiểu được gửi: chuỗi
+    "9" là văn bản và sắp xếp sau "10", còn số 9 mới sắp xếp đúng. Vì vậy giữ nguyên
+    ``int``/``float``, chỉ ``str()`` những kiểu khác.
+
+    ``bool`` phải loại riêng (nó là lớp con của ``int``) để cột không hiện TRUE/FALSE
+    thay vì chữ. Chuỗi đã được ``o_bang_tinh_an_toan`` chặn công thức từ tầng trên;
+    số thì không thể là công thức nên không cần rào thêm.
+    """
+    if gia_tri is None:
+        return ""
+    if isinstance(gia_tri, bool):
+        return str(gia_tri)
+    if isinstance(gia_tri, (int, float)):
+        return gia_tri
+    return str(gia_tri)
+
+
 class SheetsExporter:
     """Đẩy dữ liệu lên Google Sheets. Tự vô hiệu hóa êm nếu chưa cấu hình."""
 
@@ -182,7 +202,7 @@ class SheetsExporter:
                 # những lần append sau khỏi hỏi Google thêm lần nào nữa.
                 ket_noi.da_co_header = True
             ws.append_rows(
-                [[("" if v is None else str(v)) for v in r] for r in rows],
+                [[_o_sheets(v) for v in r] for r in rows],
                 value_input_option="RAW",
             )
         except Exception:

@@ -44,6 +44,7 @@ from typing import Callable, Iterable, Optional
 
 import channel
 import cau_hinh
+import ytdlp_chung
 import dossier
 from chan_doan_quet import ChanDoanQuet, ghi_nhan_bi_loai
 from chap_nhan_khop import loc_chap_nhan
@@ -108,6 +109,26 @@ class Config:
     shifts_kho: int = 4        # Subframe shifts khi tạo kho vân tay
     shifts_quet: int = 4       # Subframe shifts khi quét video dài
     ytdlp_format: str = "ba/b"  # Định dạng yt-dlp: chỉ lấy audio tốt nhất cho nhẹ
+    # Thứ tự "player client" thử khi tải. YouTube chặn từng client độc lập và đổi
+    # theo thời gian, nên phải có đường lui thay vì khoá cứng một cái. Chuỗi rỗng
+    # nghĩa là để yt-dlp tự chọn. Đo 2026-08-18: mặc định trả 403 cho mọi video tải
+    # mới, `android` vẫn chạy — nên `android` đứng trước.
+    # Danh sách nằm ở ytdlp_chung.py để đường quét và đường đồng bộ kênh dùng chung.
+    ytdlp_player_clients: list = field(
+        default_factory=lambda: list(ytdlp_chung.PLAYER_CLIENTS_MAC_DINH))
+    # --- Xác thực & giãn nhịp, chống YouTube coi là bot ---
+    # CHỈ lưu ĐƯỜNG DẪN file cookie, tuyệt đối không lưu nội dung: cau_hinh.lay_tu_config()
+    # serialize mọi trường Config ra data/cau_hinh.json mà không có danh sách trắng.
+    # Kiểu phải là `str`/`float` thuần (không Optional) vì cau_hinh.ap_vao_config so
+    # kiểu bằng `type(x) is not type(y)`, giá trị None sẽ bị loại sạch.
+    ytdlp_cookiefile: str = ""        # đường dẫn cookies.txt xuất từ trình duyệt
+    ytdlp_cookies_browser: str = ""   # "chrome" hoặc "edge:Tên Profile"
+    # Giãn nhịp giữa các request lúc TRÍCH XUẤT — đúng chỗ bot-check của YouTube đánh.
+    # Đo 2026-08-18: sau khoảng 12 lượt tải liên tiếp cộng một phiên quét, YouTube chặn
+    # cả IP; chính những video vừa tải xong một tiếng trước cũng bị từ chối.
+    ytdlp_sleep_requests_s: float = 1.0
+    ytdlp_sleep_min_s: float = 0.0    # giãn nhịp khâu TẢI (0 = tắt)
+    ytdlp_sleep_max_s: float = 0.0
     network_timeout_s: int = 30  # Timeout socket cho request/tải YouTube
     keep_downloads: bool = True  # Giữ lại audio đã tải để lần sau khỏi tải lại
     ghi_tung_phan: bool = True   # Ghi Sheets ngay sau mỗi video giám sát
@@ -194,6 +215,25 @@ class Config:
             raise ValueError("max_matches phải >= 1.")
         if not 0 <= self.ncores <= 64:
             raise ValueError("ncores phải nằm trong khoảng 0..64.")
+        if not isinstance(self.ytdlp_player_clients, list) or not all(
+            isinstance(x, str) for x in self.ytdlp_player_clients
+        ):
+            raise ValueError("ytdlp_player_clients phải là danh sách chuỗi.")
+        if not self.ytdlp_player_clients:
+            raise ValueError(
+                "ytdlp_player_clients không được rỗng; dùng [\"\"] để giữ mặc định yt-dlp."
+            )
+        # KHÔNG kiểm tra os.path.exists() ở đây: validate() chạy lúc nạp cấu hình trong
+        # try/except, ném lỗi sẽ reset TOÀN BỘ cấu hình người dùng về mặc định. File
+        # cookie thiếu chỉ được cảnh báo ở thời điểm dùng.
+        for ten in ("ytdlp_cookiefile", "ytdlp_cookies_browser"):
+            if not isinstance(getattr(self, ten), str):
+                raise ValueError(f"{ten} phải là chuỗi.")
+        for ten in ("ytdlp_sleep_requests_s", "ytdlp_sleep_min_s", "ytdlp_sleep_max_s"):
+            if not 0 <= float(getattr(self, ten)) <= 60:
+                raise ValueError(f"{ten} phải nằm trong khoảng 0..60 giây.")
+        if self.ytdlp_sleep_max_s and self.ytdlp_sleep_max_s < self.ytdlp_sleep_min_s:
+            raise ValueError("ytdlp_sleep_max_s không được nhỏ hơn ytdlp_sleep_min_s.")
         if not 5 <= self.network_timeout_s <= 300:
             raise ValueError("network_timeout_s phải nằm trong khoảng 5..300 giây.")
         if self.dedup_s < 0:
@@ -498,6 +538,18 @@ RE_TEN_KHUC = re.compile(r"chunk_(\d+)(?:_k(\d+))?\.wav")
 #  Engine
 # =====================================================================
 
+def thu_muc_data_mac_dinh(root: Optional[str] = None) -> str:
+    """Thư mục `data/` mà Engine sẽ dùng, tính được mà KHÔNG cần dựng Engine.
+
+    Có hàm này để các lệnh nhẹ (`cli.py vameta`) đọc được cấu hình người dùng mà
+    không phải khởi tạo Engine — dựng Engine nạp kho vân tay và giành khoá liên
+    tiến trình. Giữ đúng một công thức đường dẫn cho cả hai đường, khỏi trôi dạt.
+    """
+    goc = os.path.abspath(root or os.path.dirname(os.path.abspath(__file__)))
+    return os.path.abspath(os.environ.get("TIMCLIP_DATA_DIR")
+                           or os.path.join(goc, "data"))
+
+
 class Engine:
     """Lõi xử lý. Không phụ thuộc vào bất kỳ giao diện nào."""
 
@@ -507,6 +559,10 @@ class Engine:
         self.config = config or Config()
         self.canh_bao_khoi_dong: list = []
         self.canh_bao_gop: list = []
+        # Kênh riêng cho cảnh báo tầng MẠNG (cookie hết hạn...). Không dùng chung
+        # `canh_bao_gop` vì `_merge()` xoá trắng danh sách đó ở mỗi lượt khớp, mà
+        # cảnh báo mạng lại sinh ra TRƯỚC đó — dùng chung là mất trắng.
+        self.canh_bao_mang: list = []
         self.chan_doan_quet = ChanDoanQuet()
         self.cau_hinh_da_luu: dict = {}
 
@@ -1357,14 +1413,8 @@ class Engine:
             def fetcher(video_id: str) -> dict:
                 import yt_dlp
 
-                options = {
-                    "quiet": True,
-                    "no_warnings": True,
-                    "skip_download": True,
-                    "noplaylist": True,
-                    "socket_timeout": self.config.network_timeout_s,
-                    "retries": 2,
-                }
+                options = self.cau_hinh_mang().tuy_chon(
+                    skip_download=True, noplaylist=True, retries=2)
                 with yt_dlp.YoutubeDL(options) as ydl:
                     info = ydl.extract_info(
                         f"https://youtu.be/{video_id}",
@@ -1880,17 +1930,33 @@ class Engine:
     #  2) TẢI AUDIO TỪ YOUTUBE (dùng yt-dlp như một THƯ VIỆN)
     # =================================================================
 
+    def cau_hinh_mang(self) -> "ytdlp_chung.CauHinhMang":
+        """Tham số mạng/xác thực dùng chung cho mọi lượt gọi yt-dlp của engine."""
+        return ytdlp_chung.CauHinhMang.tu_config(self.config)
+
+    def _canh_bao_cookie_chet(self, loi: BaseException) -> None:
+        """Ghi nhận việc phải bỏ cookie, để người dùng biết mà đi sửa gốc."""
+        tin = ("Cookie YouTube đã hết hiệu lực — đang thử lại KHÔNG dùng cookie. "
+               "Hãy xoá trống ô đường dẫn cookie trong tab «Cấu hình», hoặc xuất lại "
+               "file cookie mới.")
+        LOGGER_SCAN.warning("event=cookie.het_han loi=%s",
+                            ytdlp_chung.go_ma_mau(loi)[:160])
+        if tin not in self.canh_bao_mang:
+            self.canh_bao_mang.append(tin)
+
     def youtube_info(self, url: str) -> dict:
         import yt_dlp
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "noplaylist": True,
-            "skip_download": True,
-            "socket_timeout": self.config.network_timeout_s,
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+
+        def lay(cau_hinh):
+            opts = cau_hinh.tuy_chon(noplaylist=True, skip_download=True)
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=False)
+
+        # Cookie chết làm YouTube chỉ trả storyboard, và yt-dlp báo "Requested format
+        # is not available" — câu chữ dẫn người dùng đi sai hướng hoàn toàn. Tự lùi về
+        # không-cookie thay vì để cả lượt quét chết.
+        info = ytdlp_chung.chay_kem_duong_lui_cookie(
+            self.cau_hinh_mang(), lay, khi_bo_cookie=self._canh_bao_cookie_chet)
         # Ngày đăng phải được chốt NGAY TẠI ĐÂY, ở tầng nạp metadata. Exporter chỉ
         # định dạng lại, không bao giờ hỏi YouTube lần nữa.
         ngay = resolve_publication_date(info)
@@ -1937,17 +2003,78 @@ class Engine:
             elif d.get("status") == "finished":
                 self._bao(progress, 0.40, "Tải xong, đang chuẩn bị xử lý...")
 
-        opts = {
-            "format": self.config.ytdlp_format,
-            "outtmpl": os.path.join(self.dl_dir, "%(id)s.%(ext)s"),
-            "noplaylist": True, "quiet": True, "no_warnings": True,
-            "continuedl": True,          # đứt mạng thì lần sau tải tiếp
-            "retries": 10, "fragment_retries": 10,
-            "socket_timeout": self.config.network_timeout_s,
-            "progress_hooks": [hook],
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
+        # Tách phần riêng ra dict để dựng lại được tuỳ chọn với cấu hình mạng khác
+        # (đường lui khi cookie hết hạn dựng lại toàn bộ opts, không sửa tại chỗ).
+        rieng_cua_tai = dict(
+            format=self.config.ytdlp_format,
+            outtmpl=os.path.join(self.dl_dir, "%(id)s.%(ext)s"),
+            noplaylist=True,
+            continuedl=True,          # đứt mạng thì lần sau tải tiếp
+            retries=10, fragment_retries=10,
+            progress_hooks=[hook],
+        )
+
+        # YouTube chặn từng "player client" một cách độc lập và thay đổi theo thời
+        # gian. Đo ngày 2026-08-18: client mặc định trả HTTP 403 cho MỌI video tải
+        # mới, trong khi `android` tải bình thường — trích metadata thì vẫn chạy, nên
+        # tool lấy được tiêu đề rồi mới chết ở khâu tải, rất dễ tưởng là hỏng link.
+        #
+        # Vòng lặp thử nằm ở `ytdlp_chung.thu_tung_client` để đường đồng bộ kênh dùng
+        # chung đúng một bản. Khi YouTube chặn tiếp client khác, chỉ cần đổi thứ tự
+        # trong `ytdlp_player_clients` là xong, không phải sửa code.
+        da_thu: list = []
+
+        def ghi_that_bai(ten: str, loi: BaseException) -> None:
+            da_thu.append(ten)
+            LOGGER_SCAN.warning(
+                "event=download.client_failed video=%s client=%s loi=%s",
+                video_id, ten, ytdlp_chung.go_ma_mau(loi)[:200],
+            )
+            self._bao(progress, 0.05,
+                      f"Cách tải «{ten}» không được, đang thử cách khác...")
+
+        def chay(rieng: dict):
+            with yt_dlp.YoutubeDL(rieng) as ydl:
+                ydl.download([url])
+
+        def don_file_do_dang() -> None:
+            """Xoá .part/.ytdl trước khi đổi client.
+
+            Mỗi client trả một format khác nhau; `continuedl=True` gặp .part cũ sẽ nối
+            byte của luồng MỚI vào luồng CŨ, ra file audio hỏng mà không báo lỗi.
+            """
+            for f in glob.glob(os.path.join(self.dl_dir, video_id + ".*")):
+                if f.endswith((".part", ".ytdl")):
+                    with contextlib.suppress(OSError):
+                        os.remove(f)
+
+        def ghi_thanh_cong(ten: str, truoc_do: list) -> None:
+            if truoc_do:
+                LOGGER_SCAN.info(
+                    "event=download.client_fallback video=%s dung=%s da_thu=%s",
+                    video_id, ten, ",".join(truoc_do),
+                )
+
+        def tai_voi(cau_hinh):
+            """Một lượt tải đầy đủ với MỘT bộ cấu hình mạng (có hoặc không cookie)."""
+            return ytdlp_chung.thu_tung_client(
+                cau_hinh.player_clients(self.config.ytdlp_player_clients),
+                chay,
+                cau_hinh.tuy_chon(**rieng_cua_tai),
+                khi_that_bai=ghi_that_bai,
+                bo_qua=(Cancelled,),   # huỷ là ý người dùng, không thử tiếp
+                truoc_khi_thu_lai=don_file_do_dang,
+                khi_thanh_cong=ghi_thanh_cong,
+            )
+
+        goc = self.cau_hinh_mang()
+        try:
+            # Đường lui cookie bọc NGOÀI đường lui client: cookie chết thì mọi client
+            # đều hỏng, nên thử hết client rồi mới bỏ cookie và thử lại từ đầu.
+            ytdlp_chung.chay_kem_duong_lui_cookie(
+                goc, tai_voi, khi_bo_cookie=self._canh_bao_cookie_chet)
+        except RuntimeError as e:
+            raise RuntimeError(ytdlp_chung.giai_thich_loi(e, goc.co_cookie)) from e
 
         san_co = [f for f in glob.glob(os.path.join(self.dl_dir, video_id + ".*"))
                   if not f.endswith((".part", ".ytdl"))]
@@ -2746,7 +2873,7 @@ class Engine:
         except Cancelled:
             kq.status, kq.note = "error", "Đã hủy theo yêu cầu."
         except Exception as e:
-            kq.status, kq.note = "error", str(e)
+            kq.status, kq.note = "error", ytdlp_chung.giai_thich_loi(e)
         finally:
             shutil.rmtree(self.chunk_dir, ignore_errors=True)
             kq.chan_doan = self._chot_chan_doan(kq)
@@ -2759,6 +2886,7 @@ class Engine:
         """Tải audio 1 link YouTube rồi quét."""
         self.require(can_ytdlp=True, can_db=True)
         self.cancel_event.clear()
+        self.canh_bao_mang = []
         kq = ScanResult(source_name=url, source_ref=url)
         try:
             self._bao(progress, 0.02, "Đang lấy thông tin video...")
@@ -2788,7 +2916,12 @@ class Engine:
         except Cancelled:
             kq.status, kq.note = "error", "Đã hủy theo yêu cầu."
         except Exception as e:
-            kq.status, kq.note = "error", str(e)
+            kq.status, kq.note = "error", ytdlp_chung.giai_thich_loi(
+                e, self.cau_hinh_mang().co_cookie)
+        # Cảnh báo mạng phải đi kèm kết quả, nếu không người dùng chỉ thấy "chạy được"
+        # mà không biết cookie đã chết và tool đang âm thầm chạy không cookie.
+        if self.canh_bao_mang:
+            kq.note = "\n".join([*self.canh_bao_mang, kq.note or ""]).strip()
         if luu_lich_su:
             kq.job_id = self.save_job(kq, "youtube")
         return kq
@@ -2893,6 +3026,16 @@ class Engine:
               "Đoạn khớp (giây)", "Khớp từ giây thứ (của clip)", "Số hash khớp",
               "Tỷ lệ vân tay khớp (%)", "Đánh giá"]
 
+    # Các cột phải mang KIỂU SỐ. Dòng của nguồn lỗi / không có kết quả điền chuỗi rỗng
+    # vào đúng những cột này, nên khi một lượt quét trộn cả hai loại thì cột thành
+    # dtype object lẫn số với chuỗi — pandas dựng được nhưng PyArrow (Streamlit dùng
+    # để vẽ bảng) từ chối:
+    #     ArrowInvalid: Could not convert '' with type str: tried to convert to int64
+    # Giao diện phải ép kiểu theo danh sách này trước khi vẽ. Để ở đây (cạnh HEADER)
+    # cho mọi nơi hiển thị dùng chung, khỏi phải đoán lại cột nào là số.
+    COT_SO = ("Đoạn khớp (giây)", "Khớp từ giây thứ (của clip)",
+              "Số hash khớp", "Tỷ lệ vân tay khớp (%)")
+
     @staticmethod
     def link_moc(source_id: str, source_ref: str, giay: float) -> str:
         """Tạo link YouTube mở thẳng tới đúng giây xảy ra vi phạm."""
@@ -2924,7 +3067,7 @@ class Engine:
                         m.vung, m.start_hhmmss, hhmmss(m.vung_khop_s),
                         m.end_hhmmss,
                         Engine.link_moc(kq.source_id, kq.source_ref, m.start_s),
-                        f"{m.matched_s:.0f}", f"{m.clip_offset_s:.0f}",
+                        round(m.matched_s), round(m.clip_offset_s),
                         m.hashes, m.ty_le, m.confidence])
         return rows
 

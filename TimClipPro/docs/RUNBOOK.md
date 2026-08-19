@@ -421,3 +421,96 @@ nên khoảng 48% clip dư một giây cho tới khi bổ sung độ dài thật
 
 Sau khi ghi, khởi động lại app để cache metadata nạp lại.
 Chi tiết: [DURATION_ARCHITECTURE.md](DURATION_ARCHITECTURE.md).
+
+## Tải video báo HTTP 403 Forbidden
+
+Triệu chứng: quét ra lỗi `unable to download video data: HTTP Error 403: Forbidden`,
+nhưng tool vẫn hiện đúng **tiêu đề** video.
+
+Đó chính là dấu hiệu nhận dạng: trích metadata vẫn chạy, chỉ khâu **tải** bị chặn.
+Link không hỏng — YouTube đang chặn "player client" mà yt-dlp dùng.
+
+**Cảnh giác với cache.** `download_audio()` dùng lại file có sẵn trong `data\downloads`,
+nên vài video vẫn chạy được và che mất mức độ nghiêm trọng. Kiểm bằng tỉ lệ lỗi theo ngày:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -c "import sqlite3;[print(r) for r in sqlite3.connect('data/lichsu.db').execute(\"select substr(created_at,1,10),count(*),sum(status='ok'),sum(status!='ok') from jobs group by 1 order by 1 desc limit 7\")]"
+```
+
+Từ 2026-08-18, `download_audio()` **tự thử lần lượt nhiều client** nên thường tự khỏi.
+Nếu vẫn lỗi hết, đổi thứ tự trong `data\cau_hinh.json`:
+
+```json
+"ytdlp_player_clients": ["android", "", "tv", "ios", "web_safari"]
+```
+
+Tìm client nào còn sống bằng cách thử tay:
+
+```powershell
+& ".\.venv\Scripts\python.exe" -m yt_dlp -f ba --extractor-args "youtube:player_client=android" -o "%TEMP%\thu.%(ext)s" "https://youtu.be/VIDEO_ID"
+```
+
+Chuỗi rỗng `""` nghĩa là để yt-dlp tự chọn. Nếu mọi client đều hỏng thì mới nên nghi
+yt-dlp cũ: `& ".\.venv\Scripts\python.exe" -m pip install -U yt-dlp`.
+
+Từ 2026-08-18, **cả hai đường tải** đều có đường lui này: quét video dài
+(`engine.download_audio`) và đồng bộ kênh (`ChannelSync._tai_va_nen`). Cả hai đọc
+cùng một danh sách nên chỉ cần sửa `data\cau_hinh.json` một lần.
+
+Nếu đồng bộ kênh báo lỗi kèm chữ **"giới hạn độ tuổi"**: đó không phải lỗi tool —
+YouTube bắt đăng nhập mới cho tải video đó, mọi client đều bị. Bỏ qua hoặc nạp cookie.
+
+Băng thông: client `android` không có format audio-only nên đồng bộ kênh tải cả video
+rồi mới bóc tiếng (khoảng 80 MB thay vì 16 MB cho clip 15 phút). File `.opus` trong kho
+vẫn nhỏ như cũ. Khi client mặc định hết bị chặn, đưa `""` lên đầu danh sách để tiết kiệm.
+
+
+## Lỗi «Sign in to confirm you're not a bot»
+
+Khác hẳn lỗi 403 ở mục trên, dù nhìn cũng giống "không tải được".
+
+**Cách nhận ra ngay:** thử lại một video mà **hôm qua vẫn tải được**. Nếu nó cũng hỏng
+thì đây là chặn theo ĐỊA CHỈ MẠNG, không phải link hỏng. Dấu hiệu phụ: liệt kê danh
+sách kênh vẫn chạy bình thường, chỉ lấy thông tin từng video mới hỏng.
+
+Đổi player client **không** cứu được: bot-check đánh ở khâu lấy thông tin, còn đường
+lui client chỉ chữa khâu tải.
+
+### Xử lý theo thứ tự
+
+1. **Dừng quét, nghỉ vài tiếng.** Chặn này tự hết hạn. Quét tiếp trong lúc bị chặn chỉ
+   làm nó kéo dài thêm.
+2. **Giãn nhịp** — tab «Cấu hình» → «🔐 Kết nối YouTube» → *Nghỉ giữa các lượt hỏi
+   YouTube*. Mặc định 1 giây; đang bị chặn thường xuyên thì nâng lên 2–3 giây.
+   Trong `data\cau_hinh.json` là `ytdlp_sleep_requests_s`.
+3. **Nạp cookie** nếu vẫn cần chạy ngay. Hai cách, chỉ cần một:
+   * Gõ tên trình duyệt đang đăng nhập YouTube vào ô *Lấy thẳng từ trình duyệt*
+     (`chrome`, `edge`, `firefox`... — nhiều profile thì `edge:Profile 1`).
+     **Đóng hẳn trình duyệt trước khi quét**, nếu không nó khoá file cookie.
+   * Hoặc xuất `cookies.txt` bằng tiện ích trình duyệt rồi trỏ đường dẫn vào ô còn lại.
+
+⚠️ Cookie là chìa khoá vào tài khoản — đừng chia sẻ file đó, nên dùng tài khoản phụ,
+và biết rằng nó hết hạn sau vài tuần. Tool chỉ lưu **đường dẫn**, không bao giờ đọc hay
+lưu lại nội dung cookie vào cấu hình.
+
+Lưu ý khi bật cookie: yt-dlp tự gỡ các cách tải không dùng được cookie (`android`,
+`ios`), nên tool đẩy chúng xuống cuối danh sách. Nếu cookie hết hạn, chúng vẫn là
+đường lui.
+
+## Bảng kết quả trắng xoá / trang lỗi sau khi quét
+
+Nếu terminal có `ArrowInvalid ... Conversion failed for column ...`: một nguồn quét bị
+lỗi làm cột số lẫn kiểu, PyArrow từ chối và cả bảng không vẽ được. Đã sửa từ
+2026-08-18 (`Engine.COT_SO` + `app.df_ket_qua`). Nếu tái diễn ở cột MỚI, thêm tên cột
+đó vào `Engine.COT_SO` — đừng vá riêng lẻ ở giao diện.
+
+## File cookie báo «sai định dạng Netscape ở dòng N»
+
+Tool tự kiểm file cookie trước khi dùng và **cố tình không in nội dung dòng hỏng** —
+dòng đó chính là bí mật đăng nhập của bạn.
+
+Nguyên nhân gần như luôn là: mở `cookies.txt` bằng Notepad rồi lưu lại, TAB biến thành
+dấu cách. Cách sửa: **xuất lại bằng tiện ích trình duyệt, đừng sửa tay**.
+
+Không cần lo cho các file log cũ: tính năng cookie chỉ có từ 18/08/2026 và rào chắn
+này ra đời cùng ngày, nên chưa có bản nào từng chạy với cookie mà thiếu nó.

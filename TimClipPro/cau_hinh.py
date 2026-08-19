@@ -52,6 +52,14 @@ def ap_vao_config(cfg: Any, du_lieu: dict) -> list:
             bi_bo_qua.append(khoa)
             continue
         gia_tri_hien_tai = getattr(cfg, khoa)
+        # Số nguyên vào trường số thực là hợp lệ: JSON không phân biệt 2 với 2.0, và
+        # RUNBOOK hướng dẫn người dùng sửa tay data/cau_hinh.json. Nếu so kiểu cứng
+        # thì họ gõ `"ytdlp_sleep_requests_s": 2` và giá trị bị bỏ qua âm thầm.
+        # `bool` là lớp con của `int` nên phải loại riêng, kẻo True thành 1.0.
+        if (isinstance(gia_tri_hien_tai, float)
+                and isinstance(gia_tri, int)
+                and not isinstance(gia_tri, bool)):
+            gia_tri = float(gia_tri)
         if type(gia_tri) is not type(gia_tri_hien_tai):
             bi_bo_qua.append(khoa)
             continue
