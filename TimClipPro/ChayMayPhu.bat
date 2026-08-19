@@ -36,6 +36,19 @@ if exist "google_key.json" (
     )
 )
 
+REM May phu chay khong nguoi truc nen phai tu lay ban moi. cap_nhat.py dat
+REM GIT_TERMINAL_PROMPT=0 va BatchMode=yes nen khong bao gio treo cho nhap mat khau.
+REM
+REM Da cap nhat thi THOAT ngay, bo qua luot giam sat nay: git checkout co the vua thay
+REM chinh file .bat dang chay, ma cmd doc file theo vi tri byte -> chay tiep se loan.
+REM Task Scheduler se goi lai theo lich va luot sau chay bang ma moi.
+%PY% cap_nhat.py
+if errorlevel 11 %PY% -m pip install -r requirements.txt
+if errorlevel 10 (
+    echo [%date% %time%] Da cap nhat ban moi - bo qua luot nay, luot sau chay ma moi.
+    exit /b 0
+)
+
 echo [%date% %time%] Bat dau giam sat voi %WL%
 %PY% cli.py watch %THAM_SO%
 set "EXIT_CODE=%errorlevel%"

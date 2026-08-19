@@ -3,6 +3,13 @@ google_key.json
 *.json.key
 cau_hinh.json
 
+# Du lieu rieng cua tung may - KHONG duoc git theo doi.
+# Neu theo doi, moi lan `git checkout` khi tu cap nhat se ghi de hoac gay xung dot
+# tren danh sach giam sat cua may do. Ban mau van duoc theo doi: watchlist.example.json
+watchlist.json
+cookies.txt
+*.cookies.txt
+
 # Du lieu lon / sinh ra khi chay
 data/
 ketqua/

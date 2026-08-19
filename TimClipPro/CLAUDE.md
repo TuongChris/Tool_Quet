@@ -18,6 +18,8 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
               ↙        ↓         ↘
    channel.py    sheets.py    audfprint-master/
    (tải kênh)   (Google Sheets)  (thư viện MIT, ĐỪNG SỬA)
+        ↘        ↙
+      ytdlp_chung.py        ← MỌI tuỳ chọn yt-dlp đi qua đây, không có ngoại lệ
 ```
 
 **Quy tắc:**
@@ -27,6 +29,9 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 3. `audfprint-master/` là thư viện bên thứ ba — **không sửa**. Cần đổi hành vi thì bọc lại
    trong `engine.py`.
 4. Mọi chuỗi hiển thị cho người dùng viết bằng **tiếng Việt**.
+5. **Không bao giờ dựng dict tuỳ chọn `yt_dlp.YoutubeDL` bằng tay.** Luôn đi qua
+   `ytdlp_chung.CauHinhMang.tuy_chon()`. Ba lần trong một ngày (mục 6, 6b, 6c) cùng một
+   lỗi chỉ được vá ở một trong hai đường tải vì tuỳ chọn bị chép tay ở nhiều chỗ.
 
 ## File và vai trò
 
@@ -34,6 +39,8 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 |---|---|---|
 | `engine.py` | Lõi: cắt khúc, fingerprint, so khớp, gộp trùng, SQLite, xuất CSV | Thêm/đổi logic xử lý |
 | `channel.py` | Đồng bộ kênh YouTube → kho audio nén + `clips_meta.json` | Đổi cách tải/nén/đặt tên |
+| `ytdlp_chung.py` | Tuỳ chọn yt-dlp dùng chung: cookie, giãn nhịp, đường lui player client, diễn giải lỗi | Đổi bất cứ thứ gì liên quan yt-dlp |
+| `cap_nhat.py` | Tự cập nhật từ GitHub theo tag phiên bản | Đổi cách phát hành / triển khai |
 | `sheets.py` | Đẩy kết quả lên Google Sheets (gspread + service account) | Đổi cách ghi báo cáo |
 | `app.py` | Giao diện Streamlit 5 tab | Đổi giao diện |
 | `cli.py` | Giao diện dòng lệnh, dùng chung engine | Thêm lệnh tự động hoá |
@@ -117,7 +124,14 @@ python -c "import engine, channel, sheets; print('ok')"
 1. Tự động quét định kỳ (Task Scheduler) → đẩy Sheets → gửi email cảnh báo.
 2. Sinh sẵn hồ sơ khiếu nại bản quyền (điền form YouTube) từ dòng kết quả.
 3. Nhánh so khớp hình ảnh cho trường hợp video bị thay tiếng.
-4. Đóng gói `.exe` bằng PyInstaller để không cần cài Python.
+4. ~~Đóng gói `.exe` bằng PyInstaller~~ — **đã khảo sát 18/08/2026 và BÁC BỎ.**
+   Ba lý do cứng: (a) Streamlit bắt buộc đọc `app.py` dưới dạng văn bản rồi mới
+   compile (`runtime/scriptrunner/script_cache.py`), nên bản .exe vẫn phải kèm .py;
+   (b) `engine.py:1589` và `:1601` chạy `sys.executable` lên file .py — đóng băng là
+   hỏng toàn bộ tạo vân tay và khớp; (c) mục tiêu thật là TỰ CẬP NHẬT, mà .exe làm
+   việc đó tệ hơn hẳn: mỗi lần cập nhật phải chuyển ~700 MB thay vì vài KB, và
+   Windows khoá file .exe đang chạy nên không tự ghi đè được.
+   Đã thay bằng `cap_nhat.py` — cập nhật theo tag git. Xem `docs/TU_CAP_NHAT.md`.
 
 ## Lỗi đã gặp và cách sửa (đừng để tái diễn)
 
@@ -152,6 +166,172 @@ nhau, mỗi vùng lấy 1 bằng chứng mạnh nhất, ưu tiên clip gốc kh�
 trải đều cả video thì hồ sơ khiếu nại mạnh hơn nhiều so với 5 đoạn dồn ở đầu video.
 Chỉ số `ty_le` (% vân tay của clip khớp được) là thước đo CHUẨN HOÁ — dùng nó khi so sánh
 các clip dài ngắn khác nhau, vì số hash tuyệt đối phụ thuộc độ dài và độ phong phú âm thanh.
+
+**6. HTTP 403 khi tải video (18/08/2026).** Quét trả lỗi
+`unable to download video data: HTTP Error 403: Forbidden` cho MỌI video chưa có sẵn
+trong `data/downloads`. Không phải link hỏng, cũng không phải yt-dlp cũ (đang là bản
+mới nhất trên PyPI).
+
+Nguyên nhân: YouTube chặn từng **player client** một cách độc lập và đổi theo thời
+gian. Client mặc định của yt-dlp bị chặn ở khâu TẢI, trong khi khâu trích metadata
+vẫn chạy — nên tool lấy được tiêu đề rồi mới chết, rất dễ tưởng là hỏng link. Đo thật:
+mặc định 403, `android` tải bình thường, `ios`/`mweb`/`web_safari` báo "format not
+available", `tv` báo "page needs to be reloaded".
+
+Bẫy chẩn đoán: `download_audio()` dùng lại file đã tải sẵn, nên vài video vẫn "thành
+công" nhờ cache và che mất mức độ nghiêm trọng. Tỉ lệ thành công thật rơi từ 98%
+(12/08) xuống 1,6% (18/08).
+
+Đã sửa: `download_audio()` thử lần lượt `Config.ytdlp_player_clients`
+(mặc định `["android", "", "tv", "ios", "web_safari"]`) cho tới khi có cái chạy, ghi
+log client nào hỏng/cái nào cứu được. **Không khoá cứng vào một client** — lần sau
+YouTube chặn tiếp thì chỉ cần đổi thứ tự trong cấu hình, không phải sửa code.
+Huỷ (`Cancelled`) không kích hoạt đường lui vì đó là ý người dùng.
+
+**6b. Cùng lỗi 403 đó vẫn còn ở ĐỒNG BỘ KÊNH (18/08/2026, cùng ngày).** Bản vá 6
+chỉ áp cho đường quét (`engine.download_audio`); `ChannelSync._tai_va_nen` vẫn dùng
+client mặc định nên tab «Đồng bộ kênh gốc» tiếp tục 403. Đo trên kho SML: 744/758
+video đã có, 14 video còn thiếu — ép client `android` thì 12/14 tải được ngay.
+
+Bài học kiến trúc: **dự án có HAI đường tải yt-dlp**, vá một đường là chưa xong.
+(Xem mục 6c: bài học này còn tái diễn thêm một lần nữa trước khi được sửa tận gốc.)
+
+Đánh đổi phải biết: client `android` **không trả format audio-only**, nên `ba/b` rơi
+xuống `b` và tải cả video (đo: 80 MB thay vì 16 MB cho clip 15 phút). File `.opus`
+cuối vẫn nhỏ như cũ (ffmpeg `-vn` bỏ hình), chỉ tốn băng thông và đĩa tạm. Đã thử
+`android_vr`/`android_music`/`web_embedded`/`mweb`: client nào có audio-only thì 403,
+client nào tải được thì không có audio-only. Khi YouTube mở lại client mặc định, đưa
+`""` lên đầu `ytdlp_player_clients` là hết tốn.
+
+2 video còn lại KHÔNG phải lỗi tool: `yo-j-rj0QhA` và `gHAxs_-oaMQ` bị giới hạn độ
+tuổi, mọi client đều đòi đăng nhập. Muốn tải phải nạp cookie. `sync()` nay dọn mã màu
+ANSI của yt-dlp và chú thích rõ các ca này để người dùng khỏi tưởng tool hỏng.
+
+**6c. "Sign in to confirm you're not a bot" — CHẶN THEO IP, khác hẳn 403 (18/08/2026).**
+Triệu chứng dễ nhầm với mục 6, nhưng cơ chế khác nên cách chữa cũng khác.
+
+Đo thật lúc 13h40, ngay sau khi tool tải 12 video liên tiếp (12h33–12h39) cộng một
+phiên quét:
+
+| Phép đo | Kết quả |
+|---|---|
+| 8 video trong watchlist | bot-check, cả 8 |
+| 5 player client (`android`, `tv`, `ios`, `web_safari`, `mweb`) | bot-check, cả 5 |
+| **3 video vừa tải trót lọt lúc 12h39** | **bot-check** |
+| Liệt kê danh sách kênh (`extract_flat`) | vẫn chạy bình thường |
+
+Dòng thứ ba là bằng chứng quyết định: **không phải link hỏng, không phải video bị
+khoá — YouTube gắn cờ cả địa chỉ mạng.** Bot-check đánh ở khâu TRÍCH XUẤT (yt-dlp chỉ
+chuyển tiếp `playabilityStatus.reason` của máy chủ), nên đường lui player client ở mục
+6 không cứu được — nó chỉ chữa khâu TẢI.
+
+Nguyên nhân từ phía tool: **không có bất kỳ cơ chế giãn nhịp nào** và không hỗ trợ
+cookie, nên cứ bắn request liên tục tới lúc bị chặn.
+
+Đã sửa — ba việc:
+1. `Config.ytdlp_sleep_requests_s` mặc định **1.0 giây**, ánh xạ sang
+   `sleep_interval_requests` của yt-dlp. Đây là khoá DUY NHẤT giãn nhịp ở khâu trích
+   xuất; `sleep_interval`/`max_sleep_interval` chỉ tác dụng ở khâu tải.
+2. Hỗ trợ cookie: `ytdlp_cookiefile` (đường dẫn cookies.txt) hoặc
+   `ytdlp_cookies_browser` (`"chrome"`, `"edge:Profile 1"`). **Chỉ lưu ĐƯỜNG DẪN** —
+   `cau_hinh.lay_tu_config()` serialize mọi trường Config ra `data/cau_hinh.json` mà
+   không có danh sách trắng, nên trường chứa nội dung cookie sẽ bị ghi thô ra đĩa.
+3. Khi có cookie, yt-dlp **gỡ** các client không hỗ trợ cookie (`android`, `ios`,
+   `android_vr`, `tv_simply` — đọc `SUPPORTS_COOKIES` trong `INNERTUBE_CLIENTS`).
+   `sap_xep_player_clients()` đẩy chúng xuống cuối để khỏi mất lượt thử vô ích, nhưng
+   không xoá hẳn: cookie sai/hết hạn thì chúng vẫn là đường lui hợp lệ.
+
+**Sửa tận gốc bài học của 6b:** mọi tuỳ chọn yt-dlp nay đi qua module mới
+`ytdlp_chung.py` (`CauHinhMang.tuy_chon()`, `thu_tung_client()`, `giai_thich_loi()`).
+Cả 6 chỗ dựng `YoutubeDL` trong dự án — 3 ở `engine.py`, 3 ở `channel.py` — đều gọi
+qua đó, nên không còn chỗ nào lệch được nữa. `no_color=True` cũng đặt ở đây, chữa tận
+gốc việc escape ANSI lọt lên giao diện thay vì chỉ dọn lúc hiển thị.
+
+**7. Bảng kết quả sập vì PyArrow khi có nguồn lỗi (18/08/2026).**
+`ArrowInvalid: Could not convert '' with type str: tried to convert to int64` ở cột
+"Số hash khớp". Nguyên nhân: `Engine.to_rows` điền `""` vào các cột SỐ ở dòng của nguồn
+lỗi / không có kết quả, còn dòng có kết quả điền số thật → cột thành dtype `object` lẫn
+hai kiểu → PyArrow (Streamlit dùng để vẽ bảng) từ chối. **Một nguồn hỏng làm sập cả
+trang kết quả.**
+
+Bẫy: **không chỉ một cột.** Vá riêng "Số hash khớp" thì lần quét sau lỗi nhảy sang
+"Tỷ lệ vân tay khớp (%)". Đã sửa bằng `Engine.COT_SO` (danh sách cột số, đặt cạnh
+`HEADER`) và `app.df_ket_qua()` ép kiểu theo danh sách đó — thêm cột số mới sau này
+không phải nhớ sửa chỗ khác. Ô trống để **NaN**, không điền 0: 0 là "đo được và bằng
+không", khác hẳn "không đo được".
+
+Tiện thể sửa luôn: `to_rows` từng ép hai cột giây thành chuỗi bằng f-string, mà Sheets
+ghi bằng `RAW` nên `"9"` đứng sau `"10"` khi sắp xếp. Nay trả `int` — **và** `sheets.py`
+phải thôi `str()` mọi ô (`_o_sheets` giữ nguyên `int`/`float`), vì chỉ sửa `to_rows` thì
+số vẫn bị ép về chuỗi ngay trước khi gửi đi.
+
+**8. Cookie rò ra file nhật ký (18/08/2026, phát hiện khi phản biện bản vá 6c).**
+Chỉ MỘT dòng `cookies.txt` sai định dạng — hay gặp nhất là mở bằng Notepad rồi lưu lại
+làm TAB thành dấu cách — thì `YoutubeDLCookieJar.load()` gọi `write_string()` in NGUYÊN
+VĂN dòng đó ra `sys.stderr`, kèm giá trị `__Secure-1PSID` đủ để chiếm tài khoản.
+`quiet`/`no_warnings`/`no_color` KHÔNG chặn được vì `write_string` ghi thẳng stderr chứ
+không qua logger của YoutubeDL. Mà `nhat_ky.mo_nhat_ky()` lại đấu stderr vào
+`ketqua/giamsat_*.log` — file giữ 30 ngày, nằm chung thư mục với CSV mà người dùng hay
+nén gửi đi khi nhờ hỗ trợ; `GiamSat.bat` và `ChayMayPhu.bat` đều chạy đường này.
+
+Đã tái hiện được bằng thực nghiệm, rồi chặn bằng **hai lớp**:
+1. `ytdlp_chung.kiem_tra_file_cookie()` kiểm định dạng Netscape TRƯỚC khi giao file cho
+   yt-dlp; sai thì ném lỗi chỉ nêu **số dòng**, không bao giờ nêu nội dung.
+2. `nhat_ky.che_bi_mat()` thay các dòng cảnh báo cookie bằng ghi chú, cắt theo từng
+   dòng nên thông tin chẩn đoán khác vẫn còn.
+
+→ **Quy tắc: không bao giờ tin cờ `quiet` của thư viện bên thứ ba để giữ bí mật.**
+Chặn ở đầu nguồn (đừng đưa dữ liệu hỏng vào) và ở đầu ra (lọc trước khi ghi).
+
+**9. Vá lệch lần thứ tư — cấu hình chỉ tới 2/6 nơi gọi (18/08/2026).**
+Bản vá 6c thêm cookie + giãn nhịp vào `ytdlp_chung` nhưng chỉ nối vào nút «Đồng bộ kênh»
+và `cli.py kenh`. Bốn nơi còn lại vẫn gọi mạng bằng cấu hình mặc định: nút «Xem danh
+sách video», nút «Kiểm tra còn thiếu», `cli.py vameta`, và `watch.py` — vòng giám sát
+tự động, tức chỗ tích luỹ nguy cơ bị chặn CAO NHẤT. Thêm một chỗ nữa bên trong chính
+`list_channel`: nhánh `lay_ngay_dang=True` gọi `lay_info_video` trần, đúng vòng lặp một
+request MỖI video.
+
+Bài học: gom về module chung là ĐIỀU KIỆN CẦN, chưa đủ. Phải rà **mọi nơi gọi** — dùng
+`grep -rn "ChannelSync\|list_channel\|lay_info_video" --include=*.py`. Tham số cấu hình
+có giá trị mặc định là bẫy: thiếu thì rơi về mặc định lặng lẽ, không có lỗi nào báo.
+Đã có `tests/test_cau_hinh_toi_moi_duong.py` khoá lại từng đường.
+
+Đi kèm: `ChannelSync.__init__` từng để `network_timeout_s=NETWORK_TIMEOUT_S`, tức mọi
+lượt khởi tạo đều ghi đè giá trị người dùng đặt lên 30 giây. Mặc định nay là `None` để
+phân biệt được "người gọi chỉ định" với "người gọi không quan tâm".
+
+**10. Cookie HẾT HẠN còn tệ hơn không có cookie (18/08/2026).**
+Người dùng đổi cục wifi (IP mới) nên bot-check ở mục 6c tự hết. Nhưng file cookie nạp
+lúc chiều đã chết, và chính nó làm hỏng mọi lượt quét. Đo trên 8 link + 2 video đối
+chứng, cùng máy cùng lúc:
+
+| | Không cookie | Có cookie (đã chết) |
+|---|---|---|
+| 8 link người dùng | **8/8 chạy** | **0/8** |
+| Video SML vốn chạy tốt | chạy | hỏng |
+| Số format trả về | **24** (có 139/249/140/251 audio-only) | **4, toàn storyboard** |
+
+Gửi cookie chết đi thì YouTube trả phản hồi KHÔNG CÓ MEDIA. Tool xin `bestaudio`,
+không có gì để chọn → yt-dlp báo `Requested format is not available` (hoặc
+`No video formats found!`) — câu chữ chẳng liên quan gì tới nguyên nhân, đẩy người
+dùng đi tìm nhầm phía link.
+
+**Hạn ghi trong file KHÔNG phản ánh phiên còn sống.** File vẫn "còn 400 ngày" trong
+khi YouTube đã huỷ phiên (lướt tiếp làm xoay vòng cookie, đăng xuất, đổi mạng).
+`kiem_tra_file_cookie()` ở mục 8 chỉ kiểm ĐỊNH DẠNG, không kiểm phiên.
+
+Đã sửa: `ytdlp_chung.chay_kem_duong_lui_cookie()` — gặp đúng dấu hiệu này thì tự chạy
+lại KHÔNG cookie và cảnh báo. Bọc NGOÀI đường lui player client, vì cookie chết làm
+mọi client cùng hỏng. Nối ở cả `engine.youtube_info`, `engine.download_audio` và
+`channel._tai_va_nen`. Bỏ cookie mà vẫn hỏng thì ném lỗi GỐC — cookie không phải
+nguyên nhân, đừng dẫn người dùng đi sửa nhầm.
+
+Bẫy khi nối: cảnh báo KHÔNG được dùng chung `canh_bao_gop`, vì `_merge()` xoá trắng
+danh sách đó ở mỗi lượt khớp còn cảnh báo mạng sinh ra TRƯỚC đó. Nay có
+`Engine.canh_bao_mang` riêng, gắn vào `kq.note` ở cuối `scan_youtube`.
+
+Cũng ghi lại: `youtube_info()` từng KHÔNG có đường lui player client (chỉ
+`download_audio` có) — đó là lý do lỗi hiện ra dạng thô, không kèm câu "Đã thử: ...".
 
 **Bài học quy trình:** khi vá code bằng tìm-thay chuỗi, PHẢI kiểm tra lại là bản vá đã áp
 dụng thật (chạy test tích hợp), vì chuỗi cũ có thể đã bị đổi ở lần vá trước.

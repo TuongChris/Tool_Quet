@@ -138,6 +138,31 @@ def gom_thanh_phan(ten_kho: list, kem_ffmpeg: bool,
     return muc, canh_bao
 
 
+# Khoá cấu hình CHỈ đúng trên máy nguồn — phải gỡ khỏi gói, nếu không máy đích nhận
+# một cấu hình trỏ vào những thứ không tồn tại ở đó.
+#
+# `ytdlp_cookiefile` là ca nguy hiểm nhất và đã suýt lọt: từ 18/08/2026,
+# `ytdlp_chung.kiem_tra_file_cookie()` NÉM LỖI khi đường dẫn cookie không đọc được —
+# một rào chắn bảo mật cố ý. Mang theo `D:\cookies.txt` của máy nguồn sang máy khác là
+# mọi lượt tải ở đó chết ngay, với thông báo chẳng liên quan gì tới nguyên nhân thật.
+#
+# `ytdlp_cookies_browser` gỡ vì lý do khác, nặng hơn: nó sẽ khiến máy đích dùng cookie
+# của tài khoản Google đang đăng nhập TRÊN MÁY ĐÓ — âm thầm quét bằng danh tính của
+# người khác. Không bao giờ được mặc định như vậy.
+KHOA_RIENG_CUA_MAY = (
+    "kho_dir",                 # đường dẫn kho clip gốc
+    "thu_muc_quet_gan_nhat",   # thư mục quét gần nhất
+    "ytdlp_cookiefile",        # đường dẫn file cookie — xem giải thích ở trên
+    "ytdlp_cookies_browser",   # trình duyệt lấy cookie — xem giải thích ở trên
+)
+
+# CỐ Ý GIỮ LẠI, đừng "dọn dẹp" thêm vào danh sách trên:
+#   sheet_link — mục đích của cả việc triển khai máy phụ là dồn kết quả về CÙNG một
+#                Google Sheet (xem commit 1682ce6). Gỡ nó đi là máy phụ chạy xong mà
+#                không ai thấy kết quả ở đâu.
+#   ytdlp_sleep_* / ytdlp_player_clients — tham số chống bị chặn, máy nào cũng cần.
+
+
 def noi_dung_sinh_them(ten_kho: list, goc: str = GOC) -> dict:
     """Các file được SINH RA cho gói (không chép nguyên từ máy nguồn)."""
     data_dir = os.path.join(goc, "data")
@@ -161,11 +186,11 @@ def noi_dung_sinh_them(ten_kho: list, goc: str = GOC) -> dict:
             ensure_ascii=False, indent=2),
     }
 
-    # Cấu hình: giữ tham số quét, bỏ các đường dẫn riêng của máy nguồn.
+    # Cấu hình: giữ tham số quét, bỏ mọi thứ chỉ đúng trên máy nguồn.
     cfg = doc_json_an_toan(os.path.join(data_dir, "cau_hinh.json"), {})
     if isinstance(cfg, dict) and cfg:
         cfg = dict(cfg)
-        for khoa in ("kho_dir", "thu_muc_quet_gan_nhat"):
+        for khoa in KHOA_RIENG_CUA_MAY:
             cfg.pop(khoa, None)
         ra["data/cau_hinh.json"] = json.dumps(cfg, ensure_ascii=False, indent=2)
     return ra
