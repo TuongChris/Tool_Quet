@@ -485,13 +485,14 @@ def test_hang_tieu_de_bi_xoa_thi_duoc_ghi_lai(moi_truong):
     """
     ws = moi_truong["ws"]
     _them_insert_row(ws)
-    ws.noi_dung[:] = [["du lieu 1", "du lieu 2"], ["du lieu 3", "du lieu 4"]]
+    ws.noi_dung[:] = [["https://youtu.be/aaaaaaaaaaa", "46229.41"],
+                      ["https://youtu.be/bbbbbbbbbbb", "46230.02"]]
 
     _exporter(moi_truong).append(HEADER, ROWS)
 
     assert ws.dem["insert_row"] == 1
     assert ws.noi_dung[0] == HEADER          # header nằm đúng hàng 1
-    assert ws.noi_dung[1] == ["du lieu 1", "du lieu 2"]   # dữ liệu cũ chỉ bị đẩy xuống
+    assert ws.noi_dung[1] == ["https://youtu.be/aaaaaaaaaaa", "46229.41"]
     assert ws.noi_dung[-1] == list(ROWS[0])
 
 
@@ -523,7 +524,10 @@ def test_bang_trong_van_ghi_header_bang_append_row(moi_truong):
     ([["", "  "]], "trong"),
     ([["A", "B"]], "co"),
     ([["a", "b"]], "co"),                       # không phân biệt hoa/thường
-    ([["du lieu", "khac"]], "thieu"),
+    ([["https://youtu.be/aaaaaaaaaaa", "van ban"]], "thieu"),   # co link -> du lieu
+    ([["46229.41", "van ban"]], "thieu"),                      # co so   -> du lieu
+    ([["Thời điểm quét", "Nguồn video dài"]], "khac"),          # header schema KHAC
+    ([["Cot La", "Cot Lung Tung"]], "khac"),                   # khong ro -> khong tu sua
 ])
 def test_nhan_dien_tinh_trang_hang_dau(moi_truong, hang_dau, mong_doi):
     ws = moi_truong["ws"]
@@ -537,3 +541,39 @@ def test_o_cot_doi_dung_chu_cai():
     assert sheets._o_cot(26) == "Z"
     assert sheets._o_cot(27) == "AA"
     assert sheets._o_cot(34) == "AH"
+
+
+def test_doi_dinh_dang_ngang_sang_doc_KHONG_duoc_chen_them_header(moi_truong):
+    """Ca thật: người dùng gạt «Định dạng đẩy lên Sheets» từ Ngang sang Dọc.
+
+    Header Ngang (34 cột) và Dọc (16 cột) trùng nhau ĐÚNG 0 tên cột, nên hàng 1
+    không khớp schema đang ghi. Nếu coi đó là «thiếu header» mà chèn thêm một hàng
+    thì toàn bộ dữ liệu cũ tụt xuống 1 và mọi công thức tham chiếu theo số hàng
+    (=A15...) trỏ lệch hết — hỏng bảng tính của người dùng vì một cú gạt nhầm.
+    """
+    import bang_ngang
+    from engine import Engine
+
+    ws = moi_truong["ws"]
+    _them_insert_row(ws)
+    ws.noi_dung[:] = [list(bang_ngang.HEADER_NGANG),
+                      ["https://youtu.be/aaaaaaaaaaa"] * len(bang_ngang.HEADER_NGANG)]
+    truoc = [list(r) for r in ws.noi_dung]
+
+    # Bây giờ ghi bằng schema DỌC lên chính bảng đang mang header NGANG.
+    _exporter(moi_truong).append(list(Engine.HEADER), [["x"] * len(Engine.HEADER)])
+
+    assert ws.dem["insert_row"] == 0, "KHÔNG được chèn header khi hàng 1 là schema khác"
+    assert ws.noi_dung[0] == truoc[0], "hàng tiêu đề cũ phải nguyên vẹn"
+    assert ws.noi_dung[1] == truoc[1], "dữ liệu cũ KHÔNG được tụt xuống"
+
+
+def test_hai_bo_header_cua_du_an_khong_trung_ten_cot_nao():
+    """Khoá lại tiền đề của test trên. Ngày nào hai bộ header có cột trùng nhau thì
+    heuristic đếm-cột-khớp phải được xem lại."""
+    import bang_ngang
+    from engine import Engine
+
+    ngang = {x.strip().casefold() for x in bang_ngang.HEADER_NGANG}
+    doc = {x.strip().casefold() for x in Engine.HEADER}
+    assert not (ngang & doc)

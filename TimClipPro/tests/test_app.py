@@ -191,7 +191,7 @@ def test_kho_chua_gan_thu_muc_luu_duoc_ngay_trong_tab(tmp_path, monkeypatch):
     }, ensure_ascii=False), encoding="utf-8")
 
     at = AppTest.from_file(str(APP_PY), default_timeout=120).run()
-    o = next(t for t in at.text_input if "chưa gán thư mục" in t.label)
+    o = next(t for t in at.text_input if "Đường dẫn thư mục audio" in t.label)
     at = o.set_value(str(kho)).run()
     at = next(b for b in at.button if b.label == "💾 Lưu thư mục cho kho này").click().run()
 
@@ -221,7 +221,7 @@ def test_luu_thu_muc_gan_dung_kho_dang_chon_khong_phai_kho_dang_dung(tmp_path, m
     at = AppTest.from_file(str(APP_PY), default_timeout=120).run()
     chon = next(sb for sb in at.selectbox if sb.label == "Chọn kho muốn liệt kê")
     at = chon.set_value("KhoB").run()
-    o = next(t for t in at.text_input if "chưa gán thư mục" in t.label)
+    o = next(t for t in at.text_input if "Đường dẫn thư mục audio" in t.label)
     at = o.set_value(str(kho_moi)).run()
     at = next(b for b in at.button if b.label == "💾 Lưu thư mục cho kho này").click().run()
 

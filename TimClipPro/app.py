@@ -1266,14 +1266,23 @@ with tab2:
         thu_muc_dsv = next((k.get("thu_muc") or "" for k in khos
                             if k["ten"] == ten_chon), "")
 
-        if thu_muc_dsv:
+        if thu_muc_dsv and os.path.isdir(thu_muc_dsv):
             st.caption(f"Thư mục: `{thu_muc_dsv}`")
         else:
-            # Kho chưa gán thư mục là NGÕ CỤT nếu không có ô này: `update_kho` chỉ
-            # được gọi từ `build_database`, nên cách duy nhất để lưu đường dẫn là
-            # bấm «Tạo lại kho từ đầu» và ngồi chờ tạo vân tay hàng giờ.
+            # Hai ca cùng cần một ô nhập, và ca THỨ HAI mới là ca hay gặp:
+            #  (a) kho chưa gán thư mục;
+            #  (b) kho có gán nhưng thư mục KHÔNG tồn tại trên máy này — chép kho
+            #      sang máy khác hay đổi ổ đĩa là dính ngay, vì khos.json lưu đường
+            #      dẫn TUYỆT ĐỐI (D:\ClipGocSML).
+            # Bản đầu chỉ bắt ca (a) nên ca (b) thành ngõ cụt: người dùng thấy báo
+            # đỏ «không tìm thấy thư mục» mà không có chỗ nào sửa ngay tại đây.
+            if thu_muc_dsv:
+                st.warning(
+                    f"Kho «{ten_chon}» đang trỏ tới `{thu_muc_dsv}` nhưng máy này "
+                    "không có thư mục đó. Thường gặp khi chép kho sang máy khác "
+                    "hoặc đổi ổ đĩa. Nhập đường dẫn đúng bên dưới rồi bấm lưu.")
             duong_moi = st.text_input(
-                f"Kho «{ten_chon}» chưa gán thư mục — nhập đường dẫn thư mục audio",
+                f"Đường dẫn thư mục audio của kho «{ten_chon}» trên máy này",
                 key="dsv_thu_muc_moi", placeholder=r"D:\ClipGocDanny")
             if st.button("💾 Lưu thư mục cho kho này", key="dsv_luu_thu_muc",
                          disabled=not duong_moi):

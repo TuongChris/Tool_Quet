@@ -211,6 +211,17 @@ class SheetsExporter:
                 tinh_trang = self._tinh_trang_header(ws, header)
                 if tinh_trang == "trong":
                     ws.append_row([str(x) for x in header], value_input_option="RAW")
+                elif tinh_trang == "khac":
+                    # Hàng 1 LÀ một header, chỉ là của schema khác (đổi «Ngang 34
+                    # cột» ↔ «Dọc 16 cột» — hai bộ tên cột trùng nhau ĐÚNG 0 chỗ).
+                    # Chèn thêm header ở đây sẽ đẩy toàn bộ dữ liệu cũ xuống một
+                    # hàng và làm hỏng mọi công thức tham chiếu theo số hàng. Đây là
+                    # lỗi cấu hình của người dùng, không phải bảng thiếu header —
+                    # nói ra chứ tuyệt đối không tự sửa hộ.
+                    LOGGER.warning(
+                        "event=scan.sheet.header_schema_mismatch worksheet=%r "
+                        "so_cot_gui=%d", self.worksheet, len(header),
+                    )
                 elif tinh_trang == "thieu":
                     # Bảng có dữ liệu nhưng hàng 1 KHÔNG phải header — hầu như luôn
                     # là do hàng header bị xoá tay. Trước đây ta chỉ xem ô A1 có
@@ -333,13 +344,19 @@ class SheetsExporter:
 
     @classmethod
     def _tinh_trang_header(cls, ws, header: list) -> str:
-        """Trả về ``"trong"`` | ``"co"`` | ``"thieu"`` cho hàng 1 của trang tính.
+        """Phân loại hàng 1: ``"trong"`` | ``"co"`` | ``"thieu"`` | ``"khac"``.
 
-        ``"thieu"`` nghĩa là bảng CÓ dữ liệu nhưng hàng 1 không phải header — gần
-        như luôn do hàng header bị xoá tay. Phải phân biệt được ca này, vì đọc mỗi
-        ô A1 như trước thì nó trông y hệt ca ``"co"``: A1 có dữ liệu nên header
-        không bao giờ được ghi lại, và mọi thứ đọc bảng theo TÊN CỘT sẽ hỏng im
-        lặng cho tới khi có người phát hiện bằng mắt.
+        * ``trong``  — bảng rỗng, cứ ghi header bình thường.
+        * ``co``     — hàng 1 đúng là header của schema đang ghi.
+        * ``thieu``  — hàng 1 là DỮ LIỆU, tức header đã bị xoá tay. Phải phân biệt
+          được ca này, vì đọc mỗi ô A1 như trước thì nó trông y hệt ca ``co``: A1 có
+          dữ liệu nên header không bao giờ được ghi lại, và mọi thứ đọc bảng theo
+          TÊN CỘT sẽ hỏng im lặng cho tới khi có người phát hiện bằng mắt.
+        * ``khac``   — hàng 1 là header nhưng của SCHEMA KHÁC. Ca thật: người dùng
+          gạt «Định dạng đẩy lên Sheets» từ «Ngang 34 cột» sang «Dọc 16 cột» — hai
+          bộ tên cột trùng nhau đúng 0 chỗ. Nếu gộp ca này vào ``thieu`` thì ta sẽ
+          chèn thêm một header, đẩy toàn bộ dữ liệu cũ xuống một hàng và làm lệch
+          mọi công thức tham chiếu theo số hàng. Bên gọi phải cảnh báo, KHÔNG tự sửa.
 
         Vẫn chỉ đọc ĐÚNG MỘT hàng, không phải cả bảng: ``get_all_values()`` kéo về
         toàn bộ sheet chỉ để trả lời một câu hỏi về hàng đầu, chi phí tăng theo số
@@ -358,7 +375,31 @@ class SheetsExporter:
         mong_doi = {str(x).strip().casefold() for x in header if str(x).strip()}
         khop = sum(1 for x in o if x.casefold() in mong_doi)
         nguong = min(cls.SO_COT_KHOP_TOI_THIEU, len(mong_doi))
-        return "co" if khop >= nguong else "thieu"
+        if khop >= nguong:
+            return "co"
+        return "thieu" if cls._giong_du_lieu(o) else "khac"
+
+    @staticmethod
+    def _giong_du_lieu(o: list) -> bool:
+        """Hàng này trông giống DỮ LIỆU hay giống một hàng TIÊU ĐỀ?
+
+        Chỉ cần đúng một dấu hiệu là đủ kết luận là dữ liệu, vì cả hai schema của dự
+        án đều có link và mốc thời gian ngay trong vài cột đầu: một link ``http``,
+        hoặc một ô thuần số (Sheets trả ngày giờ/thời lượng về dạng serial như
+        ``46229.41498842592``). Tên cột thì không bao giờ có hai thứ đó.
+
+        Nghi ngờ thì trả về False — nghĩa là KHÔNG tự chèn header. Chèn nhầm làm
+        lệch cả bảng của người dùng; không chèn thì chỉ là bỏ lỡ một lần tự sửa.
+        """
+        for x in o:
+            if "http://" in x or "https://" in x:
+                return True
+            try:
+                float(x.replace(",", "."))
+            except ValueError:
+                continue
+            return True
+        return False
 
     @classmethod
     def _co_header(cls, ws, header: Optional[list] = None) -> bool:
