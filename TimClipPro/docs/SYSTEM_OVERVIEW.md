@@ -50,6 +50,11 @@ Các module vận hành bổ trợ:
 - `nhat_ky.py`: tee stdout/stderr của CLI watch sang log theo ngày.
 - `cau_hinh.py`: allowlist và lưu cấu hình không bí mật.
 - `dong_goi.py`: đóng gói mã nguồn để gửi audit, không phải build executable.
+- `danh_sach_video.py`: kiểm kê một kho clip gốc (chỉ đọc, offline) rồi GHI ĐÈ danh sách
+  tên video lên trang tính riêng `DanhSachVideo_<Tên kho>` — đường ghi Sheets THỨ HAI,
+  độc lập với `KetQuaQuet`.
+- `ytdlp_chung.py`: gom mọi tuỳ chọn yt-dlp (cookie, giãn nhịp, timeout) về một chỗ.
+- `cap_nhat.py`: tự cập nhật mã nguồn từ GitHub theo tag.
 
 ## Entry point và cách chạy hiện tại
 

@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "TimClipPro",
+      "runtimeExecutable": "TimClipPro\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "TimClipPro\\app.py",
+        "--browser.gatherUsageStats=false",
+        "--server.port=8501",
+        "--server.headless=true"
+      ],
+      "port": 8501
+    }
+  ]
+}

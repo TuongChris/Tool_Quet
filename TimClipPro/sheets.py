@@ -31,7 +31,7 @@ LOGGER = logging.getLogger("scan.sheet")
 
 @dataclass
 class _KetNoi:
-    """Kết nối đã mở, dùng lại giữa nhiều lần append."""
+    """Kết nối đã mở, dùng lại giữa nhiều lần append/ghi đè."""
 
     worksheet: object
     da_co_header: bool = False
@@ -56,6 +56,16 @@ def _lay_sheet_id(s: str) -> str:
     return m.group(1) if m else (s or "").strip()
 
 
+def _o_cot(so_cot: int) -> str:
+    """Số thứ tự cột (1-based) -> chữ cái cột kiểu A1 (1 -> A, 34 -> AH)."""
+    so_cot = max(1, int(so_cot))
+    ten = ""
+    while so_cot > 0:
+        so_cot, du = divmod(so_cot - 1, 26)
+        ten = chr(ord("A") + du) + ten
+    return ten
+
+
 def _o_sheets(gia_tri):
     """Ép một ô về dạng gửi lên Google Sheets.
 
@@ -64,7 +74,9 @@ def _o_sheets(gia_tri):
     ``int``/``float``, chỉ ``str()`` những kiểu khác.
 
     ``bool`` phải loại riêng (nó là lớp con của ``int``) để cột không hiện TRUE/FALSE
-    thay vì chữ. Chuỗi đã được ``o_bang_tinh_an_toan`` chặn công thức từ tầng trên;
+    thay vì chữ. Chuỗi đã được ``o_bang_tinh_an_toan`` chặn công thức từ tầng trên —
+    trừ đường ``ghi_de``, cố ý gửi chuỗi nguyên văn vì RAW vốn không phân tích công
+    thức và dấu nháy đơn thêm vào sẽ hiện ra trong ô (xem docstring ``ghi_de``);
     số thì không thể là công thức nên không cần rào thêm.
     """
     if gia_tri is None:
@@ -196,8 +208,22 @@ class SheetsExporter:
         ws = ket_noi.worksheet
         try:
             if ghi_header_neu_trong and not ket_noi.da_co_header:
-                if not self._co_header(ws):
+                tinh_trang = self._tinh_trang_header(ws, header)
+                if tinh_trang == "trong":
                     ws.append_row([str(x) for x in header], value_input_option="RAW")
+                elif tinh_trang == "thieu":
+                    # Bảng có dữ liệu nhưng hàng 1 KHÔNG phải header — hầu như luôn
+                    # là do hàng header bị xoá tay. Trước đây ta chỉ xem ô A1 có
+                    # dữ liệu hay không, nên tình huống này bị hiểu nhầm thành «đã
+                    # có header» và header không bao giờ được ghi lại. Hậu quả im
+                    # lặng: mọi thứ đọc bảng theo TÊN CỘT (Apps Script, công thức)
+                    # đều hỏng mà không báo gì.
+                    ws.insert_row([str(x) for x in header], index=1,
+                                  value_input_option="RAW")
+                    LOGGER.warning(
+                        "event=scan.sheet.header_restored worksheet=%r so_cot=%d",
+                        self.worksheet, len(header),
+                    )
                 # Header đã tồn tại thì không thể biến mất giữa phiên; nhớ lại để
                 # những lần append sau khỏi hỏi Google thêm lần nào nữa.
                 ket_noi.da_co_header = True
@@ -213,15 +239,128 @@ class SheetsExporter:
             raise
         return len(rows)
 
-    @staticmethod
-    def _co_header(ws) -> bool:
-        """Kiểm tra ô A1 thay vì tải cả bảng.
+    def ghi_de(self, header: list, rows: list, *, cho_phep_rong: bool = False) -> int:
+        r"""Thay TOÀN BỘ nội dung trang tính bằng header + rows. Trả số dòng dữ liệu.
 
-        ``get_all_values()`` kéo về TOÀN BỘ sheet chỉ để trả lời «có trống không» —
-        chi phí tăng theo số dòng đã tích luỹ. Đọc một ô là đủ và không đổi theo
-        kích thước bảng. Bản gspread cũ không có ``get_values`` thì lùi về cách cũ.
+        Khác ``append`` ở một điểm quyết định: hàm này IDEMPOTENT — ghi đè cùng dữ
+        liệu hai lần cho kết quả y hệt một lần, nên không bao giờ sinh dòng trùng
+        và thử lại sau lỗi là an toàn.
+
+        Bốn quyết định cần biết trước khi sửa hàm này:
+
+        1) KHÔNG gọi ``ws.clear()``. Trong gspread, ``clear()`` chỉ gọi
+           ``values_clear`` (xoá giá trị, KHÔNG đụng ``rowCount``), còn ``resize()``
+           gửi ``updateSheetProperties/gridProperties`` — thu nhỏ là XOÁ HẲN ô ngoài
+           lưới. Vì ``resize`` đưa lưới về ĐÚNG kích thước bảng mới và ``update``
+           ghi trọn lưới đó từ A1 (bảng đã đệm chữ nhật), mọi ô hoặc bị xoá theo
+           lưới hoặc bị ghi đè — không ô cũ nào sống sót. ``clear()`` xoá TOÀN BỘ
+           bảng (còn ``resize`` chỉ xoá phần dôi ra) và tốn thêm một lượt gọi API,
+           nên không thêm được gì.
+
+           ĐỪNG hiểu nhầm đây là thao tác nguyên tử: khi bảng mới NGẮN HƠN bảng cũ,
+           ``resize`` chạy xong là các dòng dôi ra đã mất vĩnh viễn, rồi ``update``
+           mới chạy. Hàm này idempotent về KẾT QUẢ chứ không nguyên tử về QUÁ TRÌNH.
+           Người gọi phải tự chặn bảng rỗng hoặc ngắn bất thường TRƯỚC khi gọi —
+           ``danh_sach_video.day_len_sheet`` đã chặn ca rỗng.
+
+        2) ``resize`` PHẢI đứng TRƯỚC ``update``: ``values.update`` KHÔNG tự nới
+           lưới (khác ``values.append``). Kho 1717 clip → 1718 dòng, trong khi
+           ``_mo_worksheet`` tạo tab mới chỉ 1000 dòng → lỗi 400 «exceeds grid
+           limits». Gọi resize VÔ ĐIỀU KIỆN, không đọc ``ws.row_count`` để quyết
+           định: gspread tự cộng dồn ``rowCount`` phía client trong ``append_rows``
+           nên con số đó có thể LỚN HƠN lưới thật.
+
+        3) Gọi ``update`` bằng KEYWORD. gspread 5.x là ``update(range_name, values)``,
+           6.x là ``update(values, range_name)``; requirements.txt ghi ``gspread``
+           trần, không ghim phiên bản.
+
+        4) Thử lại ĐÚNG MỘT LẦN và CHỈ khi kết nối vừa dùng đến từ ``_CACHE``. Lỗi
+           ngay ở ``_ket_noi`` (xác thực / sai link / mất quyền) thì thử lại vô ích.
+           Lần thử thứ hai chính là đường cứu khi người dùng tự xoá tab trên trình
+           duyệt giữa phiên: ``_bo_ket_noi`` bỏ Worksheet chết trong cache,
+           ``_ket_noi`` mở lại và ``add_worksheet`` tạo lại tab.
+
+        ``cho_phep_rong=False`` (mặc định) từ chối ``rows`` rỗng bằng ValueError để
+        một kết quả rỗng do lỗi không âm thầm xoá trắng bảng của người dùng.
+        """
+        if not rows and not cho_phep_rong:
+            raise ValueError("Không có dòng nào để ghi — từ chối xoá trắng trang tính.")
+        if not self.san_sang():
+            raise RuntimeError(self.thieu_gi())
+
+        gia_tri = [[_o_sheets(v) for v in header]]
+        gia_tri += [[_o_sheets(v) for v in r] for r in rows]
+        so_cot = max(1, max((len(d) for d in gia_tri), default=1))
+        # Đệm cho bảng CHỮ NHẬT: ``update`` chỉ ghi đúng những ô có trong body, dòng
+        # ngắn hơn sẽ để lại ô CŨ ở cột cuối.
+        gia_tri = [d + [""] * (so_cot - len(d)) for d in gia_tri]
+        # so_dong CHÍNH XÁC bằng số dòng sẽ ghi — KHÔNG dùng ``max(..., 2)``: nếu
+        # lưới rộng hơn phần được update thì dòng cũ ở phần thừa vẫn còn nguyên.
+        so_dong = len(gia_tri)
+
+        with _KHOA:
+            tu_cache = self._khoa_cache() in _CACHE
+        try:
+            self._ghi_de_mot_lan(gia_tri, so_dong, so_cot)
+        except Exception:
+            if not tu_cache:
+                raise
+            # Kết nối lấy từ cache có thể đã chết (token hết hạn, hoặc người dùng
+            # tự xoá tab nên sheetId trong Worksheet không còn). ``_ghi_de_mot_lan``
+            # đã bỏ cache, nên lượt này mở kết nối mới và ``_mo_worksheet`` tạo lại
+            # tab. An toàn vì ghi đè IDEMPOTENT — khác ``append``.
+            self._ghi_de_mot_lan(gia_tri, so_dong, so_cot)
+        return len(rows)
+
+    def _ghi_de_mot_lan(self, gia_tri: list, so_dong: int, so_cot: int) -> None:
+        """Một lượt ghi đè. Lỗi thì bỏ cache kết nối rồi ném tiếp cho ``ghi_de``."""
+        ket_noi = self._ket_noi(so_cot)
+        ws = ket_noi.worksheet
+        try:
+            ws.resize(rows=so_dong, cols=so_cot)
+            ws.update(values=gia_tri, range_name="A1", value_input_option="RAW")
+        except Exception:
+            self._bo_ket_noi()
+            raise
+        # Header vừa được ghi lại; nhớ để lần ``append`` sau (nếu có) khỏi đọc ô A1.
+        # Đặt SAU khi cả hai lệnh thành công — đặt trước là nói dối cache.
+        ket_noi.da_co_header = True
+
+    # Số tên cột tối thiểu phải khớp thì hàng 1 mới được coi là header. Đặt 3 để
+    # một hàng DỮ LIỆU (toàn link, tên video, ngày giờ) gần như không thể đạt tới,
+    # còn một header thật vẫn qua được kể cả khi người dùng đã đổi tên vài cột.
+    SO_COT_KHOP_TOI_THIEU = 3
+
+    @classmethod
+    def _tinh_trang_header(cls, ws, header: list) -> str:
+        """Trả về ``"trong"`` | ``"co"`` | ``"thieu"`` cho hàng 1 của trang tính.
+
+        ``"thieu"`` nghĩa là bảng CÓ dữ liệu nhưng hàng 1 không phải header — gần
+        như luôn do hàng header bị xoá tay. Phải phân biệt được ca này, vì đọc mỗi
+        ô A1 như trước thì nó trông y hệt ca ``"co"``: A1 có dữ liệu nên header
+        không bao giờ được ghi lại, và mọi thứ đọc bảng theo TÊN CỘT sẽ hỏng im
+        lặng cho tới khi có người phát hiện bằng mắt.
+
+        Vẫn chỉ đọc ĐÚNG MỘT hàng, không phải cả bảng: ``get_all_values()`` kéo về
+        toàn bộ sheet chỉ để trả lời một câu hỏi về hàng đầu, chi phí tăng theo số
+        dòng đã tích luỹ. Bản gspread cũ không có ``get_values`` thì lùi về cách cũ.
         """
         lay = getattr(ws, "get_values", None)
         if callable(lay):
-            return bool(lay("A1"))
-        return bool(ws.get_all_values())
+            hang_dau = lay("A1:" + _o_cot(len(header)) + "1")
+        else:
+            hang_dau = ws.get_all_values()[:1]
+
+        o = [str(x).strip() for x in (hang_dau[0] if hang_dau else [])]
+        if not any(o):
+            return "trong"
+
+        mong_doi = {str(x).strip().casefold() for x in header if str(x).strip()}
+        khop = sum(1 for x in o if x.casefold() in mong_doi)
+        nguong = min(cls.SO_COT_KHOP_TOI_THIEU, len(mong_doi))
+        return "co" if khop >= nguong else "thieu"
+
+    @classmethod
+    def _co_header(cls, ws, header: Optional[list] = None) -> bool:
+        """Giữ lại cho mã cũ/test: hàng 1 có phải header dùng được không."""
+        return cls._tinh_trang_header(ws, header or []) == "co"

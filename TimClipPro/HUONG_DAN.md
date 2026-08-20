@@ -69,7 +69,7 @@ chuẩn hóa trên Python 3.12. FFmpeg/FFprobe 8.1.2 và yt-dlp 2026.07.04 đã 
 Double-click **`ChayTool.bat`** → trình duyệt tự mở. Cửa sổ đen phải để nguyên
 (đó là server); đóng nó là tắt tool.
 
-## 5. Sử dụng — 5 tab
+## 5. Sử dụng — 6 tab
 
 ### 🎬 Tab «Kho clip gốc» — làm một lần
 
@@ -79,6 +79,29 @@ tách audio trước**. Có clip mới thì dùng **Bổ sung clip mới vào kh
 
 Tốc độ thực đo: ~40× thời gian thực mỗi nhân CPU → 300 clip × 7 phút ≈ **50–60 phút**
 (tăng «Số nhân CPU» trong thanh bên để nhanh hơn).
+
+### 📋 Tab «Danh sách video trong kho»
+
+Chọn một kho → **Quét danh sách video trong kho** → hiện bảng **STT + Tên video** của
+toàn bộ file audio đã tải về. Bấm **Đẩy lên Google Sheets (ghi đè)** để lưu danh sách
+đó thành một trang tính riêng tên `DanhSachVideo_<Tên kho>`.
+
+Tên video lấy từ `clips_meta.json` nên là **tên thật trên YouTube**, không phải tên file:
+Windows cấm ký tự `: / \ | ? * " < >` nên tên file phải thay chúng bằng `_` và còn bị cắt
+ở 80 ký tự. Ví dụ file trên đĩa là `SML Movie_ The World Cup!` nhưng bảng hiện đúng
+`SML Movie: The World Cup!`.
+
+Vài điều nên biết:
+
+* **Chỉ đọc.** Không tải gì từ mạng, không sửa file nào trong kho. Chạy bao nhiêu lần
+  cũng được.
+* **Ghi đè, không nối thêm.** Chạy lại thì trang tính được thay mới hoàn toàn nên không
+  bao giờ có dòng trùng. Mỗi kho một trang tính riêng, không đụng vào `KetQuaQuet`.
+* Nếu có video chưa lấy được tên chính xác, một bảng **⚠️** hiện ra kèm lý do cho từng
+  video. Thường là do kho chưa có `clips_meta.json` — chạy **Đồng bộ kênh gốc** hoặc
+  **Vá metadata thiếu từ YouTube** ở tab «Kho clip gốc» là hết.
+* Danh sách là ảnh chụp tại thời điểm bấm nút. Vừa tải thêm video thì bấm quét lại
+  trước khi đẩy.
 
 ### ▶️ Tab «Quét YouTube»
 

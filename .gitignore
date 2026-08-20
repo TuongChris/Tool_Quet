@@ -1,4 +1,3 @@
-@"
 # Python
 .venv/
 venv/
@@ -36,4 +35,3 @@ tmp/
 .DS_Store
 Thumbs.db
 desktop.ini
-"@ | Set-Content -Encoding utf8 .gitignore

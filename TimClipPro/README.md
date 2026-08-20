@@ -50,8 +50,8 @@ Set-Location "D:\Tool_Tim_Video_v2\TimClipPro"
 & ".\.venv\Scripts\python.exe" -m pip_audit -r requirements.txt --progress-spinner off
 ```
 
-Fast suite sau audit: 283 passed, 1 skipped, 3 slow deselected; coverage đo trên các module
-lõi được chọn là 80%. Slow suite đã được thử nhưng timeout trong lúc có job audfprint thật
+Fast suite: hơn 800 test, 1 skipped, 5 slow deselected (đo 2026-08-19). Số test tăng theo
+mỗi tính năng — mốc cần giữ là KHÔNG có dòng `failed`, không phải một con số cố định. Slow suite đã được thử nhưng timeout trong lúc có job audfprint thật
 đang dùng CPU, vì vậy phải chạy lại khi máy rảnh trước release liên quan matching.
 
 ## Dữ liệu và bí mật

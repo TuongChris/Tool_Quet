@@ -1,5 +1,3 @@
-@"
-
 # Tool Quét Video
 
 Source code for the TimClipPro video search and processing tool.
@@ -17,4 +15,5 @@ See:
 - `SETUP_VSCODE.md`
 - `EXECUTION_PLAN.md`
 - `PROMPT_CONTRACT.md`
-  "@ | Set-Content -Encoding utf8 README.md
+- Hướng dẫn sử dụng cho người dùng cuối: `TimClipPro/HUONG_DAN.md`
+

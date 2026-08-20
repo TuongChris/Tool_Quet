@@ -218,14 +218,30 @@ class ChannelSync:
         progress: Optional[Callable] = None,
         fetcher: Optional[Callable] = None,
         chi_thieu: bool = True,
+        *,
+        lay_title: bool = False,
     ) -> dict:
         """
         Bổ sung upload_date / duration còn thiếu trong clips_meta.json.
         KHÔNG tải lại video, chỉ lấy metadata.
         fetcher: hàm (video_id) -> dict, None thì dùng yt_dlp. Cho phép test offline.
         Trả về {"tong": n, "da_va": n, "bo_qua": n, "da_them_tu_dia": n, "loi": [...]}.
+
+        ``lay_title=True`` lấy thêm TIÊU ĐỀ THẬT trên YouTube. Mặc định tắt vì đây
+        là hành vi mới và tốn thêm lượt hỏi cho cả những clip đã đủ ngày/thời lượng.
+
+        Vì sao cần: ``seed_meta_tu_dia()`` điền ``title`` suy từ TÊN FILE — mà tên
+        file đã bị :func:`lam_sach_ten` thay ``< > : " / \\ | ? *`` bằng ``_`` và cắt
+        còn 80 ký tự. Nếu để nguyên, báo cáo và tab «Danh sách video trong kho» sẽ
+        coi cái tên hỏng đó là tên thật. Khi bật cờ này, những clip vừa seed sẽ được
+        hỏi lại tiêu đề; clip nào hỏi KHÔNG được thì ``title`` bị xoá về rỗng để nơi
+        khác còn biết là chưa có tên thật, thay vì tin vào tên suy từ file.
         """
+        title_truoc = set(self.load_meta()) if lay_title else set()
         meta, da_them_tu_dia = self.seed_meta_tu_dia()
+        # Các key VỪA được seed: `title` của chúng là tên file đã làm sạch, không
+        # phải tên thật trên YouTube.
+        moi_seed = (set(meta) - title_truoc) if lay_title else set()
         if da_them_tu_dia:
             self.save_meta(meta)
         if not meta:
@@ -247,21 +263,28 @@ class ChannelSync:
                     # không hiểu khác nhau (kể cả trường hợp chỉ có timestamp).
                     "upload_date": ngay_dang_tu_info(info),
                     "duration": info.get("duration"),
+                    "title": info.get("title"),
                 }
 
-        def con_thieu(thong_tin: dict) -> bool:
+        def con_thieu(ten_file: str, thong_tin: dict) -> bool:
             ngay = thong_tin.get("upload_date")
             duration = thong_tin.get("duration")
             try:
                 duration_hop_le = float(duration) > 0
             except (TypeError, ValueError):
                 duration_hop_le = False
-            return not ngay or ngay == "00000000" or not duration_hop_le
+            if not ngay or ngay == "00000000" or not duration_hop_le:
+                return True
+            if lay_title:
+                # Title rỗng, hoặc title vừa seed từ tên file -> vẫn phải hỏi.
+                return (not str(thong_tin.get("title") or "").strip()
+                        or ten_file in moi_seed)
+            return False
 
         can_va = [
             (ten_file, thong_tin)
             for ten_file, thong_tin in meta.items()
-            if not chi_thieu or con_thieu(thong_tin)
+            if not chi_thieu or con_thieu(ten_file, thong_tin)
         ]
         tong = len(meta)
         bo_qua = tong - len(can_va)
@@ -287,12 +310,23 @@ class ChannelSync:
                         thong_tin["upload_date"] = str(upload_date)
                     if duration:
                         thong_tin["duration"] = duration
+                    if lay_title:
+                        tieu_de = str(moi.get("title") or "").strip()
+                        if tieu_de:
+                            thong_tin["title"] = tieu_de
+                        elif ten_file in moi_seed:
+                            thong_tin["title"] = ""
                     chua_ghi += 1
                     if chua_ghi >= CHU_KY_GHI:
                         self.save_meta(meta)
                         chua_ghi = 0
                     da_va += 1
                 except Exception as e:  # noqa: BLE001
+                    # Hỏi không được: xoá title vừa seed từ tên file, để nơi khác
+                    # không tin nhầm cái tên đã bị làm sạch là tên thật YouTube.
+                    if lay_title and ten_file in moi_seed:
+                        thong_tin["title"] = ""
+                        chua_ghi += 1
                     loi.append(f"{ten_file}: {giai_thich_loi(e)}")
                 if progress:
                     progress(

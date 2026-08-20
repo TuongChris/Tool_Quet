@@ -18,6 +18,7 @@ import pandas as pd
 import streamlit as st
 
 import bang_ngang
+import danh_sach_video
 from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
 from clip_metadata import configure_metadata_logging
 import ytdlp_chung
@@ -394,7 +395,8 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
             "ℹ️ **Đã dừng sớm ở {} nguồn** vì tìm thấy đủ bằng chứng — chưa quét hết "
             "video.\n\n{}\n\nBằng chứng chỉ nằm trong phần đã quét, nên số đoạn tìm "
             "được và cột «Vùng» phản ánh phần đó, không phải cả video. Muốn quét trọn "
-            "thì tắt «Quét tăng dần» trong tab «Cấu hình».".format(
+            "thì tắt «Quét tăng dần cho video rất dài» ở thanh bên → «⚙️ Tham số» "
+            "→ «Mở để tinh chỉnh».".format(
                 len(mot_phan),
                 "\n".join(
                     f"- {r.source_name[:60]}: quét {hhmmss(r.pham_vi_quet_s)}"
@@ -861,6 +863,21 @@ if not job["running"] and (job["results"] or job["error"]):
             with st.expander(f"⚠️ {len(r['loi'])} clip chưa vá được"):
                 st.code("\n".join(r["loi"][:50]))
         st.caption(f"Snapshot: `{r['snapshot_path']}`")
+    elif job["kind"] == "va_title":
+        r = job["results"]
+        st.success(
+            f"✅ Đã hỏi YouTube tên thật cho {r['da_va']}/{r['tong']} video; "
+            f"bỏ qua {r['bo_qua']} video đã có tên đúng, lỗi {len(r['loi'])}."
+        )
+        if r.get("da_them_tu_dia"):
+            st.caption(f"Bổ sung {r['da_them_tu_dia']} mục mới vào `clips_meta.json` "
+                       "từ các file có sẵn trên đĩa.")
+        if r["loi"]:
+            with st.expander(f"⚠️ {len(r['loi'])} video chưa lấy được tên"):
+                st.code("\n".join(r["loi"][:50]))
+            st.caption("Những video này giữ tên suy từ tên file và vẫn bị đánh dấu "
+                       "«cần kiểm tra» ở tab «Danh sách video trong kho».")
+        st.info("Mở tab «📋 Danh sách video trong kho» và bấm xem lại để thấy tên mới.")
     elif job["kind"] == "sua":
         r = job["results"]
         st.success(f"✅ Đã dựng lại danh sách: {r['tren_dia']} video thực có trên đĩa "
@@ -911,9 +928,9 @@ if not job["running"] and (job["results"] or job["error"]):
 #  Các tab chức năng
 # =====================================================================
 
-tab0, tab1, tab2, tab3, tab4 = st.tabs(
-    ["📥 Đồng bộ kênh gốc", "🎬 Kho clip gốc", "▶️ Quét YouTube",
-     "📁 Quét file trong máy", "📜 Lịch sử"])
+tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📥 Đồng bộ kênh gốc", "🎬 Kho clip gốc", "📋 Danh sách video trong kho",
+     "▶️ Quét YouTube", "📁 Quét file trong máy", "📜 Lịch sử"])
 
 # ---------------------------------------------------------------- TAB 0
 with tab0:
@@ -1024,6 +1041,23 @@ with tab0:
                 st.rerun()
             except Exception as e:  # noqa: BLE001
                 st.error(f"Lỗi: {e}")
+
+    st.divider()
+    st.markdown("#### 🏷️ Tên video hiển thị sai? Lấy lại tên thật ở đây")
+    st.caption(
+        "Tên file trên đĩa bị Windows bắt thay các ký tự `: / \\ | ? * \" < >` bằng "
+        "`_` và cắt còn 80 ký tự. Nút này hỏi YouTube tiêu đề ĐÚNG cho từng video "
+        "rồi ghi vào `clips_meta.json` — sau đó tab «Danh sách video trong kho» và "
+        "báo cáo sẽ hiện tên thật. Đây là tác vụ MẠNG: một lượt hỏi mỗi video."
+    )
+    if st.button("🌐 Lấy lại tên video thật cho kho này", width="stretch",
+                 disabled=not st.session_state.kho_dir or job["running"],
+                 help="Chỉ lấy thông tin, KHÔNG tải lại video. Chạy lại được bất cứ "
+                      "lúc nào; video nào đã có tên thật thì bỏ qua."):
+        cs_title = ChannelSync(st.session_state.kho_dir.strip('" '),
+                               player_clients=list(eng.config.ytdlp_player_clients),
+                               cau_hinh_mang=eng.cau_hinh_mang())
+        chay_nen("va_title", cs_title.va_metadata, lay_title=True)
 
 # ---------------------------------------------------------------- TAB 1
 with tab1:
@@ -1214,6 +1248,159 @@ with tab1:
 
 # ---------------------------------------------------------------- TAB 2
 with tab2:
+    st.subheader("Danh sách tên video đã tải về trong kho")
+    st.caption("Đọc thẳng file trên đĩa và `clips_meta.json` của kho — không tải gì "
+               "từ mạng, không sửa file nào. Tên video lấy từ metadata nên là tên "
+               "THẬT trên YouTube, không phải tên file đã bị làm sạch ký tự.")
+
+    if not khos:
+        st.warning("Chưa có kho nào — tạo ở tab «Kho clip gốc».")
+    else:
+        # Mở sẵn ĐÚNG kho đang dùng ở thanh bên. Không có `index`, Streamlit lấy
+        # phần tử số 0 — người dùng dễ quét kho này rồi đẩy đè lên trang tính kho kia.
+        tens_dsv = [k["ten"] for k in khos]
+        mac_dinh_dsv = (eng.kho_dang_dung if eng.kho_dang_dung in tens_dsv
+                        else tens_dsv[0])
+        ten_chon = st.selectbox("Chọn kho muốn liệt kê", tens_dsv,
+                                index=tens_dsv.index(mac_dinh_dsv), key="dsv_kho")
+        thu_muc_dsv = next((k.get("thu_muc") or "" for k in khos
+                            if k["ten"] == ten_chon), "")
+
+        if thu_muc_dsv:
+            st.caption(f"Thư mục: `{thu_muc_dsv}`")
+        else:
+            # Kho chưa gán thư mục là NGÕ CỤT nếu không có ô này: `update_kho` chỉ
+            # được gọi từ `build_database`, nên cách duy nhất để lưu đường dẫn là
+            # bấm «Tạo lại kho từ đầu» và ngồi chờ tạo vân tay hàng giờ.
+            duong_moi = st.text_input(
+                f"Kho «{ten_chon}» chưa gán thư mục — nhập đường dẫn thư mục audio",
+                key="dsv_thu_muc_moi", placeholder=r"D:\ClipGocDanny")
+            if st.button("💾 Lưu thư mục cho kho này", key="dsv_luu_thu_muc",
+                         disabled=not duong_moi):
+                d_moi = (duong_moi or "").strip().strip('"')
+                if not os.path.isdir(d_moi):
+                    st.error(f"Không tìm thấy thư mục «{d_moi}». Kiểm tra lại đường "
+                             "dẫn hoặc cắm ổ đĩa rồi bấm lại.")
+                else:
+                    # `ten_chon` chứ KHÔNG phải `eng.kho_dang_dung`: dropdown ở đây
+                    # độc lập với kho đang dùng ở thanh bên.
+                    eng.update_kho(ten_chon, d_moi)
+                    st.rerun()
+
+        st.caption(f"Sẽ ghi vào trang tính «{danh_sach_video.ten_trang_tinh(ten_chon)}» "
+                   "— mỗi lần đẩy là VIẾT LẠI TOÀN BỘ trang tính đó (kể cả cột bạn "
+                   "tự thêm). Muốn ghi chú riêng thì để ở một trang tính khác.")
+
+        if st.button("📋 Xem danh sách video trong kho", key="dsv_quet",
+                     type="primary", width="stretch"):
+            st.session_state.pop("dsv_ket_qua", None)
+            st.session_state.pop("dsv_kho_da_quet", None)
+            with st.spinner(f"Đang đọc tên file trong kho «{ten_chon}» — chỉ đọc, "
+                            "không tải và không sửa gì."):
+                try:
+                    st.session_state.dsv_ket_qua = danh_sach_video.liet_ke_theo_ten_kho(
+                        khos, ten_chon)
+                    st.session_state.dsv_kho_da_quet = ten_chon
+                except danh_sach_video.LoiKho as e:
+                    st.error(str(e))
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"Không đọc được kho «{ten_chon}»: {e}")
+
+        kq = st.session_state.get("dsv_ket_qua")
+        kho_da_quet = st.session_state.get("dsv_kho_da_quet")
+        sx_dsv = SheetsExporter(sheet=st.session_state.sheet_link)
+        # So khớp tên kho: KHÔNG bao giờ hiện danh sách kho A dưới nhãn kho B rồi
+        # đẩy nhầm lên trang tính của B (cùng cách chặn với `metadata_audit_kho`).
+        if kq is not None and kho_da_quet != ten_chon:
+            st.info(f"Bạn vừa đổi sang kho «{ten_chon}». Bấm «📋 Xem danh sách video "
+                    f"trong kho» để xem kho này. Danh sách của kho «{kho_da_quet}» "
+                    f"vẫn còn — chọn lại kho đó là hiện ra ngay.")
+        elif kq is not None:
+            for cb in kq.canh_bao:
+                st.warning(cb)
+            st.success(kq.tom_tat())
+            if not kq.dong:
+                if kq.so_media_khac:
+                    st.info("Kho này chứa video gốc (.mp4, .mkv…) chứ không phải "
+                            "audio đã tải bằng «Đồng bộ kênh gốc». Vân tay của kho "
+                            "vẫn dùng quét bình thường — chỉ tab này chưa liệt kê "
+                            "được tên video cho loại kho đó.")
+                else:
+                    st.info("Kho này chưa có file audio nào (.opus). Hãy đồng bộ kênh "
+                            "ở tab «Đồng bộ kênh gốc» trước.")
+            else:
+                st.caption(f"Danh sách chụp lúc {kq.thoi_diem}. "
+                           "Kho vừa đổi thì bấm quét lại. Di chuột lên bảng để hiện "
+                           "nút 🔍 tìm kiếm, ⬇️ tải CSV và ⛶ phóng to.")
+                # Chia lại bề ngang: STT chỉ cần vài ký tự, phần còn lại nhường hết
+                # cho tiêu đề — kho Cory có tiêu đề dài tới 95 ký tự.
+                st.dataframe(pd.DataFrame([{"STT": d.stt, "Tên video": d.ten_video}
+                                           for d in kq.dong]),
+                             width="stretch", hide_index=True, height=420,
+                             column_config={
+                                 "STT": st.column_config.NumberColumn(width="small"),
+                                 "Tên video": st.column_config.TextColumn(width="large"),
+                             })
+
+                can_kiem = kq.dong_can_kiem_tra()
+                if can_kiem:
+                    with st.expander(
+                            f"⚠️ {len(can_kiem)} video chưa lấy được tên chính xác"):
+                        st.caption(
+                            f"{len(can_kiem)} dòng này VẪN được đẩy lên Google "
+                            "Sheets bình thường, chỉ là tên có thể thiếu dấu câu "
+                            "hoặc bị cắt ở 80 ký tự — không dòng nào bị bỏ ra. "
+                            "Muốn có tên đúng: bấm «🌐 Lấy lại tên video thật cho "
+                            "kho này» ở tab «Đồng bộ kênh gốc».")
+                        st.dataframe(pd.DataFrame([{
+                            "STT": d.stt, "Tên đang dùng": d.ten_video,
+                            "Tên file": d.ten_file, "Lý do": d.ghi_chu}
+                            for d in can_kiem]), width="stretch", hide_index=True)
+
+                if not sx_dsv.san_sang():
+                    st.caption("Chưa kết nối được Google Sheets — mở «📊 Google "
+                               "Sheets» ở thanh bên: dán link bảng tính, bấm «🔌 "
+                               "Kiểm tra kết nối», và chia sẻ quyền «Người chỉnh "
+                               "sửa» cho địa chỉ email hiện ở đó.")
+                if st.button(f"📤 Đẩy {len(kq.dong)} video lên Google Sheets (ghi đè)",
+                             key="dsv_day_sheet", width="stretch",
+                             disabled=not sx_dsv.san_sang()):
+                    with st.spinner("Đang ghi đè trang tính..."):
+                        ok, tb = danh_sach_video.day_len_sheet(
+                            kq, st.session_state.sheet_link)
+                    (st.success if ok else st.error)("📊 " + tb)
+                    if ok:
+                        st.link_button("🔗 Mở Google Sheet",
+                                       st.session_state.sheet_link, width="stretch")
+
+                if len(khos) > 1 and st.button(
+                        f"📤 Đẩy TẤT CẢ {len(khos)} kho lên Google Sheets "
+                        "(mỗi kho một trang tính riêng)",
+                        key="dsv_day_tat_ca", width="stretch",
+                        disabled=not sx_dsv.san_sang()):
+                    bao_cao = []
+                    with st.spinner("Đang đẩy từng kho..."):
+                        for k in khos:
+                            ten_k = k["ten"]
+                            try:
+                                kq_k = danh_sach_video.liet_ke_theo_ten_kho(khos, ten_k)
+                                ok_k, tb_k = danh_sach_video.day_len_sheet(
+                                    kq_k, st.session_state.sheet_link)
+                                so_k = kq_k.so_video
+                            except Exception as e:  # noqa: BLE001
+                                # Kho lỗi (chưa gán thư mục, ổ chưa cắm) KHÔNG được
+                                # làm dừng cả lượt — các kho còn lại vẫn phải chạy.
+                                ok_k, tb_k, so_k = False, str(e), 0
+                            bao_cao.append({
+                                "Kho": ten_k, "Số video": so_k,
+                                "Kết quả": ("✅ " if ok_k else "❌ ") + tb_k})
+                    st.dataframe(pd.DataFrame(bao_cao), width="stretch",
+                                 hide_index=True)
+                    st.link_button("🔗 Mở Google Sheet",
+                                   st.session_state.sheet_link, width="stretch")
+
+# ---------------------------------------------------------------- TAB 3
+with tab3:
     st.subheader("Quét video YouTube dài")
     st.caption("Hệ thống chỉ tải RIÊNG phần audio (video 30 tiếng ≈ 1–2 GB thay vì vài chục GB). "
                "Đứt mạng cứ chạy lại — sẽ tải tiếp từ chỗ dừng.")
@@ -1230,8 +1417,8 @@ with tab2:
     if not env["database"]:
         st.warning("Chưa có kho vân tay — hãy làm tab «Kho clip gốc» trước.")
 
-# ---------------------------------------------------------------- TAB 3
-with tab3:
+# ---------------------------------------------------------------- TAB 4
+with tab4:
     st.subheader("Quét video/audio dài có sẵn trong máy")
     st.caption("Nhập đường dẫn FILE hoặc THƯ MỤC. Không dùng nút upload để tránh "
                "phải copy file hàng chục GB.")
@@ -1257,8 +1444,8 @@ with tab3:
                  disabled=not ds_file or not env["database"]):
         chay_quet(ds_file, "file")
 
-# ---------------------------------------------------------------- TAB 4
-with tab4:
+# ---------------------------------------------------------------- TAB 5
+with tab5:
     st.subheader("Lịch sử các lần quét")
     jobs = eng.list_jobs()
     if not jobs:

@@ -42,7 +42,8 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 | `ytdlp_chung.py` | Tuỳ chọn yt-dlp dùng chung: cookie, giãn nhịp, đường lui player client, diễn giải lỗi | Đổi bất cứ thứ gì liên quan yt-dlp |
 | `cap_nhat.py` | Tự cập nhật từ GitHub theo tag phiên bản | Đổi cách phát hành / triển khai |
 | `sheets.py` | Đẩy kết quả lên Google Sheets (gspread + service account) | Đổi cách ghi báo cáo |
-| `app.py` | Giao diện Streamlit 5 tab | Đổi giao diện |
+| `danh_sach_video.py` | Liệt kê tên video thật của một kho (chỉ đọc, offline) rồi ghi đè lên trang tính riêng | Đổi cách kiểm kê kho / cột danh sách |
+| `app.py` | Giao diện Streamlit 6 tab | Đổi giao diện |
 | `cli.py` | Giao diện dòng lệnh, dùng chung engine | Thêm lệnh tự động hoá |
 
 ## Kiến thức nghiệp vụ quan trọng (đã kiểm chứng bằng thực nghiệm)

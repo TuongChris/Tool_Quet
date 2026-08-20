@@ -480,7 +480,7 @@ lui client chỉ chữa khâu tải.
 
 1. **Dừng quét, nghỉ vài tiếng.** Chặn này tự hết hạn. Quét tiếp trong lúc bị chặn chỉ
    làm nó kéo dài thêm.
-2. **Giãn nhịp** — tab «Cấu hình» → «🔐 Kết nối YouTube» → *Nghỉ giữa các lượt hỏi
+2. **Giãn nhịp** — thanh bên → «🔐 Kết nối YouTube» → *Nghỉ giữa các lượt hỏi
    YouTube*. Mặc định 1 giây; đang bị chặn thường xuyên thì nâng lên 2–3 giây.
    Trong `data\cau_hinh.json` là `ytdlp_sleep_requests_s`.
 3. **Nạp cookie** nếu vẫn cần chạy ngay. Hai cách, chỉ cần một:

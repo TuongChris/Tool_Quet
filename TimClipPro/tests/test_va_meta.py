@@ -257,3 +257,79 @@ def test_fetcher_mac_dinh_chi_lay_metadata_khong_tai_video(
     assert loi_goi[0][1]["skip_download"] is True
     assert loi_goi[0][1]["socket_timeout"] == 30
     assert loi_goi[1] == ("extract", "https://youtu.be/abc123", False)
+
+
+# ---------------------------------------------------------------------------
+# lay_title=True — lấy TIÊU ĐỀ THẬT trên YouTube
+# ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+TEN_FILE_XAU = "20240101 - SML Movie_ The World Cup! [gRZah-YY0FM].opus"
+TITLE_THAT = "SML Movie: The World Cup!"
+
+
+def _kho_chi_co_file(tmp_path):
+    """Kho chép tay: có file .opus, chưa hề có clips_meta.json."""
+    (tmp_path / TEN_FILE_XAU).write_bytes(b"")
+    return ChannelSync(str(tmp_path))
+
+
+def test_lay_title_ghi_tieu_de_that_de_len_ten_suy_tu_file(tmp_path):
+    """`seed_meta_tu_dia` điền title = tên file đã bị làm sạch; phải ghi đè nó."""
+    channel = _kho_chi_co_file(tmp_path)
+    ket_qua = channel.va_metadata(
+        fetcher=lambda vid: {"upload_date": "20240101", "duration": 120,
+                             "title": TITLE_THAT},
+        lay_title=True)
+
+    assert ket_qua["da_va"] == 1
+    meta = json.loads((tmp_path / "clips_meta.json").read_text(encoding="utf-8"))
+    assert meta[TEN_FILE_XAU]["title"] == TITLE_THAT      # dấu HAI CHẤM
+
+
+def test_khong_bat_lay_title_thi_giu_nguyen_hanh_vi_cu(tmp_path):
+    """Mặc định tắt: không hỏi title, không ghi title."""
+    channel = _kho_chi_co_file(tmp_path)
+    da_hoi = []
+
+    def fetcher(vid):
+        da_hoi.append(vid)
+        return {"upload_date": "20240101", "duration": 120, "title": TITLE_THAT}
+
+    channel.va_metadata(fetcher=fetcher)
+    meta = json.loads((tmp_path / "clips_meta.json").read_text(encoding="utf-8"))
+    # Title vẫn là bản suy từ tên file, KHÔNG bị ghi đè bằng dữ liệu mạng.
+    assert meta[TEN_FILE_XAU]["title"] != TITLE_THAT
+
+
+def test_lay_title_hoi_that_bai_thi_xoa_ten_suy_tu_file_chu_khong_noi_doi(tmp_path):
+    """Giữ lại tên đã làm sạch sẽ khiến nơi khác tin đó là tên thật YouTube."""
+    channel = _kho_chi_co_file(tmp_path)
+
+    def fetcher_hong(vid):
+        raise RuntimeError("YouTube chặn")
+
+    ket_qua = channel.va_metadata(fetcher=fetcher_hong, lay_title=True)
+
+    assert len(ket_qua["loi"]) == 1
+    meta = json.loads((tmp_path / "clips_meta.json").read_text(encoding="utf-8"))
+    assert meta[TEN_FILE_XAU]["title"] == ""
+
+
+def test_lay_title_bo_qua_video_da_co_ten_that(tmp_path):
+    """Chạy lại không được hỏi lại những video đã đủ dữ liệu."""
+    (tmp_path / TEN_FILE_XAU).write_bytes(b"")
+    (tmp_path / "clips_meta.json").write_text(json.dumps({
+        TEN_FILE_XAU: {"id": "gRZah-YY0FM", "title": TITLE_THAT,
+                       "upload_date": "20240101", "duration": 120,
+                       "url": "https://youtu.be/gRZah-YY0FM"},
+    }, ensure_ascii=False), encoding="utf-8")
+    channel = ChannelSync(str(tmp_path))
+    da_hoi = []
+
+    ket_qua = channel.va_metadata(
+        fetcher=lambda vid: da_hoi.append(vid) or {}, lay_title=True)
+
+    assert da_hoi == []
+    assert ket_qua["bo_qua"] == 1

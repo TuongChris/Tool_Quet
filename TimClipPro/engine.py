@@ -1990,8 +1990,8 @@ class Engine:
     def _canh_bao_cookie_chet(self, loi: BaseException) -> None:
         """Ghi nhận việc phải bỏ cookie, để người dùng biết mà đi sửa gốc."""
         tin = ("Cookie YouTube đã hết hiệu lực — đang thử lại KHÔNG dùng cookie. "
-               "Hãy xoá trống ô đường dẫn cookie trong tab «Cấu hình», hoặc xuất lại "
-               "file cookie mới.")
+               "Hãy xoá trống ô đường dẫn cookie ở thanh bên → «🔐 Kết nối YouTube», "
+               "hoặc xuất lại file cookie mới.")
         LOGGER_SCAN.warning("event=cookie.het_han loi=%s",
                             ytdlp_chung.go_ma_mau(loi)[:160])
         if tin not in self.canh_bao_mang:

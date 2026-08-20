@@ -64,12 +64,12 @@ MOC_CAT_HUONG_DAN = (" Use --cookies", " See  https://", " See https://")
 CHU_THICH = {
     "cookie_chet": ("Cookie YouTube đã hết hiệu lực nên YouTube không trả về âm thanh "
                     "nữa (chỉ còn ảnh thu nhỏ). Cookie chết còn tệ hơn không có cookie. "
-                    "Cách xử lý: vào tab «Cấu hình» → «🔐 Kết nối YouTube» và XOÁ TRỐNG "
+                    "Cách xử lý: mở thanh bên → «🔐 Kết nối YouTube» và XOÁ TRỐNG "
                     "ô đường dẫn cookie, hoặc xuất lại file cookie mới."),
     "bot": ("YouTube đang nghi máy bạn là bot và chặn ở mức ĐỊA CHỈ MẠNG, không phải "
             "do link hỏng. Đổi cách tải không cứu được. Cách xử lý: nghỉ vài tiếng "
             "cho hết hạn chặn, giảm nhịp quét, hoặc nạp cookie tài khoản YouTube "
-            "trong tab «Cấu hình»."),
+            "ở thanh bên → «🔐 Kết nối YouTube»."),
     "tuoi": ("Video bị giới hạn độ tuổi: YouTube bắt đăng nhập mới cho tải. "
              "Đây KHÔNG phải lỗi tool; cần nạp cookie tài khoản mới tải được."),
     "go": "Video đã bị gỡ hoặc để riêng tư trên YouTube.",

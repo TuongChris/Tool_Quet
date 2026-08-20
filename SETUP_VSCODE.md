@@ -7,7 +7,7 @@
    (Danh sách nằm sẵn trong `.vscode/extensions.json`: Python, Pylance, Copilot, Copilot Chat, Ruff.)
 3. `Ctrl + Shift + P` → `Python: Select Interpreter` → chọn Python 3.1x.
 4. Cài thư viện test: mở terminal (`` Ctrl + ` ``) → `pip install pytest`
-5. Mở tab **Testing** (biểu tượng bình thí nghiệm bên trái) → thấy 38 test → bấm ▶ chạy thử.
+5. Mở tab **Testing** (biểu tượng bình thí nghiệm bên trái) → thấy toàn bộ test của dự án → bấm ▶ chạy thử.
 
 > Quan trọng: **mở đúng thư mục gốc dự án**, không mở file lẻ. Copilot chỉ đọc được
 > `.github/copilot-instructions.md` khi thư mục gốc được mở làm workspace.
@@ -73,5 +73,6 @@ Xếp theo thứ tự giá trị giảm dần — làm từ trên xuống:
 ```bat
 kiemtra.bat
 ```
-Kết quả mong đợi: `[OK] import` → `38 passed` → `[OK] Giao dien sach`.
+Kết quả mong đợi: `[OK] import` → một dòng `... passed` (số test tăng dần theo thời gian,
+chỉ cần KHÔNG có chữ `failed`) → `[OK] Giao dien sach`.
 Nếu cả ba đều xanh, vòng lặp phản hồi đã sẵn sàng và Codex có thể tự kiểm chứng.
