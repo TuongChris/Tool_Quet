@@ -24,15 +24,28 @@ from __future__ import annotations
 import io
 import os
 import re
+import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 # Thứ tự "player client" thử khi tải. YouTube chặn từng client một cách ĐỘC LẬP và
 # đổi theo thời gian, nên phải có đường lui thay vì khoá cứng một cái. Chuỗi rỗng
-# nghĩa là để yt-dlp tự chọn. Đo 2026-08-18: client mặc định trả HTTP 403 ở khâu TẢI
-# cho mọi video mới (khâu trích metadata thì vẫn chạy, nên tool lấy được tiêu đề rồi
-# mới chết — rất dễ tưởng là hỏng link), còn `android` tải bình thường.
-PLAYER_CLIENTS_MAC_DINH = ["android", "", "tv", "ios", "web_safari"]
+# nghĩa là để yt-dlp tự chọn.
+#
+# Client MẶC ĐỊNH đứng đầu vì chỉ nó có format CHỈ-TIẾNG. `android` không trả format
+# audio-only nên `ba` rơi xuống `b` và tải CẢ VIDEO — đo 2026-08-19 trên video 121
+# tiếng: `android` chọn format 18 (360p) nặng 31,27 GB, client mặc định chọn 249 chỉ
+# 2,75 GB. Chênh hơn 11 lần.
+#
+# NHƯNG đo cùng ngày: client mặc định vẫn bị HTTP 403 ở khâu TẢI (trích xuất thì chạy
+# — đó là lý do bẫy này khó thấy: kiểm bằng tải thử 10 KB sẽ báo "OK" nhầm, phải tải
+# ĐẦY ĐỦ mới lộ). Thử hết mweb, android_vr, web_creator, web_embedded, tv_simply,
+# android_music, web_music: client nào có audio-only cũng 403; chỉ `android` tải được.
+#
+# Vì vậy thứ tự này là "thứ tự MONG MUỐN", không phải thứ tự sẽ chạy. `NhoClientTotNhat`
+# nhớ client thật sự tải được để không phải trả giá 403 cho từng video, nhưng vẫn dò
+# lại định kỳ để tự lấy lại khoản tiết kiệm 11 lần ngay khi YouTube mở lại.
+PLAYER_CLIENTS_MAC_DINH = ["", "android", "tv", "ios", "web_safari"]
 
 # Danh sách dự phòng cho :func:`client_khong_ho_tro_cookie` khi không đọc được bảng
 # thật của yt-dlp. Đo trên yt-dlp 2026.07.04.
@@ -409,6 +422,44 @@ def chay_kem_duong_lui_cookie(
             raise e from None
 
 
+class NhoClientTotNhat:
+    """Nhớ player client vừa TẢI ĐƯỢC, để khỏi trả giá thử-và-hỏng cho từng video.
+
+    Bài toán: thứ tự mong muốn đặt client rẻ (có audio-only) lên đầu, nhưng client rẻ
+    lại đang bị YouTube chặn ở khâu tải. Nếu cứ theo thứ tự mong muốn thì MỖI video mất
+    một lượt 403 vô ích — đồng bộ một kênh 758 video là mất hàng chục phút.
+
+    Giải pháp: sau lần đầu, đưa client đã tải được lên đầu. Nhưng KHÔNG khoá vĩnh viễn —
+    hết ``song_giay`` thì quên đi để dò lại thứ tự mong muốn, nhờ đó tự lấy lại khoản
+    tiết kiệm băng thông ngay khi YouTube mở lại client rẻ, không cần ai sửa cấu hình.
+
+    An toàn theo thiết kế: đây chỉ là gợi ý THỨ TỰ. Đường lui vẫn thử đủ mọi client,
+    nên nhớ nhầm thì chỉ chậm hơn một chút chứ không bao giờ làm hỏng việc tải.
+    """
+
+    def __init__(self, song_giay: float = 1800.0):
+        self.song_giay = song_giay
+        self._client: Optional[str] = None
+        self._luc: float = 0.0
+
+    def _con_han(self) -> bool:
+        return self._client is not None and (time.monotonic() - self._luc) < self.song_giay
+
+    def sap_xep(self, clients: list) -> list:
+        """Đưa client đã biết là tải được lên đầu, giữ nguyên thứ tự còn lại."""
+        ds = list(clients or [""])
+        if not self._con_han() or self._client not in ds:
+            return ds
+        return [self._client] + [c for c in ds if c != self._client]
+
+    def ghi_nhan(self, client: str) -> None:
+        self._client = client
+        self._luc = time.monotonic()
+
+    def quen(self) -> None:
+        self._client = None
+
+
 def thu_tung_client(
     clients: list,
     chay: Callable[[dict], Any],
@@ -417,6 +468,7 @@ def thu_tung_client(
     bo_qua: tuple = (),
     truoc_khi_thu_lai: Optional[Callable[[], None]] = None,
     khi_thanh_cong: Optional[Callable[[str, list], None]] = None,
+    bo_nho: Optional["NhoClientTotNhat"] = None,
 ) -> Any:
     """Chạy ``chay(opts)`` lần lượt với từng player client cho tới khi có cái được.
 
@@ -438,6 +490,8 @@ def thu_tung_client(
     """
     loi_cuoi: Optional[BaseException] = None
     da_thu: list = []
+    if bo_nho is not None:
+        clients = bo_nho.sap_xep(clients)
     for client in (clients or [""]):
         rieng = dict(opts)
         if client:
@@ -455,6 +509,8 @@ def thu_tung_client(
             if khi_that_bai:
                 khi_that_bai(ten, e)
         else:
+            if bo_nho is not None:
+                bo_nho.ghi_nhan(client)
             if khi_thanh_cong:
                 khi_thanh_cong(client or "mặc định", list(da_thu))
             return ket_qua

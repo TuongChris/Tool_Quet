@@ -108,7 +108,24 @@ class Config:
     # Shifts cao hơn tăng độ chính xác nhưng chạy chậm và làm kho lớn hơn; 0 = hành vi cũ.
     shifts_kho: int = 4        # Subframe shifts khi tạo kho vân tay
     shifts_quet: int = 4       # Subframe shifts khi quét video dài
-    ytdlp_format: str = "ba/b"  # Định dạng yt-dlp: chỉ lấy audio tốt nhất cho nhẹ
+    # Định dạng yt-dlp cho ĐƯỜNG QUÉT. Chặn trần bitrate vì `_cut_chunks()` chuyển mọi
+    # thứ về WAV mono 11025 Hz trước khi đưa cho audfprint — tức phổ trên 5,5 kHz bị
+    # vứt đi ngay. Tải 130 kbps là trả tiền cho dữ liệu bị ném đi.
+    #
+    # Đo 2026-08-19 trên 10 phút audio thật (cắt từ giờ thứ 3 của video 88 tiếng),
+    # đếm hash bằng chính audfprint:
+    #     128 kbps -> 47.399 hash (mốc so sánh)
+    #      64 kbps -> 47.623 hash  (100,5%)
+    #      48 kbps -> 47.539 hash  (100,3%)
+    #      32 kbps -> 45.118 hash  ( 95,2%)
+    # Nên trần 70 kbps: giữ trọn chất lượng khớp, giảm ~60% băng thông.
+    #
+    # `/ba/b` ở cuối là đường lui bắt buộc: video nào không có format dưới 70 kbps thì
+    # vẫn tải bình thường thay vì thất bại.
+    #
+    # KHÔNG áp trần này cho `channel.py` (kho clip gốc): clip trong kho là VÂN TAY
+    # THAM CHIẾU, hạ chất lượng nguồn ở đó là hạ chuẩn cho mọi lượt đối chiếu về sau.
+    ytdlp_format: str = "ba[abr<=70]/ba/b"
     # Thứ tự "player client" thử khi tải. YouTube chặn từng client độc lập và đổi
     # theo thời gian, nên phải có đường lui thay vì khoá cứng một cái. Chuỗi rỗng
     # nghĩa là để yt-dlp tự chọn. Đo 2026-08-18: mặc định trả 403 cho mọi video tải
@@ -129,6 +146,26 @@ class Config:
     ytdlp_sleep_requests_s: float = 1.0
     ytdlp_sleep_min_s: float = 0.0    # giãn nhịp khâu TẢI (0 = tắt)
     ytdlp_sleep_max_s: float = 0.0
+    # --- Quét tăng dần cho video rất dài ---
+    # Quét từng đoạn từ đầu; thấy bằng chứng đạt chuẩn thì DỪNG, không thấy thì quét
+    # tiếp phần còn lại. Nhờ đó không mất video nào mà vẫn nhanh cho đa số.
+    #
+    # Đo 19/08 trên video 35 tiếng (quét trọn hết 40 phút): 180 đoạn khớp rải ĐỀU,
+    # khoảng cách giữa hai đoạn liên tiếp lớn nhất chỉ 19 phút, và cả 64 vị trí cửa sổ
+    # 3 tiếng đều bắt được video. Với `top_n=1`, bằng chứng chọn từ 1 giờ đầu có 43.815
+    # hash so với 47.432 hash khi quét trọn — tức 92% sức mạnh, từ 1/35 khối lượng.
+    #
+    # Vì sao vẫn phải quét tiếp khi không thấy: số liệu trên đúng với video TỔNG HỢP
+    # dày đặc. Một video chỉ lấy trộm đúng một clip ở giờ thứ 30 sẽ bị bỏ sót nếu dừng
+    # sớm. Dừng-khi-thấy giữ nguyên độ phủ, chỉ đổi THỨ TỰ làm việc.
+    quet_tang_dan: bool = True
+    quet_tang_dan_tu_gio: float = 10.0    # chỉ áp dụng cho video dài hơn mốc này
+    quet_tang_dan_buoc_gio: float = 3.0   # mỗi lượt quét thêm bấy nhiêu giờ
+    # Chỉ TẢI phần đầu thay vì cả video. Đo 19/08: yt-dlp `download_ranges` thật sự
+    # chỉ lấy đúng khoảng byte cần (video 15 phút: trọn 80,50 MB, 60 giây đầu 5,50 MB).
+    # Video 66 tiếng của người dùng: 18,4 GB xuống khoảng 840 MB.
+    # Không thấy gì trong phần đầu thì tải nốt phần còn lại — không mất độ phủ.
+    tai_mot_phan: bool = True
     network_timeout_s: int = 30  # Timeout socket cho request/tải YouTube
     keep_downloads: bool = True  # Giữ lại audio đã tải để lần sau khỏi tải lại
     ghi_tung_phan: bool = True   # Ghi Sheets ngay sau mỗi video giám sát
@@ -335,6 +372,19 @@ class ScanResult:
     # Phễu phát hiện của chính lượt quét này. Nhờ nó mà một kết quả 0 đoạn nói được
     # nó mất ở tầng nào, thay vì chỉ nói "không tìm thấy".
     chan_doan: Optional[ChanDoanQuet] = None
+    # Đã quét tới giây thứ mấy của video. BẰNG `duration_s` khi quét trọn vẹn.
+    #
+    # Phải tách khỏi `duration_s` chứ không thể dùng chung: `duration_s` là thời lượng
+    # VIDEO VI PHẠM (đi vào hồ sơ khiếu nại, cột Thời lượng trên Sheets), còn trường
+    # này là TRỤC THỜI GIAN ĐÃ QUÉT (dùng chia vùng khi chọn lọc). Quét trọn thì hai
+    # cái trùng khít nên trước đây một trường phục vụ được cả hai; quét tăng dần làm
+    # chúng tách đôi, và không giá trị đơn nào đúng cho cả hai mục đích.
+    pham_vi_quet_s: float = 0.0
+
+    @property
+    def quet_mot_phan(self) -> bool:
+        """Có phải chỉ quét một phần video không? Dùng để ghi rõ trên báo cáo."""
+        return bool(self.duration_s and 0 < self.pham_vi_quet_s < self.duration_s - 1)
 
 
 class Cancelled(Exception):
@@ -563,6 +613,9 @@ class Engine:
         # `canh_bao_gop` vì `_merge()` xoá trắng danh sách đó ở mỗi lượt khớp, mà
         # cảnh báo mạng lại sinh ra TRƯỚC đó — dùng chung là mất trắng.
         self.canh_bao_mang: list = []
+        # Nhớ client vừa tải được, để không trả giá 403 cho TỪNG video khi thứ tự
+        # mong muốn đang bị YouTube chặn. Tự quên sau 30 phút để dò lại.
+        self.nho_client = ytdlp_chung.NhoClientTotNhat()
         self.chan_doan_quet = ChanDoanQuet()
         self.cau_hinh_da_luu: dict = {}
 
@@ -1979,12 +2032,33 @@ class Engine:
             "publication_date_confidence": ngay.confidence,
         }
 
+    def _ten_phan_dau(self, video_id: str, gioi_han_giay: float) -> str:
+        """Tiền tố tên file cho bản tải MỘT PHẦN.
+
+        Dùng dấu `__` nên `glob(video_id + ".*")` — thứ tìm bản ĐẦY ĐỦ — không bao giờ
+        khớp phải nó. Nếu bản một phần bị nhận nhầm là đầy đủ thì lượt quét sau sẽ
+        lặng lẽ chỉ quét 3 tiếng rồi báo "không tìm thấy" cho cả video 66 tiếng: sai
+        mà không có dấu hiệu nào.
+        """
+        return f"{video_id}__p{int(gioi_han_giay)}"
+
     def download_audio(self, url: str, video_id: str,
-                       progress: Optional[Callable] = None) -> str:
-        """Tải RIÊNG phần audio (nhẹ hơn video hàng chục lần). Trả về đường dẫn file."""
+                       progress: Optional[Callable] = None,
+                       gioi_han_giay: Optional[float] = None) -> str:
+        """Tải RIÊNG phần audio (nhẹ hơn video hàng chục lần). Trả về đường dẫn file.
+
+        ``gioi_han_giay``: chỉ tải bấy nhiêu giây ĐẦU thay vì cả video. Đo 19/08 trên
+        video 15 phút: tải trọn 80,50 MB, tải 60 giây đầu chỉ 5,50 MB — tỉ lệ byte
+        đúng bằng tỉ lệ thời lượng, tức yt-dlp thật sự chỉ lấy phần cần chứ không tải
+        hết rồi cắt. Với video 66 tiếng: 18,4 GB xuống còn khoảng 840 MB.
+
+        Bản một phần được đặt tên riêng để không bao giờ bị dùng nhầm làm bản đầy đủ.
+        """
         import yt_dlp
 
-        san_co = [f for f in glob.glob(os.path.join(self.dl_dir, video_id + ".*"))
+        ten = (self._ten_phan_dau(video_id, gioi_han_giay) if gioi_han_giay
+               else video_id)
+        san_co = [f for f in glob.glob(os.path.join(self.dl_dir, ten + ".*"))
                   if not f.endswith((".part", ".ytdl"))]
         if san_co:
             self._bao(progress, 0.40, "Đã có sẵn audio, bỏ qua bước tải.")
@@ -2007,12 +2081,19 @@ class Engine:
         # (đường lui khi cookie hết hạn dựng lại toàn bộ opts, không sửa tại chỗ).
         rieng_cua_tai = dict(
             format=self.config.ytdlp_format,
-            outtmpl=os.path.join(self.dl_dir, "%(id)s.%(ext)s"),
+            outtmpl=os.path.join(self.dl_dir, ten + ".%(ext)s"),
             noplaylist=True,
             continuedl=True,          # đứt mạng thì lần sau tải tiếp
             retries=10, fragment_retries=10,
             progress_hooks=[hook],
         )
+        if gioi_han_giay:
+            # `download_ranges` là HÀM (info_dict, ydl) -> Iterable[Section], KHÔNG
+            # phải list — truyền list vào là yt-dlp gọi nó như hàm rồi nổ TypeError.
+            rieng_cua_tai["download_ranges"] = (
+                lambda info, ydl: [{"start_time": 0, "end_time": float(gioi_han_giay)}])
+            # Không ép keyframe: ta chỉ cần audio, và ép keyframe buộc phải mã hoá lại.
+            rieng_cua_tai["force_keyframes_at_cuts"] = False
 
         # YouTube chặn từng "player client" một cách độc lập và thay đổi theo thời
         # gian. Đo ngày 2026-08-18: client mặc định trả HTTP 403 cho MỌI video tải
@@ -2043,7 +2124,7 @@ class Engine:
             Mỗi client trả một format khác nhau; `continuedl=True` gặp .part cũ sẽ nối
             byte của luồng MỚI vào luồng CŨ, ra file audio hỏng mà không báo lỗi.
             """
-            for f in glob.glob(os.path.join(self.dl_dir, video_id + ".*")):
+            for f in glob.glob(os.path.join(self.dl_dir, ten + ".*")):
                 if f.endswith((".part", ".ytdl")):
                     with contextlib.suppress(OSError):
                         os.remove(f)
@@ -2065,6 +2146,7 @@ class Engine:
                 bo_qua=(Cancelled,),   # huỷ là ý người dùng, không thử tiếp
                 truoc_khi_thu_lai=don_file_do_dang,
                 khi_thanh_cong=ghi_thanh_cong,
+                bo_nho=self.nho_client,
             )
 
         goc = self.cau_hinh_mang()
@@ -2076,7 +2158,7 @@ class Engine:
         except RuntimeError as e:
             raise RuntimeError(ytdlp_chung.giai_thich_loi(e, goc.co_cookie)) from e
 
-        san_co = [f for f in glob.glob(os.path.join(self.dl_dir, video_id + ".*"))
+        san_co = [f for f in glob.glob(os.path.join(self.dl_dir, ten + ".*"))
                   if not f.endswith((".part", ".ytdl"))]
         if not san_co:
             raise RuntimeError("Tải audio thất bại (không thấy file sau khi tải).")
@@ -2144,7 +2226,15 @@ class Engine:
 
     def _cut_chunks(self, media: str, progress: Optional[Callable] = None,
                     pct0: float = 0.40, pct1: float = 0.60,
-                    workspace: Optional[str] = None) -> tuple:
+                    workspace: Optional[str] = None,
+                    tu_giay: float = 0.0, den_giay: Optional[float] = None) -> tuple:
+        """Cắt file thành khúc WAV mono 11025 Hz. Trả ``(danh sách khúc, thời lượng)``.
+
+        ``tu_giay``/``den_giay`` giới hạn phần được cắt, phục vụ quét tăng dần. Lưới
+        mốc vẫn tính từ giây 0 rồi mới LỌC — nhờ vậy mốc của từng khúc y hệt như khi
+        quét trọn, nên hai đường cho ra cùng kết quả và các đoạn nối nhau không cắt
+        trùng. Thời lượng trả về luôn là của CẢ file, không phải của đoạn.
+        """
         cfg = self.config
         overlap = self._overlap_thuc_te(progress, pct0)
         # Không có workspace (call site cũ) thì giữ nguyên hành vi cũ để tương thích.
@@ -2158,12 +2248,15 @@ class Engine:
             raise RuntimeError(f"Không đọc được thời lượng file: {media}")
 
         buoc = cfg.chunk_s - overlap
+        het = tong if den_giay is None else min(den_giay, tong)
         moc = [
             bat_dau
             for bat_dau in range(0, int(tong) + 1, buoc)
-            if bat_dau < tong
+            if bat_dau < tong and tu_giay <= bat_dau < het
         ]
         ds = []
+        if not moc:
+            return ds, tong
         for i, bat_dau in enumerate(moc):
             self._check_cancel()
             out = os.path.join(chunk_dir, f"chunk_{int(bat_dau):07d}.wav")
@@ -2672,6 +2765,41 @@ class Engine:
     #  3c) BÙ VIDEO BỊ ĐỔI TỐC ĐỘ ĐỂ NÉ VÂN TAY
     # =================================================================
 
+    def _gioi_han_tai(self, tong: float) -> Optional[float]:
+        """Chỉ tải bao nhiêu giây đầu? ``None`` = tải trọn như cũ.
+
+        Dùng chung ngưỡng và bước với quét tăng dần: phần tải về đúng bằng phần lượt
+        quét đầu tiên cần, không thừa không thiếu.
+        """
+        cfg = self.config
+        if not getattr(cfg, "tai_mot_phan", False):
+            return None
+        buoc = float(getattr(cfg, "quet_tang_dan_buoc_gio", 0) or 0) * 3600
+        nguong = float(getattr(cfg, "quet_tang_dan_tu_gio", 0) or 0) * 3600
+        if buoc <= 0 or not tong or tong <= nguong or buoc >= tong:
+            return None
+        return buoc
+
+    def _doan_quet_tang_dan(self, tong: float) -> list:
+        """Chia trục thời gian thành các đoạn để quét lần lượt.
+
+        Trả về ``[(0, tổng)]`` — tức quét trọn một lượt như cũ — khi tính năng tắt,
+        khi video ngắn hơn ngưỡng, hoặc khi cấu hình vô lý. Giữ đúng hành vi cũ cho
+        video ngắn là có chủ đích: chia nhỏ một video 20 phút chỉ tốn thêm chi phí nạp
+        kho vân tay cho mỗi đoạn mà chẳng tiết kiệm được gì.
+        """
+        cfg = self.config
+        buoc = float(getattr(cfg, "quet_tang_dan_buoc_gio", 0) or 0) * 3600
+        nguong = float(getattr(cfg, "quet_tang_dan_tu_gio", 0) or 0) * 3600
+        if not getattr(cfg, "quet_tang_dan", False) or buoc <= 0 or tong <= nguong:
+            return [(0.0, tong)]
+        doan = []
+        tu = 0.0
+        while tu < tong:
+            doan.append((tu, min(tu + buoc, tong)))
+            tu += buoc
+        return doan or [(0.0, tong)]
+
     def _co_ung_vien_dat(self, tho: list, duration: float) -> bool:
         """Đã có ứng viên nào đạt tiêu chí chấp nhận chưa? Không đụng chẩn đoán cuối."""
         if not tho:
@@ -2825,7 +2953,8 @@ class Engine:
         được gọi sau bước tải YouTube (để thanh tiến độ chạy liền mạch 0 -> 100%).
         """
         self.require(can_db=True)
-        p_cut1 = pct_start + (0.60 - 0.40) if pct_start else 0.35
+        # Mốc phần trăm cắt-khúc cũ không còn cố định: quét tăng dần chia dải
+        # `pct_start..p_match1` cho từng đoạn, mỗi đoạn tự có phần cắt và phần khớp.
         p_match1 = 0.95
         if source_type == "file":
             self.cancel_event.clear()
@@ -2836,13 +2965,38 @@ class Engine:
             if not os.path.isfile(path):
                 raise RuntimeError(f"Không tìm thấy file: {path}")
             with self.scan_workspace() as ws:
-                chunks, tong = self._cut_chunks(
-                    path, progress, pct_start, p_cut1, workspace=ws
-                )
+                tong = self.duration_of(path)
+                if not tong:
+                    raise RuntimeError(f"Không đọc được thời lượng file: {path}")
                 kq.duration_s = tong
+                doan = self._doan_quet_tang_dan(tong)
+                tho: list = []
+                chunks: list = []
+                da_quet_den = 0.0
+                for i, (tu, den) in enumerate(doan):
+                    # Chia dải phần trăm cho từng đoạn để thanh tiến độ không giật lùi.
+                    a = pct_start + (p_match1 - pct_start) * i / len(doan)
+                    b = pct_start + (p_match1 - pct_start) * (i + 1) / len(doan)
+                    giua = a + (b - a) * 0.35
+                    if len(doan) > 1:
+                        self._bao(progress, a,
+                                  f"Quét đoạn {i+1}/{len(doan)} "
+                                  f"({hhmmss(tu)} → {hhmmss(min(den, tong))})...")
+                    moi, _ = self._cut_chunks(path, progress, a, giua, workspace=ws,
+                                              tu_giay=tu, den_giay=den)
+                    if not moi:
+                        continue
+                    chunks += moi
+                    tho += self._quet_tho(moi, tong, progress, giua, b, ws)
+                    da_quet_den = min(den, tong)
+                    # DỪNG KHI THẤY: đã có bằng chứng đạt chuẩn thì phần còn lại không
+                    # đổi được kết luận. Không mất độ phủ vì nếu KHÔNG thấy gì, vòng lặp
+                    # vẫn chạy hết video.
+                    if len(doan) > 1 and self._co_ung_vien_dat(tho, tong):
+                        break
                 if not chunks:
                     raise RuntimeError("Không cắt được khúc nào từ file này.")
-                tho = self._quet_tho(chunks, tong, progress, p_cut1, p_match1, ws)
+                kq.pham_vi_quet_s = da_quet_den
                 # Không có gì đạt chuẩn thì thử bù tốc độ trước khi kết luận là
                 # không có. Đây là lúc DUY NHẤT lượt quét phụ được chạy, nên video
                 # có kết quả bình thường không tốn thêm giây nào.
@@ -2865,7 +3019,18 @@ class Engine:
             # Chỉ định nghĩa "đạt" là mở rộng thêm bậc phủ vân tay cao.
             dat_chuan, _, _ = loc_chap_nhan(tat_ca, self.config)
             kq.so_dat_nguong = len(dat_chuan)
-            kq.matches, kq.matches_loai = self._chon_loc(tat_ca, tong)
+            # Chia vùng chọn lọc theo PHẦN ĐÃ QUÉT, không theo cả video: chia theo cả
+            # video thì các vùng sau rơi vào khoảng chưa quét — vùng rỗng, và Top-N trả
+            # về ít kết quả hơn hẳn mức đáng ra có. Còn nhãn Đầu/Giữa/Cuối ở
+            # `_gan_chi_so` thì vẫn theo VIDEO THẬT, vì đó là sự thật về video.
+            kq.matches, kq.matches_loai = self._chon_loc(
+                tat_ca, kq.pham_vi_quet_s or tong)
+            if kq.quet_mot_phan:
+                tin = (f"Đã dừng sớm sau khi quét {hhmmss(kq.pham_vi_quet_s)}"
+                       f"/{hhmmss(tong)} — đã đủ bằng chứng nên không quét tiếp. "
+                       "Bằng chứng chỉ nằm trong phần đã quét.")
+                kq.note = "\n".join([x for x in (kq.note, tin) if x])
+                self._bao(progress, p_match1, "ℹ️ " + tin)
             tb = f"Xong — chọn {len(kq.matches)} kết quả tốt nhất"
             if kq.matches_loai:
                 tb += f" (loại {len(kq.matches_loai)} kết quả yếu)"
@@ -2899,10 +3064,36 @@ class Engine:
             kq.upload_date = info["upload_date"]
             self._bao(progress, 0.05,
                       f"{kq.source_name} ({hhmmss(info['duration'])}) — chuẩn bị tải audio...")
-            f = self.download_audio(url, info["id"], progress)
+            # Tải một phần trước cho video rất dài. Không thấy gì thì mới tải trọn —
+            # nhờ vậy KHÔNG mất độ phủ, chỉ đổi thứ tự. Đo 19/08: video 66 tiếng có
+            # 18,4 GB, tải 3 tiếng đầu chỉ khoảng 840 MB.
+            gioi_han = self._gioi_han_tai(info.get("duration") or 0)
+            f = self.download_audio(url, info["id"], progress,
+                                    gioi_han_giay=gioi_han)
             r = self.scan_media(f, label=kq.source_name, ref=url,
                                 source_type="youtube", progress=progress,
                                 luu_lich_su=False, pct_start=0.40)
+            if gioi_han and not r.matches:
+                # Phần đầu sạch không kết luận được gì cho cả video: phải tải nốt.
+                self._bao(progress, 0.40,
+                          f"Không thấy gì trong {hhmmss(gioi_han)} đầu — "
+                          "tải nốt phần còn lại để quét trọn...")
+                f = self.download_audio(url, info["id"], progress)
+                r = self.scan_media(f, label=kq.source_name, ref=url,
+                                    source_type="youtube", progress=progress,
+                                    luu_lich_su=False, pct_start=0.40)
+            elif gioi_han:
+                # File chỉ dài `gioi_han` nên scan_media tưởng đã quét trọn "video" và
+                # KHÔNG ghi chú gì. Sửa lại theo thời lượng THẬT, rồi phải TỰ ghi chú ở
+                # đây — nếu không, báo cáo và lịch sử im lặng như thể đã quét cả 66
+                # tiếng, đúng cái hiểu nhầm mà ghi chú đó sinh ra để chặn.
+                r.duration_s = float(info.get("duration") or r.duration_s)
+                r.pham_vi_quet_s = min(r.pham_vi_quet_s or gioi_han, gioi_han)
+                if r.quet_mot_phan:
+                    tin = (f"Chỉ TẢI và quét {hhmmss(r.pham_vi_quet_s)} đầu "
+                           f"/{hhmmss(r.duration_s)} — đã đủ bằng chứng nên không tải "
+                           "tiếp. Bằng chứng chỉ nằm trong phần đã quét.")
+                    r.note = "\n".join([x for x in (r.note, tin) if x])
             r.source_ref = url
             r.source_id = info["id"]
             r.channel_name = info["channel"]

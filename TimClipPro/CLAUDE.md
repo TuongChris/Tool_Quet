@@ -333,6 +333,125 @@ danh sách đó ở mỗi lượt khớp còn cảnh báo mạng sinh ra TRƯỚ
 Cũng ghi lại: `youtube_info()` từng KHÔNG có đường lui player client (chỉ
 `download_audio` có) — đó là lý do lỗi hiện ra dạng thô, không kèm câu "Đã thử: ...".
 
+**11. Băng thông: đang tải CẢ VIDEO thay vì chỉ tiếng (19/08/2026).**
+Từ khi bản vá 6b đưa `android` lên đầu, kho đệm sinh ra 49 file `.mp4` có luồng h264 —
+toàn bộ đều từ 18-19/08, trước đó chỉ có `.webm` audio-only. `android` không trả format
+audio-only nên `ba` rơi xuống `b` = video tiến trình.
+
+Đo 19/08 trên video 121 tiếng:
+
+| Đường tải | Format | Dung lượng |
+|---|---|---|
+| `android` + `ba/b` (đang chạy) | 18 (360p) | **31,27 GB** |
+| mặc định + `ba/b` | 251 | 6,99 GB |
+| mặc định + `ba[abr<=70]` | 249 | **2,75 GB** |
+
+Chênh **11 lần**. Thêm nữa: `_cut_chunks()` chuyển mọi thứ về WAV mono 11025 Hz trước
+khi đưa cho audfprint, nên phổ trên 5,5 kHz bị vứt ngay — tải 130 kbps là trả tiền cho
+dữ liệu bị ném đi. Đo hash trên 10 phút audio thật:
+
+    128 kbps -> 47.399 hash (mốc)   |   48 kbps -> 47.539 hash (100,3%)
+     64 kbps -> 47.623 hash (100,5%)|   32 kbps -> 45.118 hash ( 95,2%)
+
+Nên `Config.ytdlp_format` nay là `ba[abr<=70]/ba/b`. KHÔNG áp cho `channel.py`: clip
+trong kho là vân tay THAM CHIẾU, hạ chất lượng nguồn ở đó là hạ chuẩn cho mọi lượt
+đối chiếu về sau.
+
+**BẪY ĐO LƯỜNG quan trọng nhất của mục này:** kiểm bằng `test=True` (tải 10 KB đầu)
+sẽ báo "OK" nhầm — YouTube phục vụ Range nhỏ nhưng từ chối tải đầy đủ. Phải TẢI ĐẦY ĐỦ
+mới lộ ra 403. Đã suýt kết luận sai "bot-check hết rồi, client mặc định chạy lại được"
+chỉ vì đo bằng chế độ test.
+
+Thực tế 19/08: client mặc định VẪN 403 ở khâu tải (mọi format audio-only), thử cả
+`mweb`/`android_vr`/`web_creator`/`web_embedded`/`tv_simply`/`android_music`/`web_music`
+đều 403; chỉ `android` tải được. Nên hai tối ưu trên hiện CHƯA có hiệu lực — chúng là
+cơ chế chờ sẵn, tự kích hoạt khi YouTube mở lại.
+
+Để không phải trả giá 403 cho TỪNG video trong lúc chờ: `ytdlp_chung.NhoClientTotNhat`
+nhớ client vừa tải được và đưa lên đầu, tự quên sau 30 phút để dò lại thứ tự mong muốn.
+Nhờ vậy khoản tiết kiệm 11 lần được lấy lại tự động, không cần ai sửa cấu hình.
+
+**12. Quét tăng dần cho video rất dài (19/08/2026).**
+Video mục tiêu là bản tổng hợp 10-90 tiếng, mà clip gốc kho SML chỉ 15-30 phút. Quét
+trọn là lãng phí lớn.
+
+**Bài học phương pháp trước đã:** kết luận đầu tiên ("quét 3h đầu bỏ sót 38-44% video")
+LÀ SAI. Nó lấy từ bảng `matches` trong lịch sử, mà 65% lượt quét chỉ lưu ĐÚNG 1 đoạn do
+`top_n=1` — nên phép đo `min(start_s) <= 3h` thực chất hỏi "đoạn MẠNH NHẤT có nằm ở 3h
+đầu không", không phải "có đoạn NÀO ở 3h đầu không". Hai câu hỏi khác hẳn nhau.
+→ **Trước khi kết luận từ bảng `matches`, luôn kiểm `top_n` của thời kỳ sinh ra dữ liệu.**
+
+Đo lại bằng thí nghiệm THẬT — quét trọn một video 35 tiếng, ghi vị trí mọi đoạn khớp:
+
+| Phép đo | Kết quả |
+|---|---|
+| Số đoạn khớp | 180, rải ĐỀU (25-27 mỗi khối 5 tiếng) |
+| Clip gốc khác nhau | 55 |
+| Khoảng cách hai đoạn liên tiếp | trung vị 12 phút, **lớn nhất 19 phút** |
+| Thử 64 vị trí cửa sổ 3 tiếng | **0 cửa sổ trượt** |
+| Bằng chứng chọn (top_n=1) từ 1h đầu | 43.815 hash / quét trọn 47.432 = **92%** |
+
+Đã làm: `Config.quet_tang_dan` (mặc định bật, cho video > 10 tiếng, bước 3 tiếng).
+Quét từng đoạn từ đầu, thấy bằng chứng đạt chuẩn thì DỪNG. Đối chứng trên chính video
+35 tiếng đó: **40 phút → 5,5 phút**, `ty_le` 52,7% → 52,6% (gần như y hệt — dùng
+`ty_le` chứ đừng dùng số hash tuyệt đối để so, vì clip được chọn có thể khác).
+
+**Ràng buộc không được phá:** dừng-khi-thấy chỉ đổi THỨ TỰ, không đổi ĐỘ PHỦ. Không
+thấy gì thì phải quét hết video. Số liệu trên đúng với video tổng hợp DÀY ĐẶC; một
+video chỉ lấy trộm một clip ở giờ thứ 30 vẫn phải bắt được.
+Test `test_khong_thay_gi_thi_QUET_HET_khong_mat_do_phu` khoá đúng ca này.
+
+Hai chỗ tinh tế:
+* **Tách `duration_s`.** Nó đang gánh hai nghĩa: thời lượng VIDEO (hồ sơ, Sheets) và
+  TRỤC ĐÃ QUÉT (chia vùng chọn lọc). Quét trọn thì trùng khít nên không ai thấy. Nay
+  có `ScanResult.pham_vi_quet_s`: `_gan_chi_so` (nhãn Đầu/Giữa/Cuối) dùng video thật,
+  `_chon_loc` dùng phần đã quét — chia theo cả video thì các vùng sau rỗng và Top-N
+  trả về ít kết quả hơn đáng ra có.
+* **Lưới mốc khúc giữ nguyên.** `_cut_chunks` vẫn tính mốc từ giây 0 rồi mới LỌC theo
+  khoảng, nên ghép các đoạn cho ra đúng lưới của lượt quét trọn.
+
+Bẫy đã sửa: `note` chỉ được hiển thị khi nguồn LỖI, nên quét một phần THÀNH CÔNG sẽ
+âm thầm không nói gì và người dùng tưởng đã quét trọn. `app.py` nay hiện hộp thông báo
+riêng liệt kê nguồn nào dừng sớm và quét tới đâu.
+
+Lưu ý cấu hình: `quet_tang_dan_buoc_gio` phải DÀI HƠN clip gốc dài nhất trong kho đang
+dùng. Kho SML clip 15-30 phút nên 3 tiếng rất dư; kho khác có clip 1-3 tiếng thì phải
+nâng bước lên.
+
+**13. Tải một phần cho video rất dài (19/08/2026).**
+Quét tăng dần (mục 12) mới cắt phần XỬ LÝ; phần TẢI vẫn kéo trọn video. Với video 66
+tiếng qua client `android` (chỉ có format 18) đó là **18,4 GB**.
+
+Kiểm chứng `download_ranges` trước khi làm — video 15 phút: tải trọn 80,50 MB, tải 60
+giây đầu **5,50 MB**. Tỉ lệ byte đúng bằng tỉ lệ thời lượng, tức yt-dlp thật sự chỉ lấy
+phần cần chứ không tải hết rồi cắt.
+
+Đã làm: `Config.tai_mot_phan` (mặc định bật), dùng chung ngưỡng/bước với quét tăng dần.
+Không thấy gì trong phần đầu thì tải nốt phần còn lại — không mất độ phủ.
+
+Chạy thật trên video 66 tiếng: **18,4 GB → 841 MB (giảm 95%)**, tổng 3,7 phút, tìm ra
+"SML Movie: Jeffy's Swimming Lesson" ở phút 37 với `ty_le` 35,6%.
+
+Ba cái bẫy:
+* **API `download_ranges` là HÀM** `(info_dict, ydl) -> Iterable[Section]`, không phải
+  list. Truyền list vào là yt-dlp gọi nó như hàm rồi nổ TypeError.
+* **Tên file phải khác bản đầy đủ.** Dùng `<id>__p<giây>.<ext>` nên
+  `glob(id + ".*")` — thứ tìm bản đầy đủ — không khớp phải. Nếu nhận nhầm, lượt quét
+  sau sẽ lặng lẽ chỉ quét 3 tiếng rồi báo "không tìm thấy" cho cả video 66 tiếng: SAI
+  MÀ KHÔNG CÓ DẤU HIỆU NÀO.
+* **Ghi chú bị mất — lỗi thật, phát hiện khi chạy kiểm chứng.** File tải về chỉ dài 3
+  tiếng nên `scan_media` tưởng đã quét trọn "video 3 tiếng" và không ghi chú gì;
+  `scan_youtube` sửa `duration_s` lại thành 66 tiếng SAU đó nhưng quên ghi chú. Kết
+  quả: báo cáo và lịch sử im lặng đúng như đã quét cả 66 tiếng — chính cái hiểu nhầm
+  mà ghi chú sinh ra để chặn. Nay `scan_youtube` tự ghi chú sau khi sửa thời lượng.
+  → **Bài học: sửa một trường phái sinh (`duration_s`) thì phải rà lại MỌI thứ tính
+  từ nó**, ở đây là `quet_mot_phan` và ghi chú.
+
+Còn để lại: client mặc định (có audio-only, 3 tiếng chỉ ~66 MB thay vì 841 MB) vẫn bị
+403 nên bản tải một phần hiện đi qua `android` = video tiến trình. Đã xác nhận
+`download_ranges` + ffmpeg chạy tốt với `android`, nên khi YouTube mở lại client mặc
+định sẽ có thêm khoảng 12 lần tiết kiệm nữa, tự động.
+
 **Bài học quy trình:** khi vá code bằng tìm-thay chuỗi, PHẢI kiểm tra lại là bản vá đã áp
 dụng thật (chạy test tích hợp), vì chuỗi cũ có thể đã bị đổi ở lần vá trước.
 

@@ -115,6 +115,8 @@ def test_scan_media_dem_so_doan_dat_nguong_truoc_khi_cat_top_n(
     ]
     engine.config.min_hash_floor = 1000
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
+    # scan_media đọc thời lượng TRƯỚC khi cắt, để chia đoạn cho quét tăng dần.
+    monkeypatch.setattr(engine, "duration_of", lambda p: 100.0)
     monkeypatch.setattr(
         engine,
         "_cut_chunks",
@@ -143,6 +145,8 @@ def test_scan_media_tat_ca_rong_co_so_dat_nguong_bang_khong(
     media = tmp_path / "nguon.mp4"
     media.write_bytes(b"gia")
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
+    # scan_media đọc thời lượng TRƯỚC khi cắt, để chia đoạn cho quét tăng dần.
+    monkeypatch.setattr(engine, "duration_of", lambda p: 100.0)
     monkeypatch.setattr(
         engine,
         "_cut_chunks",

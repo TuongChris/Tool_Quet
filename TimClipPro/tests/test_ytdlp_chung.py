@@ -270,3 +270,70 @@ def test_validate_chan_max_nho_hon_min():
     cfg.ytdlp_sleep_min_s, cfg.ytdlp_sleep_max_s = 10.0, 2.0
     with pytest.raises(ValueError):
         cfg.validate()
+
+
+# ---------------------------------------------------------------- nhớ client tải được
+
+def test_nho_client_dua_cai_da_chay_len_dau():
+    """Thứ tự mong muốn đặt client rẻ lên đầu, nhưng client rẻ đang bị 403. Không nhớ
+    thì MỖI video mất một lượt hỏng vô ích — kênh 758 video là hàng chục phút."""
+    n = y.NhoClientTotNhat()
+    ds = ["", "android", "tv"]
+    assert n.sap_xep(ds) == ds, "chưa biết gì thì giữ nguyên thứ tự mong muốn"
+    n.ghi_nhan("android")
+    assert n.sap_xep(ds) == ["android", "", "tv"]
+
+
+def test_nho_client_khong_lam_mat_client_nao():
+    n = y.NhoClientTotNhat()
+    n.ghi_nhan("tv")
+    assert sorted(n.sap_xep(["", "android", "tv"])) == sorted(["", "android", "tv"])
+
+
+def test_nho_client_tu_quen_de_do_lai():
+    """Phải tự quên, nếu không sẽ khoá vĩnh viễn vào client tốn băng thông và không
+    bao giờ lấy lại được khoản tiết kiệm khi YouTube mở lại client rẻ."""
+    n = y.NhoClientTotNhat(song_giay=0.0)
+    n.ghi_nhan("android")
+    assert n.sap_xep(["", "android"]) == ["", "android"], "hết hạn thì quay về thứ tự mong muốn"
+
+
+def test_nho_client_bo_qua_client_khong_con_trong_danh_sach():
+    n = y.NhoClientTotNhat()
+    n.ghi_nhan("mweb")
+    assert n.sap_xep(["", "android"]) == ["", "android"]
+
+
+def test_thu_tung_client_ghi_nho_cai_chay_duoc():
+    n = y.NhoClientTotNhat()
+    da = []
+
+    def chay(opts):
+        ten = (opts.get("extractor_args", {}).get("youtube", {})
+               .get("player_client") or [""])[0]
+        da.append(ten or "mặc định")
+        if ten != "android":
+            raise RuntimeError("HTTP Error 403: Forbidden")
+        return "ok"
+
+    ds = ["", "android", "tv"]
+    y.thu_tung_client(ds, chay, {}, bo_nho=n)
+    assert da == ["mặc định", "android"]
+    da.clear()
+    y.thu_tung_client(ds, chay, {}, bo_nho=n)
+    assert da == ["android"], "lần sau phải đi thẳng vào client đã biết là chạy được"
+
+
+def test_nho_client_sai_thi_van_khong_hong_viec():
+    """Bộ nhớ chỉ là gợi ý thứ tự — đường lui vẫn phải thử đủ mọi client."""
+    n = y.NhoClientTotNhat()
+    n.ghi_nhan("tv")   # nhớ nhầm: tv không chạy được
+
+    def chay(opts):
+        ten = (opts.get("extractor_args", {}).get("youtube", {})
+               .get("player_client") or [""])[0]
+        if ten != "android":
+            raise RuntimeError("403")
+        return "ok"
+
+    assert y.thu_tung_client(["", "android", "tv"], chay, {}, bo_nho=n) == "ok"

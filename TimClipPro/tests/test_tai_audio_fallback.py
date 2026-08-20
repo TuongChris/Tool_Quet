@@ -115,8 +115,22 @@ def test_co_cache_thi_khong_goi_mang(tmp_path, monkeypatch):
     assert nk == [], "đã có file thì không được tải lại"
 
 
-def test_cau_hinh_mac_dinh_uu_tien_android():
-    """android đứng trước vì đo thật ngày 18/08 chỉ nó còn tải được."""
+def test_cau_hinh_mac_dinh_uu_tien_client_co_format_chi_tieng():
+    """Client mặc định đứng đầu vì chỉ nó có format audio-only.
+
+    `android` không trả format audio-only nên `ba` rơi xuống `b` và tải CẢ VIDEO —
+    đo 19/08 trên video 121 tiếng: 31,27 GB thay vì 2,75 GB.
+    """
     ds = Config().ytdlp_player_clients
-    assert ds[0] == "android"
-    assert "" in ds, "vẫn phải giữ đường mặc định của yt-dlp làm dự phòng"
+    assert ds[0] == "", "client mặc định phải được thử trước"
+    assert "android" in ds, "vẫn giữ android làm đường lui khi mặc định bị chặn"
+
+
+def test_dinh_dang_quet_co_chan_tran_bitrate():
+    """audfprint hạ mẫu về 11025 Hz nên bitrate cao là lãng phí thuần tuý.
+
+    Đo thật: 48 kbps cho 100,3% số hash so với 128 kbps, ở 39% dung lượng.
+    """
+    fmt = Config().ytdlp_format
+    assert "abr<=" in fmt, "phải chặn trần bitrate cho đường quét"
+    assert fmt.endswith("/ba/b"), "phải có đường lui khi video không có format nhẹ"

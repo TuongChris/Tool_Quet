@@ -30,6 +30,7 @@ from publication_date import resolve_publication_date
 from ytdlp_chung import (
     PLAYER_CLIENTS_MAC_DINH,
     CauHinhMang,
+    NhoClientTotNhat,
     chay_kem_duong_lui_cookie,
     giai_thich_loi,
     go_ma_mau,
@@ -168,6 +169,9 @@ class ChannelSync:
         self.archive = os.path.join(self.dest, "downloaded.txt")
         self.meta_file = os.path.join(self.dest, "clips_meta.json")
         self.tmp_dir = os.path.join(self.dest, "_tam")
+        # Đồng bộ kênh chạy hàng trăm video liên tiếp nên đây là chỗ khoản tiết
+        # kiệm lớn nhất: nhớ client tải được, khỏi 403 lại cho từng video.
+        self.nho_client = NhoClientTotNhat()
 
     # ---------- metadata ----------
 
@@ -471,7 +475,8 @@ class ChannelSync:
         def tai_voi(cau_hinh):
             return thu_tung_client(
                 cau_hinh.player_clients(self.player_clients), chay,
-                cau_hinh.tuy_chon(**rieng), truoc_khi_thu_lai=don_file_do_dang)
+                cau_hinh.tuy_chon(**rieng), truoc_khi_thu_lai=don_file_do_dang,
+                bo_nho=self.nho_client)
 
         # Cookie hết hiệu lực làm YouTube chỉ trả storyboard nên MỌI client đều hỏng;
         # đường lui cookie phải bọc NGOÀI đường lui client. Đường quét (engine.py) làm

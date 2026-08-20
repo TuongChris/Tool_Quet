@@ -90,11 +90,11 @@ def test_opts_goc_khong_bi_ban_extractor_args(tmp_path, _va):
     assert opts == {"format": "ba/b"}
 
 
-def test_mac_dinh_uu_tien_android_va_giu_duong_lui_mac_dinh(tmp_path):
-    """android đứng trước vì đo thật ngày 18/08 chỉ nó còn tải được."""
+def test_mac_dinh_uu_tien_client_co_format_chi_tieng(tmp_path):
+    """Client mặc định đứng đầu vì chỉ nó có format audio-only; `android` tải cả video."""
     ds = _cs(tmp_path).player_clients
-    assert ds[0] == "android"
-    assert "" in ds, "vẫn phải giữ đường mặc định của yt-dlp làm dự phòng"
+    assert ds[0] == ""
+    assert "android" in ds, "vẫn giữ android làm đường lui khi mặc định bị chặn"
 
 
 def test_engine_va_channel_dung_chung_mot_danh_sach():

@@ -385,6 +385,20 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
                 f"Có {tong_dat_nguong} đoạn đạt ngưỡng trước bước chọn lọc; "
                 f"{len(matches)} đoạn được chọn để xuất. Hai số này có chủ đích khác nhau."
             )
+    # Quét tăng dần dừng sớm khi đã đủ bằng chứng. PHẢI nói ra: `note` chỉ được hiển
+    # thị khi nguồn bị LỖI, nên nếu không báo ở đây thì người dùng tưởng đã quét trọn
+    # video — và sẽ hiểu sai cột «Vùng» lẫn số đoạn tìm được.
+    mot_phan = [r for r in results if getattr(r, "quet_mot_phan", False)]
+    if mot_phan:
+        st.info(
+            "ℹ️ **Đã dừng sớm ở {} nguồn** vì tìm thấy đủ bằng chứng — chưa quét hết "
+            "video.\n\n{}\n\nBằng chứng chỉ nằm trong phần đã quét, nên số đoạn tìm "
+            "được và cột «Vùng» phản ánh phần đó, không phải cả video. Muốn quét trọn "
+            "thì tắt «Quét tăng dần» trong tab «Cấu hình».".format(
+                len(mot_phan),
+                "\n".join(
+                    f"- {r.source_name[:60]}: quét {hhmmss(r.pham_vi_quet_s)}"
+                    f"/{hhmmss(r.duration_s)}" for r in mot_phan[:8])))
     rows = eng.to_rows(results)
     st.dataframe(df_ket_qua(rows), width="stretch", hide_index=True)
     df_csv = pd.DataFrame(
@@ -517,6 +531,23 @@ with st.sidebar:
             "Ưu tiên các clip gốc khác nhau", c.uu_tien_clip_khac_nhau)
         c.keep_downloads = st.checkbox("Giữ lại audio đã tải", c.keep_downloads,
                                        help="Bỏ tick để tiết kiệm ổ cứng (lần sau phải tải lại).")
+        c.quet_tang_dan = st.checkbox(
+            "Quét tăng dần cho video rất dài", c.quet_tang_dan,
+            help="Quét từng đoạn từ đầu; thấy đủ bằng chứng thì dừng, không thấy thì "
+                 "quét tiếp cho hết. KHÔNG bỏ sót video nào — chỉ đổi thứ tự làm việc. "
+                 "Đo trên video 35 tiếng: 40 phút xuống 5,5 phút, bằng chứng tương đương.")
+        if c.quet_tang_dan:
+            ct1, ct2 = st.columns(2)
+            with ct1:
+                c.quet_tang_dan_tu_gio = st.number_input(
+                    "Chỉ áp dụng cho video dài hơn (giờ)", 0.0, 100.0,
+                    float(c.quet_tang_dan_tu_gio), 1.0,
+                    help="Video ngắn hơn mốc này vẫn quét trọn một lượt như cũ.")
+            with ct2:
+                c.quet_tang_dan_buoc_gio = st.number_input(
+                    "Mỗi lượt quét thêm (giờ)", 0.5, 24.0,
+                    float(c.quet_tang_dan_buoc_gio), 0.5,
+                    help="Phải DÀI HƠN clip gốc dài nhất trong kho đang dùng.")
         st.caption(
             f"Khúc gối hiệu lực tối đa hiện tại: {c.overlap_max_s} giây; "
             "clip dài có thể được ghép lại từ nhiều mảnh ở ranh giới."
