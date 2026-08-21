@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import threading
 from datetime import datetime
@@ -13,6 +14,46 @@ from typing import Any
 
 class LoiDuLieu(Exception):
     """File tồn tại nhưng không đọc được — khác với file chưa tồn tại."""
+
+
+# Ký tự Windows CẤM trong tên file. Nguy hiểm nhất là DẤU HAI CHẤM: nó không ném lỗi
+# mà lặng lẽ đổi nghĩa đường dẫn. Ghi vào ``thu_muc\SML Movie: Abc.json`` tạo ra một
+# file RỖNG tên «SML Movie» kèm một NTFS Alternate Data Stream tên «Abc.json»; nội dung
+# nằm trong stream đó, ``os.listdir`` chỉ thấy «SML Movie», và ``glob("*.json")`` không
+# thấy gì cả.
+#
+# Đo trên máy thật 21/08/2026: mọi bản ghi chẩn đoán của video có dấu hai chấm trong
+# tiêu đề đều mất trắng — tức gần như toàn bộ kho SML («SML Movie: …», «SML ROBLOX: …»,
+# «SML Parody: …») — để lại 5 file rác 0 byte mà chính vòng dọn theo ``glob("*.json")``
+# cũng không nhìn thấy để xoá. Lỗi im lặng tuyệt đối vì nơi gọi bọc trong
+# ``contextlib.suppress(Exception)``.
+_KY_TU_CAM_TEN_FILE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+# Tên thiết bị DOS: ``open("CON.json", "w")`` ghi ra console chứ không ra đĩa.
+_TEN_THIET_BI = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+
+def ten_file_hop_le(ten: str, mac_dinh: str = "khong_ten",
+                    gioi_han: int = 120) -> str:
+    """Biến một chuỗi tuỳ ý thành tên file AN TOÀN trên Windows lẫn POSIX.
+
+    ĐỪNG dùng ``fingerprint_progress.ten_file_an_toan`` cho việc này: hàm đó sinh ra để
+    RÚT GỌN tên cho log và giao diện (chỉ lọc ký tự điều khiển), không phải để dựng
+    đường dẫn. Dùng nhầm chính là nguyên nhân của lỗi mô tả ở ``_KY_TU_CAM_TEN_FILE``.
+
+    Cắt cả dấu chấm và khoảng trắng ở CUỐI: Windows tự bỏ chúng khi tạo file, nên
+    ``"a. "`` và ``"a"`` trỏ về cùng một file — hai bản ghi khác nhau sẽ đè lên nhau.
+    Cắt độ dài TRƯỚC rồi mới cắt lại đuôi, vì cắt ngắn có thể lòi ra dấu chấm mới.
+    """
+    sach = _KY_TU_CAM_TEN_FILE.sub("_", str(ten or "")).strip(" .")
+    sach = sach[:gioi_han].strip(" .")
+    if not sach or sach.split(".")[0].upper() in _TEN_THIET_BI:
+        return mac_dinh
+    return sach
 
 
 _KHOA_THEO_DUONG_DAN: dict[str, threading.RLock] = {}

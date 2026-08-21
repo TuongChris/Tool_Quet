@@ -104,12 +104,30 @@ class ChanDoanQuet:
     giai_doan_mat: str = ""
     canh_bao: list = field(default_factory=list)
 
+    # Trạng thái KHO tại lúc quét. Có hai con số này thì câu giải thích cho ca
+    # "audfprint không ra dòng nào" LOẠI TRỪ được luôn giả thuyết kho hỏng, thay vì
+    # bắt người dùng đi kiểm một thứ mà hệ thống đã biết là bình thường.
+    ten_kho: str = ""
+    so_clip_kho: int = 0
+
+    # Mọi ứng viên còn sống đều mang dấu hiệu nhạc hiệu/nhạc nền dùng chung: phủ vân
+    # tay không đáng kể, đoạn khớp chỉ vài giây. Xem chap_nhan_khop.py để biết vì sao
+    # đây là ÂM TÍNH ĐÚNG chứ không phải ngưỡng quá chặt.
+    dau_hieu_nhac_hieu: bool = False
+
     # Đường đi nhanh Top-1 đã dùng tới đâu (rỗng = không dùng).
     duong_di: str = ""
 
     # Bù tốc độ: các phương án đã thử, và phương án cứu được kết quả (nếu có).
     da_thu_toc_do: list = field(default_factory=list)
     toc_do_tim_duoc: str = ""
+
+    # VÌ SAO cần trường này: `da_thu_toc_do` rỗng gộp chung HAI ca trái ngược —
+    # "đã thử 6 lượt mà không cứu được" và "chưa từng chạy lượt nào". Ca thứ hai
+    # nghĩa là `quet_da_toc_do: true` chỉ đang bật trên giấy, và người dùng tin nhầm
+    # rằng lượt quét âm tính đã được kiểm chống né tốc độ. Rỗng = có chạy (hoặc
+    # không cần chạy vì lượt quét đã có kết quả).
+    ly_do_khong_bu_toc_do: str = ""
 
     # ---------------------------------------------------------------
 
@@ -133,10 +151,42 @@ class ChanDoanQuet:
         return self.giai_doan_mat
 
     def mat_o_dau(self) -> str:
-        """Câu giải thích cho người dùng; rỗng khi lượt quét có kết quả."""
+        """Câu giải thích cho người dùng; rỗng khi lượt quét có kết quả.
+
+        Hai ca dưới đây được nói RÕ HƠN mô tả chung, vì mô tả chung của chúng từng
+        đẩy người dùng đi sửa nhầm chỗ:
+
+        * ``audfprint_khong_ra_match`` — mô tả chung nêu ba nghi vấn, trong đó hai
+          cái đầu (sai kho, kho rỗng) hệ thống ĐÃ BIẾT là không phải: kho vừa nạp
+          xong với ``so_clip_kho`` clip và ``so_khuc`` khúc tiếng đã được phân tích.
+          Nêu lại nghi vấn đã loại trừ là dẫn người dùng đi kiểm kho, trong khi câu
+          trả lời thật gần như luôn là "bản gốc chưa có trong kho".
+        * ``khong_dat_chap_nhan`` — mô tả chung nghe như CHÍNH SÁCH quá chặt nên
+          phản xạ đầu tiên là hạ ngưỡng. Khi mọi ứng viên đều mang dấu hiệu nhạc
+          hiệu dùng chung thì hạ ngưỡng chính là thứ tạo báo cáo sai hàng loạt
+          (xem chap_nhan_khop.py), nên phải nói thẳng ra điều đó.
+        """
         if not self.giai_doan_mat:
             return ""
-        return MO_TA_GIAI_DOAN.get(self.giai_doan_mat, self.giai_doan_mat)
+        chung = MO_TA_GIAI_DOAN.get(self.giai_doan_mat, self.giai_doan_mat)
+
+        if self.giai_doan_mat == AUDFPRINT_KHONG_RA_MATCH and self.so_clip_kho > 0:
+            kho = f"«{self.ten_kho}»" if self.ten_kho else "đang chọn"
+            return (
+                f"Video không chứa đoạn tiếng nào của kho {kho}. Kho nạp bình thường "
+                f"({self.so_clip_kho} clip) và đã phân tích {self.so_khuc} khúc tiếng, "
+                "nên KHÔNG phải lỗi kho hay lỗi tải. Nếu bạn chắc đây là bản reup thì "
+                "khả năng cao clip gốc của nó chưa có trong kho."
+            )
+
+        if self.giai_doan_mat == KHONG_DAT_CHAP_NHAN and self.dau_hieu_nhac_hieu:
+            return (
+                f"{chung} Toàn bộ ứng viên đều chỉ khớp vài giây và phủ vân tay không "
+                "đáng kể — đó là dấu hiệu nhạc hiệu/nhạc nền dùng chung giữa nhiều clip "
+                "gốc, không phải bản reup. Hạ ngưỡng lúc này sẽ tạo báo cáo sai."
+            )
+
+        return chung
 
     def tom_tat(self) -> str:
         """Một dòng phễu gọn cho log và cho phần 'chi tiết chẩn đoán' trên UI."""
@@ -184,6 +234,32 @@ class ChanDoanQuet:
         return d
 
 
+# Ngưỡng nhận dạng nhạc hiệu/nhạc nền dùng chung, lấy đúng từ số đo trong
+# chap_nhan_khop.py: nhạc kết dùng chung đo được 133 hash trong 8,8 giây, phủ 0,9%
+# vân tay clip gốc, và xuất hiện ở khoảng 100 clip gốc KHÁC NHAU cùng lúc. Bản reup
+# thật nằm ở phía hoàn toàn khác (786,8 giây khớp, phủ hàng chục phần trăm), nên hai
+# vùng không chồng lấn và ngưỡng này không thể che mất một reup thật.
+NHAC_HIEU_TY_LE_TOI_DA = 5.0
+NHAC_HIEU_GIAY_TOI_DA = 30.0
+
+
+def _deu_la_nhac_hieu(ung_vien: list) -> bool:
+    """MỌI ứng viên đều mang dấu hiệu nhạc hiệu dùng chung hay không.
+
+    Đòi "mọi ứng viên" chứ không phải "ứng viên mạnh nhất": chỉ cần một ứng viên
+    khớp dài hoặc phủ cao là lượt quét đó KHÔNG còn thuộc ca này nữa, lúc ấy nói
+    "toàn nhạc hiệu" là sai. Đòi ít nhất hai ứng viên vì một mảnh vụn đơn lẻ chưa
+    đủ để gọi tên là nhạc hiệu DÙNG CHUNG.
+    """
+    if len(ung_vien) < 2:
+        return False
+    return all(
+        float(getattr(m, "ty_le", 0.0) or 0.0) < NHAC_HIEU_TY_LE_TOI_DA
+        and float(getattr(m, "matched_s", 0.0) or 0.0) < NHAC_HIEU_GIAY_TOI_DA
+        for m in ung_vien
+    )
+
+
 def ghi_nhan_bi_loai(chan_doan: ChanDoanQuet, ung_vien: list, tong_hash: dict,
                      ly_do_theo_clip: dict | None = None) -> None:
     """Ghi lại ứng viên MẠNH NHẤT bị loại để người dùng soi được.
@@ -193,6 +269,7 @@ def ghi_nhan_bi_loai(chan_doan: ChanDoanQuet, ung_vien: list, tong_hash: dict,
     """
     if not ung_vien:
         return
+    chan_doan.dau_hieu_nhac_hieu = _deu_la_nhac_hieu(ung_vien)
     manh = max(ung_vien, key=lambda m: (int(getattr(m, "hashes", 0) or 0),
                                         float(getattr(m, "matched_s", 0) or 0)))
     ten = str(getattr(manh, "clip", ""))

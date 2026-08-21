@@ -128,8 +128,14 @@ def _dung_scan(e, monkeypatch, tong, co_ket_qua_tu_giay):
 
 
 def test_thay_bang_chung_som_thi_dung_khong_quet_tiep(tmp_path, monkeypatch):
+    """`top_n=1` là chiều ẩn của phép đo gốc, nay phải viết ra.
+
+    Bản đo trong CLAUDE.md mục 12 chạy ở `top_n=1`, nhưng `Config.top_n` mặc định là
+    5 — nên test này (dùng mặc định) từng khoá nhầm hành vi "một ứng viên là dừng"
+    cho MỌI `top_n`. Xem `test_top_n_5_ma_moi_co_1_ung_vien_thi_PHAI_quet_tiep`.
+    """
     e = _eng(tmp_path, quet_tang_dan=True, quet_tang_dan_tu_gio=1.0,
-             quet_tang_dan_buoc_gio=3.0, quet_da_toc_do=False)
+             quet_tang_dan_buoc_gio=3.0, quet_da_toc_do=False, top_n=1)
     da_cat = _dung_scan(e, monkeypatch, 35 * 3600, co_ket_qua_tu_giay=0)
     p = tmp_path / "phim.mp4"
     p.write_bytes(b"x")
@@ -220,8 +226,10 @@ def test_tai_mot_phan_van_phai_ghi_chu_len_bao_cao(tmp_path, monkeypatch):
     nhưng quên ghi chú — báo cáo và lịch sử im lặng như thể đã quét cả 66 tiếng."""
     from engine import Match, ScanResult
 
+    # `top_n=1`: một đoạn là đủ nên không phải tải nốt. Với `top_n` mặc định (5) thì
+    # một đoạn KHÔNG đủ — ca đó có test riêng bên dưới.
     e = _eng(tmp_path, tai_mot_phan=True, quet_tang_dan_tu_gio=10.0,
-             quet_tang_dan_buoc_gio=3.0)
+             quet_tang_dan_buoc_gio=3.0, top_n=1)
     monkeypatch.setattr(e, "require", lambda **k: None)
     monkeypatch.setattr(e, "youtube_info", lambda url: {
         "id": "abc", "title": "video 66h", "duration": 66 * 3600, "channel": "",
@@ -275,3 +283,150 @@ def test_khong_thay_gi_thi_tai_tron_va_khong_ghi_chu_nham(tmp_path, monkeypatch)
     assert lan_tai == [3 * 3600, None], "sạch ở phần đầu thì phải tải trọn rồi quét lại"
     assert kq.quet_mot_phan is False
     assert "chỉ tải" not in (kq.note or "").lower()
+
+
+# =====================================================================
+#  top_n > 1: dừng sớm phải xét CHÍNH SÁCH CHỌN LỌC, không phải "có một cái nào chưa"
+#
+#  `Config.top_n` mặc định là 5, nên đây là hành vi MẶC ĐỊNH chứ không phải ca hiếm.
+#  Người dùng đặt top_n=5 để lấy 5 bằng chứng rải đều cho hồ sơ khiếu nại; đoạn đầu
+#  tìm được 1 ứng viên mà dừng luôn là mất trắng 4 suất, im lặng.
+# =====================================================================
+
+def _dung_scan_nhieu(e, monkeypatch, tong, so_ung_vien_moi_khuc, clip_theo_khuc=True):
+    """Như `_dung_scan` nhưng mỗi khúc sinh ra N ứng viên; tên clip theo mốc khúc."""
+    monkeypatch.setattr(e, "require", lambda **k: None)
+    monkeypatch.setattr(e, "duration_of", lambda p: tong)
+    da_cat = []
+
+    def cut(path, progress=None, pct0=0, pct1=0, workspace=None,
+            tu_giay=0.0, den_giay=None):
+        het = tong if den_giay is None else min(den_giay, tong)
+        moc = [m for m in range(0, int(tong), 3600) if tu_giay <= m < het]
+        da_cat.extend(moc)
+        return [f"chunk_{m}.wav" for m in moc], tong
+
+    monkeypatch.setattr(e, "_cut_chunks", cut)
+    monkeypatch.setattr(e, "_quet_tho", lambda chunks, *a, **k: list(chunks))
+
+    def merge(tho):
+        ra = []
+        for khuc in tho:
+            moc = int(khuc.split("_")[1].split(".")[0])
+            for i in range(so_ung_vien_moi_khuc):
+                ten = f"clip_{moc}_{i}.opus" if clip_theo_khuc else "chung.opus"
+                ra.append(Match(clip=ten, start_s=moc, end_s=moc + 1, matched_s=1,
+                                clip_offset_s=0, hashes=9999, confidence="chac"))
+        return ra
+
+    monkeypatch.setattr(e, "_merge", merge)
+    monkeypatch.setattr(e, "_gan_chi_so", lambda ds, d: None)
+    monkeypatch.setattr(e, "_chon_loc", lambda ds, d: (ds[:max(1, e.config.top_n)], []))
+    return da_cat
+
+
+def test_top_n_5_ma_moi_co_1_ung_vien_thi_PHAI_quet_tiep(tmp_path, monkeypatch):
+    """Lỗi gốc: `_co_ung_vien_dat` trả True ngay ở ứng viên đầu tiên."""
+    e = _eng(tmp_path, quet_tang_dan=True, quet_tang_dan_tu_gio=1.0,
+             quet_tang_dan_buoc_gio=3.0, quet_da_toc_do=False, top_n=5)
+    da_cat = _dung_scan_nhieu(e, monkeypatch, 12 * 3600, so_ung_vien_moi_khuc=1)
+    p = tmp_path / "phim.mp4"
+    p.write_bytes(b"x")
+    kq = e.scan_media(str(p), luu_lich_su=False)
+    # 3 khúc mỗi đoạn -> hết đoạn 1 mới có 3 clip khác nhau, chưa đủ 5 nên phải
+    # sang đoạn 2 (mốc khúc 10800/14400/18000) rồi mới đủ 6 clip và dừng.
+    assert max(da_cat) >= 3 * 3600, "chưa đủ 5 suất thì không được dừng ở đoạn 1"
+    assert kq.status == "ok"
+
+
+def test_top_n_5_du_5_clip_khac_nhau_thi_duoc_dung(tmp_path, monkeypatch):
+    """Đủ rồi thì vẫn phải dừng — không được vứt bỏ khoản tiết kiệm đã đo."""
+    e = _eng(tmp_path, quet_tang_dan=True, quet_tang_dan_tu_gio=1.0,
+             quet_tang_dan_buoc_gio=3.0, quet_da_toc_do=False, top_n=5)
+    da_cat = _dung_scan_nhieu(e, monkeypatch, 35 * 3600, so_ung_vien_moi_khuc=2)
+    p = tmp_path / "phim.mp4"
+    p.write_bytes(b"x")
+    e.scan_media(str(p), luu_lich_su=False)
+    assert max(da_cat) < 3 * 3600, "3 khúc × 2 clip = 6 ≥ 5 nên phải dừng ngay đoạn đầu"
+
+
+def test_nam_doan_cua_CUNG_MOT_clip_khong_lap_day_duoc_5_suat(tmp_path, monkeypatch):
+    """Chốt chặn tinh tế: `uu_tien_clip_khac_nhau` nên phải đếm CLIP, không đếm đoạn.
+
+    Đếm gộp thì 6 đoạn của cùng một clip trông như đã đủ 5 suất, trong khi
+    `_chon_loc` chỉ điền được đúng một suất từ chúng.
+    """
+    e = _eng(tmp_path, quet_tang_dan=True, quet_tang_dan_tu_gio=1.0,
+             quet_tang_dan_buoc_gio=3.0, quet_da_toc_do=False, top_n=5,
+             uu_tien_clip_khac_nhau=True)
+    da_cat = _dung_scan_nhieu(e, monkeypatch, 12 * 3600, so_ung_vien_moi_khuc=3,
+                              clip_theo_khuc=False)
+    p = tmp_path / "phim.mp4"
+    p.write_bytes(b"x")
+    e.scan_media(str(p), luu_lich_su=False)
+    assert max(da_cat) >= 6 * 3600, "toàn một clip thì không bao giờ đủ 5 clip khác nhau"
+
+
+def test_tat_uu_tien_clip_khac_nhau_thi_dem_theo_doan(tmp_path, monkeypatch):
+    e = _eng(tmp_path, quet_tang_dan=True, quet_tang_dan_tu_gio=1.0,
+             quet_tang_dan_buoc_gio=3.0, quet_da_toc_do=False, top_n=5,
+             uu_tien_clip_khac_nhau=False)
+    da_cat = _dung_scan_nhieu(e, monkeypatch, 12 * 3600, so_ung_vien_moi_khuc=3,
+                              clip_theo_khuc=False)
+    p = tmp_path / "phim.mp4"
+    p.write_bytes(b"x")
+    e.scan_media(str(p), luu_lich_su=False)
+    assert max(da_cat) < 3 * 3600, "9 đoạn ≥ 5 suất nên dừng được"
+
+
+def test_chua_du_top_n_thi_phai_TAI_NOT_phan_con_lai(tmp_path, monkeypatch):
+    """Nửa còn lại của cùng một lỗi: không tải nốt thì có quét tiếp cũng vô nghĩa."""
+    from engine import ScanResult
+
+    e = _eng(tmp_path, tai_mot_phan=True, quet_tang_dan_tu_gio=10.0,
+             quet_tang_dan_buoc_gio=3.0, top_n=5)
+    monkeypatch.setattr(e, "require", lambda **k: None)
+    monkeypatch.setattr(e, "youtube_info", lambda url: {
+        "id": "abc", "title": "v", "duration": 66 * 3600, "channel": "",
+        "channel_id": "", "channel_url": "", "upload_date": ""})
+    lan_tai = []
+
+    def tai(url, vid, progress=None, gioi_han_giay=None):
+        lan_tai.append(gioi_han_giay)
+        return str(tmp_path / "f.mp4")
+
+    monkeypatch.setattr(e, "download_audio", tai)
+
+    def quet(path, **k):
+        r = ScanResult(source_name="v", duration_s=3 * 3600, pham_vi_quet_s=3 * 3600)
+        r.matches = [Match(clip="x.opus", start_s=1, end_s=2, matched_s=1,
+                           clip_offset_s=0, hashes=9999, confidence="chac")]
+        return r
+
+    monkeypatch.setattr(e, "scan_media", quet)
+    e.scan_youtube("https://youtu.be/abc", luu_lich_su=False)
+    assert lan_tai == [3 * 3600, None], "mới 1/5 đoạn thì phải tải nốt để tìm tiếp"
+
+
+# =====================================================================
+#  «Quét tăng dần» là CÔNG TẮC TỔNG của cả phần tải
+# =====================================================================
+
+def test_tat_quet_tang_dan_thi_TAI_TRON_dung_nhu_giao_dien_hua(tmp_path):
+    """app.py bảo "muốn quét trọn thì tắt «Quét tăng dần»". Lời hứa đó phải đúng.
+
+    Trước đây `_gioi_han_tai` chỉ đọc `tai_mot_phan`, mà trường này không có ô nào
+    trên giao diện — nên bỏ tick vẫn chỉ tải 3 tiếng đầu của video 66 tiếng, và
+    không có dấu hiệu nào cho thấy điều đó.
+    """
+    e = _eng(tmp_path, quet_tang_dan=False, tai_mot_phan=True,
+             quet_tang_dan_tu_gio=10.0, quet_tang_dan_buoc_gio=3.0)
+    assert e._gioi_han_tai(66 * 3600) is None
+
+
+def test_quet_tang_dan_bat_ma_tat_tai_mot_phan_van_hop_le(tmp_path):
+    """Chiều ngược lại phải giữ được: xử lý tăng dần nhưng tải trọn."""
+    e = _eng(tmp_path, quet_tang_dan=True, tai_mot_phan=False,
+             quet_tang_dan_tu_gio=10.0, quet_tang_dan_buoc_gio=3.0)
+    assert e._gioi_han_tai(66 * 3600) is None
+    assert len(e._doan_quet_tang_dan(66 * 3600)) > 1, "vẫn phải chia đoạn để quét"

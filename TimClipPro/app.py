@@ -316,8 +316,12 @@ def bao_cao_khong_co_ket_qua(results: list[ScanResult]) -> None:
                 st.markdown(
                     f"**Đã thử bù tốc độ {len(cd.da_thu_toc_do)} lượt** "
                     "(phòng trường hợp video bị tăng/giảm tốc để né nhận dạng)")
-                for x in cd.da_thu_toc_do:
-                    st.caption(f"• {x}")
+                for mo_ta_toc_do in cd.da_thu_toc_do:
+                    st.caption(f"• {mo_ta_toc_do}")
+            elif cd.ly_do_khong_bu_toc_do:
+                # Không nói ra thì «Bù tốc độ» bật trên giấy vẫn trông như đã chạy.
+                st.markdown("**Bù tốc độ: chưa chạy lượt nào**")
+                st.caption(cd.ly_do_khong_bu_toc_do)
             for canh in cd.canh_bao:
                 st.caption(f"⚠️ {canh}")
             st.caption(cd.tom_tat())
@@ -550,6 +554,15 @@ with st.sidebar:
                     "Mỗi lượt quét thêm (giờ)", 0.5, 24.0,
                     float(c.quet_tang_dan_buoc_gio), 0.5,
                     help="Phải DÀI HƠN clip gốc dài nhất trong kho đang dùng.")
+            # Đặt LỒNG trong «Quét tăng dần» là có chủ đích: tải một phần mà không
+            # quét tăng dần là tổ hợp vô nghĩa (tải 3 tiếng rồi vẫn tự nhận đã quét
+            # trọn video 40 tiếng). Trước đây trường này không có ô nào nên bỏ tick
+            # ô cha vẫn không tắt được nó — xem Engine._gioi_han_tai.
+            c.tai_mot_phan = st.checkbox(
+                "Chỉ TẢI phần cần quét trước", c.tai_mot_phan,
+                help="Tiết kiệm băng thông: tải đúng đoạn đầu cần quét, không thấy gì "
+                     "mới tải nốt phần còn lại. Đo trên video 66 tiếng: 18,4 GB xuống "
+                     "841 MB. Bỏ tick để tải trọn ngay từ đầu.")
         st.caption(
             f"Khúc gối hiệu lực tối đa hiện tại: {c.overlap_max_s} giây; "
             "clip dài có thể được ghép lại từ nhiều mảnh ở ranh giới."

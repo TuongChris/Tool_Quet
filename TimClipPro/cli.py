@@ -299,8 +299,10 @@ def main():
                 print(f"   Phễu: {cd.tom_tat()}")
                 if cd.manh_nhat_bi_loai is not None:
                     print(f"   Mạnh nhất bị loại: {cd.manh_nhat_bi_loai.mo_ta()}")
-                for x in cd.da_thu_toc_do:
-                    print(f"   Đã thử bù tốc độ: {x}")
+                for mo_ta_toc_do in cd.da_thu_toc_do:
+                    print(f"   Đã thử bù tốc độ: {mo_ta_toc_do}")
+                if not cd.da_thu_toc_do and cd.ly_do_khong_bu_toc_do:
+                    print(f"   Bù tốc độ: {cd.ly_do_khong_bu_toc_do}")
                 for canh in cd.canh_bao:
                     print(f"   ⚠️ {canh}")
         cd = getattr(kq, "chan_doan", None)

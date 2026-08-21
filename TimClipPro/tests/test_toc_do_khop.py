@@ -201,3 +201,62 @@ def test_chan_doan_ghi_lai_da_thu_va_cach_bu():
     assert "tempo_tried=1" in cd.dong_log()
     cd.toc_do_tim_duoc = "đo từ độ trôi"
     assert "tempo_recovered=1" in cd.dong_log()
+
+
+# =====================================================================
+#  «Chưa từng chạy» phải khác «đã chạy mà không thấy»
+#
+#  Cấu hình sống trên máy thật để `luoi_resample: []` và `luoi_tempo: []` (đánh đổi
+#  cố ý, xem docs/DA_TOC_DO.md — bỏ lưới quét mù để không phải trả giá 2,9× cho mỗi
+#  video âm tính). Hệ quả không cố ý: `_quet_da_toc_do` thoát ngay ở `if not hang_doi`
+#  TRƯỚC khi ghi gì vào `da_thu_toc_do`, nên file chẩn đoán ghi `da_thu_toc_do: []`
+#  y hệt ca đã thử 6 lượt. Nhìn vào đó, `quet_da_toc_do: true` trông như đang chạy
+#  trong khi nó chưa từng chạy một lượt nào — đúng điểm mù đã che việc lưới bị để
+#  rỗng suốt nhiều tuần.
+# =====================================================================
+
+def _eng_quet_rong(tmp_path):
+    e = _eng()
+    e.data_dir = str(tmp_path)
+    e._check_cancel = lambda: None
+    e._bao = lambda *a, **k: None
+    return e
+
+
+def test_khong_co_phuong_an_thi_ghi_ro_LY_DO(tmp_path):
+    e = _eng_quet_rong(tmp_path)
+    e.config.luoi_resample = []
+    e.config.luoi_tempo = []
+
+    assert e._quet_da_toc_do([], [], None, 0.9, 1.0, str(tmp_path)) == []
+
+    ly_do = e.chan_doan_quet.ly_do_khong_bu_toc_do
+    assert ly_do, "im lặng ở đây là thứ đã che mất lưới rỗng suốt nhiều tuần"
+    assert "luoi_resample" in ly_do, "phải chỉ đúng tên khoá cần sửa"
+    assert "CAO ĐỘ" in ly_do, "phải nói rõ kiểu né nào đang lọt"
+    assert str(e.config.toc_do_min_manh) in ly_do
+    assert e.chan_doan_quet.da_thu_toc_do == []
+
+
+def test_tran_so_luot_bang_0_co_ly_do_RIENG(tmp_path):
+    """Hai nguyên nhân khác nhau thì phải dẫn người dùng tới hai chỗ sửa khác nhau."""
+    e = _eng_quet_rong(tmp_path)
+    e.config.toc_do_toi_da_thu = 0
+
+    e._quet_da_toc_do([], [], None, 0.9, 1.0, str(tmp_path))
+
+    ly_do = e.chan_doan_quet.ly_do_khong_bu_toc_do
+    assert "toc_do_toi_da_thu" in ly_do
+    assert "luoi_resample" not in ly_do, "đừng chỉ nhầm sang khoá không liên quan"
+
+
+def test_co_phuong_an_thi_KHONG_ghi_ly_do_choi_bo(tmp_path):
+    """Rỗng = có chạy. Ghi lý do ở đây sẽ biến báo cáo đúng thành báo động giả."""
+    e = _eng_quet_rong(tmp_path)
+    e._bien_doi_khuc = lambda *a, **k: []      # dừng ngay sau khi đã ghi da_thu
+    e.config.luoi_resample = [0.98]
+
+    e._quet_da_toc_do(["chunk_0000000.wav"], [], None, 0.9, 1.0, str(tmp_path))
+
+    assert e.chan_doan_quet.da_thu_toc_do, "phải ghi nhận là ĐÃ thử"
+    assert e.chan_doan_quet.ly_do_khong_bu_toc_do == ""

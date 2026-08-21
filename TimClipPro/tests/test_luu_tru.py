@@ -7,7 +7,12 @@ import json
 import pytest
 
 import luu_tru
-from luu_tru import LoiDuLieu, doc_json_an_toan, ghi_json_an_toan
+from luu_tru import (
+    LoiDuLieu,
+    doc_json_an_toan,
+    ghi_json_an_toan,
+    ten_file_hop_le,
+)
 
 
 def test_file_chua_ton_tai_tra_mac_dinh_va_khong_tao_file(tmp_path):
@@ -124,3 +129,60 @@ def test_sua_archive_that_bai_giu_nguyen_file_cu(tmp_path, monkeypatch):
 
     assert archive.read_text(encoding="utf-8") == dong_cu
     assert not (tmp_path / "downloaded.txt.tmp").exists()
+
+
+# =====================================================================
+#  Đặt tên file: dấu hai chấm là bẫy IM LẶNG trên Windows
+#
+#  Lỗi thật 21/08/2026: `_luu_chan_doan` dùng `fingerprint_progress.ten_file_an_toan`
+#  (hàm rút gọn tên cho LOG, chỉ lọc ký tự điều khiển) để dựng đường dẫn. Tiêu đề
+#  «SML Movie: …» biến `open()` thành ghi vào NTFS Alternate Data Stream: nội dung
+#  chui vào stream, `os.listdir` chỉ thấy «SML Movie», `glob("*.json")` không thấy gì.
+#  Toàn bộ bản ghi chẩn đoán của kho SML mất trắng, để lại 5 file rác 0 byte mà chính
+#  vòng dọn theo `glob("*.json")` cũng không nhìn thấy để xoá.
+# =====================================================================
+
+def test_dau_hai_cham_bi_thay_the():
+    """Ký tự nguy hiểm nhất: không ném lỗi, chỉ lặng lẽ đổi nghĩa đường dẫn."""
+    assert ":" not in ten_file_hop_le("SML Movie: The Purge! [reaction]")
+
+
+@pytest.mark.parametrize("ky_tu", list(r'<>:"/\|?*'))
+def test_moi_ky_tu_windows_cam_deu_bi_thay(ky_tu):
+    assert ky_tu not in ten_file_hop_le(f"a{ky_tu}b")
+
+
+def test_ten_thiet_bi_dos_khong_bao_gio_duoc_dung():
+    """`open("CON.json", "w")` ghi ra console chứ không ra đĩa."""
+    for ten in ("CON", "con.json", "NUL", "COM1.json", "LPT9"):
+        assert ten_file_hop_le(ten) == "khong_ten", ten
+
+
+def test_cat_dau_cham_va_khoang_trang_cuoi():
+    """Windows tự bỏ chúng, nên "a. " và "a" là CÙNG một file — hai bản ghi đè nhau."""
+    assert ten_file_hop_le("bao cao. ") == "bao cao"
+    assert ten_file_hop_le("   ") == "khong_ten"
+
+
+def test_cat_ngan_roi_van_khong_de_lo_dau_cham_cuoi():
+    assert not ten_file_hop_le("x" * 119 + ". duoi", gioi_han=120).endswith(".")
+
+
+def test_ten_binh_thuong_giu_nguyen():
+    """Đừng băm nát tên đang tốt — người dùng còn phải đọc thư mục này."""
+    assert ten_file_hop_le("Bao cao ngay 21-08 (ban 2)_123") ==         "Bao cao ngay 21-08 (ban 2)_123"
+
+
+def test_ghi_json_voi_ten_da_lam_sach_thi_glob_TIM_RA(tmp_path):
+    """Chốt chặn ở tầng hành vi: ghi xong phải TÌM LẠI ĐƯỢC bằng glob."""
+    import glob
+    import os
+
+    ten = ten_file_hop_le("SML Movie: The Purge! [reaction]_123") + ".json"
+    ghi_json_an_toan(os.path.join(str(tmp_path), ten), {"a": 1})
+
+    ra = glob.glob(os.path.join(str(tmp_path), "*.json"))
+    assert len(ra) == 1, "không glob ra được nghĩa là bản ghi coi như mất"
+    assert json.load(open(ra[0], encoding="utf-8")) == {"a": 1}
+    assert not [f for f in os.listdir(tmp_path)
+                if os.path.getsize(tmp_path / f) == 0], "không được để lại file rác"

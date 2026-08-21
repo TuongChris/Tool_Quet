@@ -46,7 +46,11 @@ import channel
 import cau_hinh
 import ytdlp_chung
 import dossier
-from chan_doan_quet import ChanDoanQuet, ghi_nhan_bi_loai
+from chan_doan_quet import (
+    AUDFPRINT_KHONG_RA_MATCH,
+    ChanDoanQuet,
+    ghi_nhan_bi_loai,
+)
 from chap_nhan_khop import loc_chap_nhan
 from toc_do_khop import (
     HO_RESAMPLE,
@@ -72,7 +76,12 @@ from fingerprint_progress import (
     ten_file_an_toan,
 )
 from khoa import KhoaTienTrinh
-from luu_tru import LoiDuLieu, doc_json_an_toan, ghi_json_an_toan
+from luu_tru import (
+    LoiDuLieu,
+    doc_json_an_toan,
+    ghi_json_an_toan,
+    ten_file_hop_le,
+)
 from process_runner import ProcessSnapshot, run_observed_process
 from publication_date import ghi_log_chan_doan, resolve_publication_date
 
@@ -2629,6 +2638,15 @@ class Engine:
         cd = self.chan_doan_quet
         cd.da_chon = len(kq.matches)
         cd.chot_giai_doan()
+        # Trạng thái kho chỉ cần cho ca "audfprint không ra dòng nào": ở đó mô tả
+        # chung nêu nghi vấn "sai kho / kho rỗng" mà ta đã biết là không phải, và
+        # nghi vấn thừa đó từng khiến người dùng đi kiểm kho thay vì kết luận đúng
+        # là clip gốc chưa có trong kho. `db_clips()` có cache theo (đường dẫn,
+        # mtime, kích thước) và đã được nạp từ đầu lượt quét nên không tốn thêm I/O.
+        if cd.giai_doan_mat == AUDFPRINT_KHONG_RA_MATCH:
+            with contextlib.suppress(Exception):
+                cd.ten_kho = self.kho_dang_dung
+                cd.so_clip_kho = len(self.db_clips())
         if cd.so_khuc_cham_tran:
             cd.canh_bao.append(
                 f"{cd.so_khuc_cham_tran} khúc chạm trần --max-matches "
@@ -2669,7 +2687,11 @@ class Engine:
             },
             "phieu_phat_hien": cd.thanh_dict(),
         }
-        ten = ten_file_an_toan(f"{ban_ghi['video']}_{int(time.time())}") + ".json"
+        # `ten_file_an_toan` chỉ lọc ký tự ĐIỀU KHIỂN — nó sinh ra cho log, không phải
+        # để dựng đường dẫn. Dùng nó ở đây khiến mọi tiêu đề có dấu hai chấm ghi vào
+        # một NTFS Alternate Data Stream: bản ghi biến mất khỏi `glob("*.json")` và để
+        # lại file rác 0 byte. Xem `luu_tru.ten_file_hop_le`.
+        ten = ten_file_hop_le(f"{ban_ghi['video']}_{int(time.time())}") + ".json"
         ghi_json_an_toan(os.path.join(thu_muc, ten), ban_ghi)
         cu = sorted(glob.glob(os.path.join(thu_muc, "*.json")), key=os.path.getmtime)
         for path in cu[:-200]:
@@ -2770,8 +2792,20 @@ class Engine:
 
         Dùng chung ngưỡng và bước với quét tăng dần: phần tải về đúng bằng phần lượt
         quét đầu tiên cần, không thừa không thiếu.
+
+        ``quet_tang_dan`` là CÔNG TẮC TỔNG. Trước đây hàm này chỉ đọc ``tai_mot_phan``,
+        mà ``tai_mot_phan`` không có ô nào trên giao diện — nên người dùng bỏ tick
+        «Quét tăng dần cho video rất dài» theo đúng hướng dẫn của chính tool
+        (app.py, hộp «Đã dừng sớm ở N nguồn») vẫn chỉ tải 3 tiếng đầu của video 40
+        tiếng. Lời hứa "muốn quét trọn thì tắt ô này" bị phá ngay ở khâu TẢI, và
+        không có dấu hiệu nào cho thấy điều đó.
+
+        Chiều ngược lại vẫn hợp lệ và vẫn giữ được: ``quet_tang_dan`` bật +
+        ``tai_mot_phan`` tắt = tải trọn nhưng xử lý tăng dần.
         """
         cfg = self.config
+        if not getattr(cfg, "quet_tang_dan", False):
+            return None
         if not getattr(cfg, "tai_mot_phan", False):
             return None
         buoc = float(getattr(cfg, "quet_tang_dan_buoc_gio", 0) or 0) * 3600
@@ -2800,16 +2834,57 @@ class Engine:
             tu += buoc
         return doan or [(0.0, tong)]
 
-    def _co_ung_vien_dat(self, tho: list, duration: float) -> bool:
-        """Đã có ứng viên nào đạt tiêu chí chấp nhận chưa? Không đụng chẩn đoán cuối."""
+    def _ung_vien_dat(self, tho: list, duration: float) -> list:
+        """Các ứng viên đạt tiêu chí chấp nhận. Không đụng chẩn đoán cuối."""
         if not tho:
-            return False
+            return []
         ung_vien = self._merge(tho)
         if not ung_vien:
-            return False
+            return []
         self._gan_chi_so(ung_vien, duration)
         dat, _, _ = loc_chap_nhan(ung_vien, self.config)
-        return bool(dat)
+        return dat
+
+    def _co_ung_vien_dat(self, tho: list, duration: float) -> bool:
+        """Đã có ứng viên nào đạt tiêu chí chấp nhận chưa? Không đụng chẩn đoán cuối."""
+        return bool(self._ung_vien_dat(tho, duration))
+
+    def _du_de_dung_som(self, tho: list, duration: float) -> bool:
+        """Phần đã quét có đủ để KHÔNG cần quét tiếp không?
+
+        Câu hỏi đúng không phải "đã có ứng viên đạt chuẩn chưa" mà là "chính sách
+        chọn lọc hiện tại đã được thoả mãn chưa". Hai câu này chỉ trùng nhau khi
+        ``top_n = 1``. Trước đây chỉ hỏi câu đầu, nên đặt ``top_n = 5`` để lấy 5 bằng
+        chứng cho hồ sơ khiếu nại thì đoạn đầu tìm được ĐÚNG MỘT ứng viên là vòng lặp
+        dừng luôn — mất trắng 4 suất còn lại mà không có một dấu hiệu nào.
+
+        Lưu ý ``Config.top_n`` mặc định là **5**, không phải 1 — nên lỗi này KHÔNG
+        phải ca hiếm ở cấu hình lạ mà là hành vi mặc định. Phép đo trong CLAUDE.md
+        mục 12 (40 phút xuống 5,5 phút) chạy ở ``top_n = 1`` nên đã không chạm tới nó.
+
+        Điều kiện dừng: đã đủ ``top_n`` ứng viên đạt chuẩn. Nếu còn bật
+        ``uu_tien_clip_khac_nhau`` thì phải đủ ``top_n`` clip gốc KHÁC NHAU — năm đoạn
+        của cùng một clip chỉ điền được một suất, đếm gộp lại là tự lừa mình.
+
+        VÌ SAO KHÔNG chặn dừng sớm khi ``phan_bo_deu`` bật: đúng là ``_chon_loc`` sinh
+        ra để chứng minh vi phạm TRẢI DÀI toàn video, mà dừng ở 3 tiếng đầu thì không
+        chứng minh được điều đó. Nhưng chặn hẳn sẽ vô hiệu hoá tính năng ở đúng cấu
+        hình mặc định (``phan_bo_deu`` cũng mặc định bật), tức trả giá toàn bộ khoản
+        tiết kiệm để đổi lấy một thứ mà báo cáo ĐÃ nói thật: ``_gan_chi_so`` dán nhãn
+        vùng theo VIDEO THẬT nên năm đoạn lấy từ 3 tiếng đầu của video 35 tiếng đều
+        mang nhãn «Đầu», và ``kq.note`` ghi rõ đã dừng ở đâu. Người dùng nhìn ra ngay,
+        và tắt «Quét tăng dần» là quét trọn.
+        """
+        cfg = self.config
+        n = max(1, cfg.top_n)
+        dat = self._ung_vien_dat(tho, duration)
+        if not dat:
+            return False
+        if n <= 1:
+            return True
+        if cfg.uu_tien_clip_khac_nhau:
+            return len({m.clip for m in dat}) >= n
+        return len(dat) >= n
 
     def _bien_doi_khuc(self, chunks: list, he_so: float, ho: str,
                        workspace: str) -> list:
@@ -2877,6 +2952,27 @@ class Engine:
         cd = self.chan_doan_quet
         hang_doi = self._ke_hoach_toc_do(tho)
         if not hang_doi:
+            # Ghi RÕ vì sao không có gì để thử. Không ghi thì `da_thu_toc_do` rỗng
+            # trông y hệt ca "đã thử mà không thấy", và người dùng tin nhầm rằng lượt
+            # quét âm tính này đã được kiểm chống né tốc độ — trong khi nó chưa từng
+            # chạy một lượt nào. Đây chính là điểm mù đã che mất việc lưới quét mù bị
+            # để rỗng suốt nhiều tuần.
+            if max(0, cfg.toc_do_toi_da_thu) <= 0:
+                cd.ly_do_khong_bu_toc_do = (
+                    "Chưa thử bù tốc độ lượt nào: «Số lượt bù tốc độ tối đa» "
+                    "(toc_do_toi_da_thu) đang là 0."
+                )
+            else:
+                cd.ly_do_khong_bu_toc_do = (
+                    "Chưa thử bù tốc độ lượt nào: không đọc được độ trôi từ các mảnh "
+                    f"khớp (cần ≥{cfg.toc_do_min_manh} mảnh của CÙNG một clip gốc), "
+                    "mà cả hai lưới quét mù «luoi_tempo» và «luoi_resample» trong "
+                    "data/cau_hinh.json đều rỗng. Nghĩa là reup bị ĐỔI CAO ĐỘ sẽ "
+                    "không bắt được. Thêm mức vào «luoi_resample» nếu cần — đánh đổi "
+                    "là mỗi video không có kết quả sẽ quét lâu hơn khoảng 2,9 lần."
+                )
+            LOGGER_SCAN.info("event=scan.tempo.skipped reason=%s",
+                             "khong_co_phuong_an")
             return []
 
         def uoc_lai(tat_ca_tho: list) -> list:
@@ -2992,7 +3088,7 @@ class Engine:
                     # DỪNG KHI THẤY: đã có bằng chứng đạt chuẩn thì phần còn lại không
                     # đổi được kết luận. Không mất độ phủ vì nếu KHÔNG thấy gì, vòng lặp
                     # vẫn chạy hết video.
-                    if len(doan) > 1 and self._co_ung_vien_dat(tho, tong):
+                    if len(doan) > 1 and self._du_de_dung_som(tho, tong):
                         break
                 if not chunks:
                     raise RuntimeError("Không cắt được khúc nào từ file này.")
@@ -3073,10 +3169,18 @@ class Engine:
             r = self.scan_media(f, label=kq.source_name, ref=url,
                                 source_type="youtube", progress=progress,
                                 luu_lich_su=False, pct_start=0.40)
-            if gioi_han and not r.matches:
-                # Phần đầu sạch không kết luận được gì cho cả video: phải tải nốt.
+            can_top_n = max(1, self.config.top_n)
+            if gioi_han and len(r.matches) < can_top_n:
+                # Phần đầu chưa đủ kết luận cho cả video: phải tải nốt.
+                #
+                # So với `top_n` chứ không so với 0. Với `top_n = 5`, tìm được 1 đoạn
+                # trong 3 tiếng đầu KHÔNG có nghĩa là đã xong: 4 suất còn lại nằm ở
+                # phần chưa tải, và điều kiện cũ `not r.matches` khiến chúng mất trắng.
+                # Với `top_n = 1` (mặc định) điều kiện này y hệt điều kiện cũ.
+                thieu = (f"mới có {len(r.matches)}/{can_top_n} đoạn"
+                         if r.matches else "không thấy gì")
                 self._bao(progress, 0.40,
-                          f"Không thấy gì trong {hhmmss(gioi_han)} đầu — "
+                          f"{thieu.capitalize()} trong {hhmmss(gioi_han)} đầu — "
                           "tải nốt phần còn lại để quét trọn...")
                 f = self.download_audio(url, info["id"], progress)
                 r = self.scan_media(f, label=kq.source_name, ref=url,

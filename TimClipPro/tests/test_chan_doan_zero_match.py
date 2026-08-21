@@ -376,3 +376,120 @@ def test_dung_som_co_the_bo_qua_ung_vien_ty_le_cao_hon_o_sau(monkeypatch):
     )
     tho2 = e2._quet_tho(["c1", "c2", "c3"], 24204.0, None, 0.0, 1.0, "ws")
     assert len(tho2) == 2 and e2.chan_doan_quet.duong_di == "quet_toan_bo"
+
+
+# =====================================================================
+#  Nói ĐÚNG nguyên nhân cho hai ca từng đẩy người dùng đi sửa nhầm chỗ
+#
+#  Bối cảnh 21/08/2026: người dùng gửi 4 link kênh "SML Remix" kèm ảnh báo cáo và
+#  hỏi "có phải chúng ta vừa xoá gì làm hỏng tool không". Quét lại bằng chính bản
+#  HEAD cho ra ĐÚNG kết quả cũ, và lịch sử cho thấy 4 link đó đã 0 kết quả từ
+#  17/08 — tức trước mọi commit bị nghi. Nguyên nhân thật: clip gốc của chúng
+#  không có trong kho (SML đã xoá các video đó khỏi kênh).
+#
+#  Cái HỎNG là câu chẩn đoán, không phải phễu quét:
+#    * 3/4 link rơi vào `khong_dat_chap_nhan` -> câu cũ nghe như chính sách quá
+#      chặt, phản xạ đầu tiên là hạ ngưỡng. Cả ba đều bị loại bởi CÙNG một clip
+#      («Jeffy Wick») với ~380 hash trong ~10 giây — nhạc hiệu dùng chung.
+#    * 1/4 link rơi vào `audfprint_khong_ra_match` -> câu cũ nêu nghi vấn "sai kho
+#      vân tay, kho rỗng" trong khi kho vừa nạp xong 756 clip.
+# =====================================================================
+
+def test_khong_ra_match_khong_do_loi_cho_kho_khi_kho_nap_binh_thuong():
+    """Số thật của link 37m03OWg4Ao: 1 khúc, 0 dòng khớp, kho SML 756 clip."""
+    cd = ChanDoanQuet(so_khuc=1, dong_co_matched=0,
+                      ten_kho="SML", so_clip_kho=756)
+    cd.chot_giai_doan()
+    cau = cd.mat_o_dau()
+    assert "756 clip" in cau and "SML" in cau
+    assert "chưa có trong kho" in cau
+    # Đúng thứ khiến người dùng đi kiểm nhầm kho phải biến mất.
+    assert "kho rỗng" not in cau and "sai kho vân tay" not in cau
+
+
+def test_khong_ra_match_van_giu_nghi_van_kho_khi_chua_biet_trang_thai_kho():
+    """Không đọc được kho thì KHÔNG được khẳng định kho lành — phải giữ câu cũ."""
+    cd = ChanDoanQuet(so_khuc=1, dong_co_matched=0)
+    cd.chot_giai_doan()
+    assert cd.mat_o_dau() == cd_mod.MO_TA_GIAI_DOAN[cd_mod.AUDFPRINT_KHONG_RA_MATCH]
+
+
+def test_moi_ung_vien_deu_la_nhac_hieu_thi_noi_thang_dung_ha_nguong():
+    """Số thật của link hyT8yDivkHE: 3 ứng viên, đều ~10s và phủ dưới 1%."""
+    cd = ChanDoanQuet(so_khuc=1, dong_co_matched=6, parse_duoc=6,
+                      qua_min_match_s=3, gop_lai=3)
+    loai = [_m(386, 0.7, 11.3), _m(365, 0.8, 10.9), _m(302, 0.5, 7.6)]
+    ghi_nhan_bi_loai(cd, loai, {})
+    cd.chot_giai_doan()
+    assert cd.dau_hieu_nhac_hieu is True
+    cau = cd.mat_o_dau()
+    assert "nhạc hiệu" in cau and "Hạ ngưỡng lúc này sẽ tạo báo cáo sai" in cau
+
+
+def test_mot_ung_vien_khop_dai_thi_KHONG_goi_la_nhac_hieu():
+    """Chốt chặn quan trọng nhất: có bằng chứng dài thì không được đổ cho nhạc hiệu.
+
+    Nếu chỉ xét ứng viên MẠNH NHẤT theo số hash, ca này sẽ bị gán nhầm nhãn
+    "toàn nhạc hiệu" và người dùng bỏ qua một reup thật chỉ vì tin câu chẩn đoán.
+    """
+    cd = ChanDoanQuet(so_khuc=1, dong_co_matched=9, parse_duoc=9,
+                      qua_min_match_s=2, gop_lai=2)
+    loai = [_m(386, 0.7, 11.3), _m(120, 0.4, 240.0)]   # cái sau khớp 4 phút
+    ghi_nhan_bi_loai(cd, loai, {})
+    cd.chot_giai_doan()
+    assert cd.dau_hieu_nhac_hieu is False
+    assert "nhạc hiệu" not in cd.mat_o_dau()
+
+
+def test_mot_manh_vun_don_le_chua_du_goi_la_nhac_hieu_DUNG_CHUNG():
+    cd = ChanDoanQuet(so_khuc=1, dong_co_matched=2, parse_duoc=2,
+                      qua_min_match_s=1, gop_lai=1)
+    ghi_nhan_bi_loai(cd, [_m(386, 0.7, 11.3)], {})
+    cd.chot_giai_doan()
+    assert cd.dau_hieu_nhac_hieu is False
+
+
+def test_trang_thai_kho_di_vao_ban_ghi_chan_doan():
+    cd = ChanDoanQuet(so_khuc=1, dong_co_matched=0, ten_kho="SML", so_clip_kho=756)
+    cd.chot_giai_doan()
+    d = cd.thanh_dict()
+    assert d["so_clip_kho"] == 756 and d["ten_kho"] == "SML"
+    assert d["dau_hieu_nhac_hieu"] is False
+
+
+def test_ban_ghi_chan_doan_cua_video_CO_DAU_HAI_CHAM_khong_duoc_bien_mat(tmp_path):
+    """Lỗi thật 21/08/2026 — im lặng tuyệt đối, mất gần như toàn bộ bản ghi kho SML.
+
+    `_luu_chan_doan` dựng tên file bằng `fingerprint_progress.ten_file_an_toan`, hàm
+    chỉ lọc ký tự ĐIỀU KHIỂN vì nó sinh ra cho log chứ không phải cho đường dẫn. Tiêu
+    đề «SML Movie: …» khiến `open()` ghi vào một NTFS Alternate Data Stream: nội dung
+    chui vào stream, thư mục chỉ hiện một file RỖNG tên «SML Movie», `glob("*.json")`
+    không thấy gì. Nơi gọi lại bọc `contextlib.suppress(Exception)` nên không một dấu
+    hiệu nào lọt ra. Đúng những video người dùng quan tâm nhất là những video mất bản
+    ghi — «SML Movie: …», «SML ROBLOX: …», «SML Parody: …».
+    """
+    import glob
+    import os
+
+    from engine import Engine, ScanResult
+
+    e = Engine.__new__(Engine)
+    e.data_dir = str(tmp_path)
+    e.kho_dang_dung = "SML"
+    e.db_file = str(tmp_path / "kho.pklz")
+    e.config = Config()
+
+    cd = ChanDoanQuet(so_khuc=1, dong_co_matched=0, ten_kho="SML", so_clip_kho=756)
+    cd.chot_giai_doan()
+    e._luu_chan_doan(
+        ScanResult(source_name="SML Movie: The Purge! [reaction]", duration_s=1046.0),
+        cd,
+    )
+
+    thu_muc = os.path.join(str(tmp_path), "chan_doan")
+    ra = glob.glob(os.path.join(thu_muc, "*.json"))
+    assert len(ra) == 1, "glob không thấy nghĩa là bản ghi coi như mất trắng"
+    assert not [f for f in os.listdir(thu_muc)
+                if os.path.getsize(os.path.join(thu_muc, f)) == 0], "để lại file rác"
+    import json
+    assert json.load(open(ra[0], encoding="utf-8"))["phieu_phat_hien"]["so_clip_kho"] == 756

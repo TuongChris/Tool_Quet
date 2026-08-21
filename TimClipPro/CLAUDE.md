@@ -456,6 +456,138 @@ Còn để lại: client mặc định (có audio-only, 3 tiếng chỉ ~66 MB t
 **Bài học quy trình:** khi vá code bằng tìm-thay chuỗi, PHẢI kiểm tra lại là bản vá đã áp
 dụng thật (chạy test tích hợp), vì chuỗi cũ có thể đã bị đổi ở lần vá trước.
 
+**14. "Tool hỏng rồi" hoá ra là ÂM TÍNH ĐÚNG — lỗi nằm ở câu chẩn đoán (21/08/2026).**
+
+Người dùng gửi 4 link kênh `SML Remix` kèm ảnh báo cáo 0 kết quả và hỏi "có phải hôm
+qua mình xoá gì làm hỏng cả tool không". Không có gì hỏng cả:
+
+| Kiểm chứng | Kết quả |
+|---|---|
+| Lịch sử 4 link đó | đã 0 kết quả từ **17/08**, tức TRƯỚC mọi commit bị nghi |
+| Cùng kênh, cùng kho, cùng sáng 21/08 | `91uQvipfkow` **16.445 hash**, `2YWROJViBw4` **24.809**, `q24gBBLI3dM` **58.569** |
+| Toàn bộ 21/08 | 178 lượt quét, 116 có kết quả |
+| Test + ruff | 926 passed, sạch |
+| Kho SML | 756 clip, phủ **đúng 100%** 759 video còn trên kênh SML |
+
+Nguyên nhân thật: `SML Remix` chuyên reup video SML **đã bị xoá khỏi kênh gốc**. Video
+đã xoá thì không tải về làm vân tay tham chiếu được, nên clip gốc vĩnh viễn không có
+trong kho. Đo trên chính kênh đó: tool đã quét 298/915 video, **24,5% ra kết quả,
+68,8% ra 0** — 4 link kia rơi đúng vào nhóm 68,8%, hoàn toàn bình thường.
+
+**Cái thật sự hỏng là CÂU CHẨN ĐOÁN, và nó hỏng theo hướng nguy hiểm nhất: đẩy người
+dùng đi sửa nhầm chỗ.** Hai ca:
+
+* `audfprint_khong_ra_match` nêu nghi vấn "sai kho vân tay, **kho rỗng**" trong khi
+  kho vừa nạp xong 756 clip — hệ thống ĐÃ BIẾT hai nghi vấn đó là sai mà vẫn nêu.
+* `khong_dat_chap_nhan` nghe như CHÍNH SÁCH quá chặt nên phản xạ đầu tiên là hạ
+  ngưỡng. Trong khi cả 3 link đều bị loại bởi CÙNG một clip («Jeffy Wick») với
+  ~380 hash trong ~10 giây — nhạc hiệu dùng chung. Hạ ngưỡng ở đây là hỏng thật.
+
+Đã sửa: `ChanDoanQuet` mang thêm `ten_kho`/`so_clip_kho` (engine đổ vào ở
+`_chot_chan_doan`, dùng cache `db_clips()` nên không tốn I/O) và cờ `dau_hieu_nhac_hieu`
+(`_deu_la_nhac_hieu` trong chan_doan_quet.py). Câu chung được thay bằng câu chỉ đúng
+nguyên nhân. Sửa ở tầng `mat_o_dau()` nên CẢ giao diện và CLI cùng hưởng, không phải
+vá hai nơi.
+
+**Ràng buộc không được phá:** `_deu_la_nhac_hieu` đòi **MỌI** ứng viên đều dưới ngưỡng
+(phủ <5%, khớp <30s) và phải có **≥2** ứng viên. Xét theo ứng viên MẠNH NHẤT là sai:
+chỉ cần một ứng viên khớp dài là lượt đó không còn thuộc ca này, gán nhãn "toàn nhạc
+hiệu" sẽ khiến người dùng bỏ qua một reup thật. Test
+`test_mot_ung_vien_khop_dai_thi_KHONG_goi_la_nhac_hieu` khoá đúng ca đó. Quan sát
+thực tế của bản vá: link `JVdXCI63mTM` có 10 ứng viên nên KHÔNG được gắn nhãn — bảo
+thủ đúng như thiết kế.
+
+**Đính chính một số đo ở mục 11.** Bảng "48 kbps -> 100,3% hash" đo **số hash SINH RA**,
+không phải **số hash KHỚP** — hai đại lượng khác nhau và chỉ cái sau mới quyết định
+kết quả. Đo lại trên `91uQvipfkow` (bản reup thật, khớp clip *Jeffy's Trophy!*):
+
+    nguồn 128 kbps AAC      14.503 hash (mạnh nhất) | 44.006 tổng
+    ép qua opus 48k          11.685 hash (-19,4%)   | 35.252 tổng (-19,9%)
+
+Tức trần `ba[abr<=70]` CÓ làm giảm bằng chứng ~20%, không phải ~0% như bảng cũ hàm ý.
+Nhưng **không đổi kết luận nào**: 11.685 vẫn gấp 11 lần `min_hash_floor`. Lưu ý phép đo
+này dùng nén ĐỜI 2 (AAC→opus) nên là CẬN TRÊN của thiệt hại; opus 50k gốc của YouTube
+sẽ tốt hơn. Hiện chưa đo trực tiếp được vì mọi format audio-only vẫn 403 (xem mục 11).
+
+**Bài học:** khi một kết quả âm tính bị nghi là bug, thứ phải kiểm ĐẦU TIÊN là lịch sử
+(`data/lichsu.db`) và một ĐỐI CHỨNG DƯƠNG cùng kênh/cùng ngày — rẻ hơn đọc code rất
+nhiều và trả lời dứt điểm câu "có phải mới hỏng không".
+
+**15. Ba việc còn để lại của mục 14, và một bug thứ tư lộ ra khi kiểm chứng (21/08/2026).**
+
+**15a. `da_thu_toc_do: []` gộp chung "chưa từng chạy" với "chạy rồi mà không thấy".**
+Cấu hình sống để `luoi_resample: []` và `luoi_tempo: []` — **đánh đổi CỐ Ý, có tài liệu**
+(`docs/DA_TOC_DO.md:184`: bỏ lưới quét mù để khỏi trả giá 2,9× cho mỗi video âm tính).
+Hệ quả KHÔNG cố ý: `_quet_da_toc_do` thoát ngay ở `if not hang_doi` TRƯỚC khi ghi gì
+vào `da_thu_toc_do`, nên `quet_da_toc_do: true` trông như đang chạy trong khi nó chưa
+từng chạy một lượt nào — điểm mù đã che việc lưới bị để rỗng suốt nhiều tuần.
+
+Đã sửa: `ChanDoanQuet.ly_do_khong_bu_toc_do` nói rõ nguyên nhân và chỉ đúng tên khoá
+cần sửa, hiện ở cả giao diện lẫn CLI. **KHÔNG tự lật lưới về mặc định** — đó là quyết
+định đánh đổi tốc độ của người dùng, việc của tool là làm nó NHÌN THẤY ĐƯỢC.
+Phần bù tốc độ vẫn hoạt động cho video bị đổi TỐC ĐỘ (đọc độ trôi, ±6%); chỉ video bị
+đổi CAO ĐỘ là lọt.
+
+**15b. Tắt «Quét tăng dần» không tắt được tải một phần.** `app.py` bảo người dùng
+"muốn quét trọn thì tắt «Quét tăng dần»", nhưng `_gioi_han_tai` chỉ đọc `tai_mot_phan`
+— trường KHÔNG có ô nào trên giao diện. Bỏ tick xong vẫn chỉ tải 3 tiếng đầu của video
+40 tiếng, không một dấu hiệu nào. Đã sửa: `quet_tang_dan` là CÔNG TẮC TỔNG, và
+`tai_mot_phan` có ô riêng LỒNG bên trong. Chiều `quet_tang_dan` bật + `tai_mot_phan`
+tắt (tải trọn, xử lý tăng dần) vẫn hợp lệ và có test canh.
+
+**15c. Dừng sớm bỏ qua `top_n` — và `Config.top_n` mặc định là 5, không phải 1.**
+`_co_ung_vien_dat` trả True ngay ở ứng viên ĐẦU TIÊN, nên đặt `top_n=5` để lấy 5 bằng
+chứng cho hồ sơ khiếu nại thì đoạn đầu tìm được 1 ứng viên là dừng luôn — mất trắng 4
+suất. Phép đo ở mục 12 chạy ở `top_n=1` nên không chạm tới. Nửa còn lại của cùng lỗi:
+`scan_youtube` chỉ tải nốt khi `not r.matches`.
+
+Đã sửa: `_du_de_dung_som` hỏi "chính sách chọn lọc đã thoả mãn chưa" — đủ `top_n` ứng
+viên, và đủ `top_n` CLIP KHÁC NHAU khi bật `uu_tien_clip_khac_nhau` (năm đoạn của cùng
+một clip chỉ điền được một suất). `scan_youtube` so với `top_n` thay vì với 0.
+
+**Cân nhắc đã bác bỏ:** chặn hẳn dừng sớm khi `phan_bo_deu` bật. Đúng về ngữ nghĩa
+(không thể kết luận "trải dài toàn video" từ 3 tiếng đầu) nhưng `phan_bo_deu` cũng mặc
+định bật, nên sẽ vô hiệu hoá toàn bộ tính năng ở cấu hình mặc định. Báo cáo ĐÃ nói thật:
+`_gan_chi_so` dán nhãn vùng theo VIDEO THẬT nên 5 đoạn lấy từ 3 tiếng đầu đều mang nhãn
+«Đầu», và `note` ghi rõ đã dừng ở đâu. **Giá phải trả cần biết:** với `top_n>1`, video
+dài nay bị tải/quét nhiều hơn hẳn trước — đó là cái giá đúng của việc thật sự đi tìm đủ
+`top_n` bằng chứng. Máy đang chạy để `top_n: 1` nên không đổi gì.
+
+**15d. BUG THỨ TƯ — dấu hai chấm trong tiêu đề làm MẤT TRẮNG bản ghi chẩn đoán.**
+Lộ ra khi kiểm chứng 15a: quét xong, CLI in đúng chẩn đoán mới nhưng `data/chan_doan/`
+không hề có file mới.
+
+Nguyên nhân: `_luu_chan_doan` dựng tên file bằng `fingerprint_progress.ten_file_an_toan`
+— hàm chỉ lọc ký tự ĐIỀU KHIỂN vì nó sinh ra để rút gọn tên cho LOG, không phải để dựng
+đường dẫn. Trên Windows, ghi vào `chan_doan\SML Movie: Abc.json` **không ném lỗi**: nó
+tạo một file RỖNG tên «SML Movie» kèm NTFS Alternate Data Stream tên «Abc.json». Nội
+dung nằm trong stream, `os.listdir` chỉ thấy «SML Movie», `glob("*.json")` không thấy gì.
+Ghi nguyên tử qua `.tmp` + `os.replace` còn hỏng nốt trên đường ADS nên rốt cuộc **không
+lưu được gì cả**, chỉ để lại file rác 0 byte. Nơi gọi bọc `contextlib.suppress(Exception)`
+nên im lặng tuyệt đối.
+
+Phạm vi: mọi video có dấu hai chấm trong tiêu đề — tức gần như TOÀN BỘ kho SML
+(«SML Movie: …», «SML ROBLOX: …», «SML Parody: …»). Đúng những video người dùng quan tâm
+nhất là những video mất bản ghi. Máy thật còn 5 file rác 0 byte (`SML Movie`, `SML Parody`,
+`SML ROBLOX`, `SML Story`, `SML YTP`), đã kiểm bằng `Get-Item -Stream *`: không stream nào
+còn dữ liệu, nên xoá là an toàn. Vòng dọn giữ-200-file cũng đi theo `glob("*.json")` nên
+không bao giờ nhìn thấy chúng để dọn.
+
+Đã sửa: `luu_tru.ten_file_hop_le()` — lọc `<>:"/\|?*` và ký tự điều khiển, cắt dấu
+chấm/khoảng trắng CUỐI (Windows tự bỏ chúng nên `"a. "` và `"a"` là cùng một file), chặn
+tên thiết bị DOS (`CON.json` ghi ra console chứ không ra đĩa).
+
+→ **Quy tắc: `ten_file_an_toan` là hàm HIỂN THỊ, `ten_file_hop_le` là hàm ĐƯỜNG DẪN.
+Đừng bao giờ dựng tên file từ dữ liệu người dùng bằng hàm dành cho log.**
+→ **Bài học rộng hơn: `contextlib.suppress(Exception)` quanh một thao tác ghi biến mất
+mát dữ liệu thành vô hình.** Nếu không tình cờ đếm số file trước/sau khi quét thì bug này
+còn nằm đó vô thời hạn. Test `test_ghi_json_voi_ten_da_lam_sach_thi_glob_TIM_RA` và
+`test_ban_ghi_chan_doan_cua_video_CO_DAU_HAI_CHAM_khong_duoc_bien_mat` khoá lại ở cả tầng
+hàm thuần lẫn tầng engine — chốt chặn là **glob phải TÌM RA**, không phải "ghi không ném lỗi".
+
+Kiểm chứng cả mục 15: 952 passed, ruff sạch, đã kiểm đột biến từng nhánh (8 đột biến,
+mỗi cái bị đúng test bắt), và chạy quét thật để xác nhận bản ghi nay lưu được.
+
 ## Quy trình Spec-Driven (Claude lập kế hoạch → Codex viết code)
 
 Khi tôi yêu cầu một tính năng mới, ĐỪNG viết code ngay. Hãy:
