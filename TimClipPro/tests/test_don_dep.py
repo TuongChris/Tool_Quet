@@ -230,6 +230,7 @@ def test_cli_dondep_xem_truoc_khong_xoa(monkeypatch, capsys, tmp_path):
     loi_goi = []
     engine_gia = SimpleNamespace(
         dl_dir=str(tmp_path),
+        data_dir=str(tmp_path),
         config=SimpleNamespace(
             ncores=1,
             dem_max_gb=20.0,
@@ -266,3 +267,126 @@ def test_config_co_ngan_sach_kho_dem_mac_dinh():
 
     assert config.dem_max_gb == 20.0
     assert config.dem_max_ngay == 7
+
+
+# ---------------------------------------------------------------------------
+# Dọn thư mục job quét mồ côi trong data/scan_jobs
+# ---------------------------------------------------------------------------
+
+def _job_gia(goc, ten, tuoi_giay, so_chunk=2, bay_gio=None):
+    """Dựng một thư mục job giả kèm chunk, rồi lùi mtime của FILE về đúng tuổi."""
+    import time as _t
+
+    moc = (bay_gio if bay_gio is not None else _t.time()) - tuoi_giay
+    d = goc / ten
+    (d / "chunks").mkdir(parents=True)
+    (d / "_ds_khuc.txt").write_bytes(b"x" * 10)
+    for i in range(so_chunk):
+        (d / "chunks" / f"chunk_{i:07d}.wav").write_bytes(b"y" * 1000)
+    for f in d.rglob("*"):
+        if f.is_file():
+            os.utime(f, (moc, moc))
+    os.utime(d, (moc, moc))
+    return d
+
+
+def test_don_job_xoa_thu_muc_qua_tuoi(tmp_path):
+    bay_gio = 1_000_000.0
+    cu = _job_gia(tmp_path, "cu", 30 * 24 * 3600, bay_gio=bay_gio)
+    moi = _job_gia(tmp_path, "moi", 60, bay_gio=bay_gio)
+
+    kq = don_dep.don_job_quet(str(tmp_path), max_ngay=7, bay_gio=bay_gio)
+
+    assert kq["tong_job"] == 2
+    assert kq["xoa_job"] == 1
+    assert kq["bo_qua_dang_chay"] == 1
+    assert not cu.exists()
+    assert moi.exists()
+
+
+def test_don_job_khong_bao_gio_xoa_job_vua_ghi(tmp_path):
+    """Chốt chặn quan trọng nhất: `max_ngay=1` không được giết lượt quét đang chạy.
+
+    Một video 30 tiếng ghi chunk liên tục hàng giờ. Nếu ngưỡng tuổi được lấy
+    nguyên như người dùng đặt, thư mục của lượt đang chạy vẫn có thể lọt vào diện
+    xoá — mất trắng công việc đang làm dở, và lỗi hiện ra ở chỗ chẳng liên quan.
+    """
+    bay_gio = 1_000_000.0
+    dang_chay = _job_gia(tmp_path, "dang_chay", 120, bay_gio=bay_gio)  # 2 phút trước
+
+    kq = don_dep.don_job_quet(str(tmp_path), max_ngay=1, bay_gio=bay_gio)
+
+    assert kq["xoa_job"] == 0
+    assert kq["bo_qua_dang_chay"] == 1
+    assert dang_chay.exists()
+
+
+def test_don_job_max_ngay_khong_duong_thi_khong_xoa_gi(tmp_path):
+    """Giữ đúng quy ước của `don_kho_dem`: không có tiêu chí tuổi = không xoá."""
+    bay_gio = 1_000_000.0
+    cu = _job_gia(tmp_path, "rat_cu", 365 * 24 * 3600, bay_gio=bay_gio)
+
+    kq = don_dep.don_job_quet(str(tmp_path), max_ngay=0, bay_gio=bay_gio)
+
+    assert kq["xoa_job"] == 0
+    assert kq["tong_job"] == 1
+    assert cu.exists()
+
+
+def test_don_job_tuoi_tinh_theo_file_moi_nhat_ben_trong(tmp_path):
+    """Trên Windows mtime thư mục không đổi khi ghi vào thư mục con.
+
+    Nếu đọc mtime của chính thư mục job, một lượt quét đang ghi chunk sẽ trông như
+    đã cũ hàng giờ và bị xoá nhầm. Test dựng đúng cảnh đó: thư mục mang mtime rất
+    cũ, nhưng bên trong có một chunk vừa mới ghi.
+    """
+    bay_gio = 1_000_000.0
+    d = _job_gia(tmp_path, "vo_cu_ruot_moi", 30 * 24 * 3600, bay_gio=bay_gio)
+    moi = d / "chunks" / "chunk_9999999.wav"
+    moi.write_bytes(b"z" * 500)
+    os.utime(moi, (bay_gio - 30, bay_gio - 30))   # vừa ghi 30 giây trước
+
+    kq = don_dep.don_job_quet(str(tmp_path), max_ngay=7, bay_gio=bay_gio)
+
+    assert kq["xoa_job"] == 0, "thư mục có file vừa ghi thì phải giữ lại"
+    assert d.exists()
+
+
+def test_don_job_xem_truoc_khong_xoa(tmp_path):
+    bay_gio = 1_000_000.0
+    cu = _job_gia(tmp_path, "cu", 30 * 24 * 3600, bay_gio=bay_gio)
+
+    kq = don_dep.don_job_quet(
+        str(tmp_path), max_ngay=7, thuc_hien=False, bay_gio=bay_gio)
+
+    assert kq["xoa_job"] == 1
+    assert kq["xoa_gb"] > 0
+    assert cu.exists(), "chế độ xem trước tuyệt đối không được xoá"
+
+
+def test_don_job_bo_qua_file_le_va_thu_muc_khong_ton_tai(tmp_path):
+    bay_gio = 1_000_000.0
+    (tmp_path / "mot_file_le.txt").write_bytes(b"x")
+    _job_gia(tmp_path, "cu", 30 * 24 * 3600, bay_gio=bay_gio)
+
+    kq = don_dep.don_job_quet(str(tmp_path), max_ngay=7, bay_gio=bay_gio)
+    assert kq["tong_job"] == 1, "file lẻ không được tính là job"
+    assert (tmp_path / "mot_file_le.txt").exists()
+
+    trong = don_dep.don_job_quet(str(tmp_path / "khong_co"), max_ngay=7)
+    assert trong["tong_job"] == 0 and trong["loi"] == []
+
+
+def test_don_job_loi_xoa_duoc_ghi_lai_va_khong_nem_ra(tmp_path, monkeypatch):
+    bay_gio = 1_000_000.0
+    _job_gia(tmp_path, "cu", 30 * 24 * 3600, bay_gio=bay_gio)
+
+    def rmtree_hong(path, *a, **k):
+        raise OSError("file đang bị khoá")
+
+    monkeypatch.setattr(don_dep.shutil, "rmtree", rmtree_hong)
+    kq = don_dep.don_job_quet(str(tmp_path), max_ngay=7, bay_gio=bay_gio)
+
+    assert kq["xoa_job"] == 0
+    assert len(kq["loi"]) == 1
+    assert "đang bị khoá" in kq["loi"][0]

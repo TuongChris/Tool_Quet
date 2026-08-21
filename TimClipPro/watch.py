@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 
 import bang_ngang
 from channel import ChannelSync
-from don_dep import don_kho_dem
+from don_dep import don_job_quet, don_kho_dem
 from khoa import DangChayRoi, KhoaTienTrinh
 from luu_tru import doc_json_an_toan, ghi_json_an_toan
 from sheets import SheetsExporter
@@ -338,6 +338,22 @@ def _chay_giam_sat_da_khoa(
             )
         except Exception as e:  # noqa: BLE001
             bao_cao.loi.append(f"Không dọn được kho đệm: {e}")
+
+        # Máy chạy watch theo lịch là nơi rác job tích luỹ nhanh nhất: quét liên
+        # tục hàng đêm, và mỗi lượt bị ngắt giữa chừng để lại vài GB chunk WAV.
+        # Bọc riêng try để lỗi ở đây không nuốt mất kết quả dọn kho đệm ở trên.
+        try:
+            ket_qua_job = don_job_quet(
+                os.path.join(engine.data_dir, "scan_jobs"),
+                max_ngay=engine.config.dem_max_ngay,
+            )
+            bao_cao.da_don_gb += ket_qua_job["xoa_gb"]
+            bao_cao.loi.extend(
+                f"Dọn thư mục job: {dong}"
+                for dong in ket_qua_job["loi"]
+            )
+        except Exception as e:  # noqa: BLE001
+            bao_cao.loi.append(f"Không dọn được thư mục job: {e}")
 
 
 def _thuc_hien_giam_sat(

@@ -207,8 +207,25 @@ def main():
             f"{hanh_dong}: {ket_qua['xoa_file']} file, "
             f"{ket_qua['xoa_gb']:.3f} GB."
         )
-        if ket_qua["loi"]:
-            print("Lỗi:", *ket_qua["loi"], sep="\n  - ")
+        # Thư mục job quét mồ côi: quét xong bình thường là engine tự xoá, nên còn
+        # sót nghĩa là có lượt bị kill/crash. Mỗi thư mục giữ chunk WAV đã giải mã,
+        # đo thật 246 MB đến 3,2 GB một cái — không dọn thì đầy ổ lúc nào không hay.
+        job = don_dep.don_job_quet(
+            os.path.join(eng.data_dir, "scan_jobs"),
+            max_ngay=eng.config.dem_max_ngay,
+            thuc_hien=not a.xem_truoc,
+        )
+        print(
+            f"Thư mục job quét: {job['tong_job']} thư mục, "
+            f"{job['tong_gb']:.3f} GB.\n"
+            f"{hanh_dong}: {job['xoa_job']} thư mục, {job['xoa_gb']:.3f} GB."
+        )
+        if job["bo_qua_dang_chay"]:
+            print(f"Giữ lại {job['bo_qua_dang_chay']} thư mục còn mới "
+                  "(có thể đang có lượt quét chạy).")
+        loi = ket_qua["loi"] + job["loi"]
+        if loi:
+            print("Lỗi:", *loi, sep="\n  - ")
         return
 
     if a.lenh == "watch":
