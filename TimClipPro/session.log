@@ -34,3 +34,39 @@
 - Kết quả cuối: suite nhanh `248 passed, 1 skipped, 3 deselected`; suite slow
   `3 passed, 249 deselected`. Một lượt slow đầu tiên bị treo không ổn định trong
   audfprint đa tiến trình; chạy lại trong tiến trình sạch hoàn tất sau 37,52 giây.
+
+## 2026-09-07 — Sửa watchdog worker vân tay + hoàn tất KhoJoeBartolozzi
+
+- Sự cố: job dựng kho 1178 clip bị giết ở 94,8% (1117/1178) trong lúc CẢ 8 worker đang
+  chạy khoẻ, hai lần trong một buổi sáng (07:12 mất 944 clip, 09:10 mất 1117 clip).
+- Nguyên nhân gốc (CONFIRMED): `audfprint_progress_runner.py:224` dùng
+  `rx[core].poll(CHO_WORKER_S)` như watchdog, nhưng pipe chỉ mang ĐÚNG MỘT message phát ra
+  sau khi worker xong TOÀN BỘ danh sách. Nên hằng số 1800 s thực chất là hạn chót cho tổng
+  phần việc mỗi worker, tỷ lệ thuận với số_clip/ncores. Tiến độ đi qua stdout — kênh mà
+  tiến trình cha không đọc của chính nó. Comment trên hằng số mô tả một ý định mà code
+  không thực hiện; đó là lý do lỗi sống sót.
+- Ngưỡng vỡ ~1125 clip ở 8 nhân. Kho 537 và 149 clip trước đó nằm dưới ngưỡng nên chưa lộ.
+- Bác bỏ bằng số đo: clip lâu nhất 68,4 s (không phải clip dài), 0 clip lỗi (không phải
+  media hỏng), worker bận ~99% thời gian, đĩa còn 109 GB/1,7 TB.
+- Không phục hồi được gì từ job cũ — không phải do xoá nhầm mà do worker chỉ ghi gzip SAU
+  khi xong hết; không worker nào xong nên chưa từng có file nào.
+- Đã sửa: mỗi worker đếm số file đã xong vào `multiprocessing.Value("i", 0, lock=False)`;
+  cha chỉ báo lỗi khi con số đó ĐỨNG YÊN suốt CHO_WORKER_S. Tên và giá trị hằng số giữ
+  nguyên, chỉ ý nghĩa đổi. Quét TỪNG core (không quét tất cả) vì chia round-robin để lại
+  worker có danh sách rỗng khi ncores > số file — quét tất cả sẽ giết oan chúng.
+- Đã loại bằng thực nghiệm: ping qua pipe (Pipe Windows giữ đúng 8192 byte, ping ~79 byte
+  ⇒ đầy ở ~103 message trong khi mỗi worker có 148 file ⇒ mọi worker nghẽn); file nhịp tim
+  (con giữ handle trong thư mục bị `terminate()` không join rồi `rmtree` ⇒ rò 4/4 lần).
+- Ba test mới trong `tests/test_audfprint_multiproc.py`; hai test đầu đã kiểm chứng là ĐỎ
+  với mã cũ bằng bản sao trong scratchpad. Hai test cũ không sửa một dòng nào.
+- Kết quả: nhanh 955 passed / 1 skipped / 5 deselected; slow 5 passed; ruff sạch.
+- Dựng lại kho: 1178/1178 clip trong 3267 giây (54,5 phút) — tức bản cũ sẽ giết ở phút 30,
+  và ngay cả nâng lên 3600 cũng chỉ dư 10%. Một clip lỗi nhất thời (0 hash do tranh tài
+  nguyên); `themclip --ncores 1` vá đúng clip đó trong 31 giây, đường đơn nhân nên không
+  qua `merge()` và không sinh tên trùng. Chạy lại lần nữa: thêm 0 clip, 4 giây.
+- Đối chiếu cuối: nguồn 1178 = kho 1178, tất cả so_hash > 0, 0 thiếu, 0 thừa, 0 ID trùng,
+  metadata 1178/1178 complete. Tổng 149.669.573 hash, kho 312,3 MB.
+- Smoke test: 6/6 trích đoạn nhận đúng clip.
+- Còn tồn: `--maxtimebits 16` giới hạn định vị 25,4 phút; đo trực tiếp trong kho thấy clip
+  155 phút bị gấp vào 0–1522 s (chồng 6,1 lần), ảnh hưởng 50,8% clip / 22,9% âm thanh.
+  Người dùng đã quyết GIỮ NGUYÊN. Chi tiết ở docs/FINGERPRINT_RECOVERY_ARCHITECTURE.md §6.1.
