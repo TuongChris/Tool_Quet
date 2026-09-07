@@ -19,10 +19,26 @@ import time
 
 PREFIX = "TIMCLIP_FINGERPRINT_EVENT "
 
-# Mỗi worker chờ tối đa bấy nhiêu giây sau khi tất cả worker đã báo xong. Chỉ là
-# lưới an toàn cuối cùng để job không treo vĩnh viễn; đường chạy bình thường không
-# bao giờ chạm tới.
+# Thời gian tối đa một worker được phép IM LẶNG — tức là không hoàn tất thêm file nào.
+# ĐÂY KHÔNG PHẢI ngân sách cho tổng phần việc của worker.
+#
+# Bản trước hiểu sai chính chỗ này: nó gọi `rx[core].poll(CHO_WORKER_S)` một lần, mà
+# pipe chỉ mang ĐÚNG MỘT message phát ra sau khi worker đã fingerprint xong TOÀN BỘ
+# danh sách của nó. Nên hằng số này trên thực tế là "worker phải làm xong hết trong
+# 1800 giây", tỷ lệ thuận với số_clip/ncores. Kho 1178 clip trên 8 nhân cần ~2017 giây
+# cho worker chậm nhất ⇒ job bị giết ở mức 94,8% trong lúc CẢ 8 worker đều đang chạy
+# khoẻ (đã xảy ra 2 lần ngày 2026-09-07, mất ~7 giờ CPU).
+#
+# Nay mỗi worker đếm số file đã xong vào một `multiprocessing.Value` dùng chung; cha
+# chỉ báo lỗi khi con số đó ĐỨNG YÊN suốt CHO_WORKER_S giây. Worker chạy 3 tiếng vẫn
+# an toàn miễn là nó còn hoàn tất file; worker kẹt thật vẫn bị bắt trong thời gian có
+# giới hạn. Clip lâu nhất đo được là 68,4 giây ⇒ biên an toàn ~26 lần.
 CHO_WORKER_S = 1800.0
+
+# Nhịp poll ngắn của cha. Đừng hạ xuống dưới ~0,1 s: mỗi `wait()` trên Windows mở rồi
+# huỷ một overlapped ReadFile. Không ảnh hưởng tốc độ phát hiện worker chết — pipe gãy
+# được xếp là "ready" nên EOF vẫn nổi lên tức thì.
+NHIP_KIEM_S = 0.5
 
 
 def _emit(event: str, **payload) -> None:
@@ -50,8 +66,19 @@ def instrumented_make_ht_from_list(
     depth,
     maxtime,
     pipe=None,
+    *,
+    nhip=None,
 ):
-    """Bản bọc tương đương ``make_ht_from_list`` với event per-file."""
+    """Bản bọc tương đương ``make_ht_from_list`` với event per-file.
+
+    ``nhip`` là ``multiprocessing.Value`` dùng chung với cha (tuỳ chọn, chỉ có khi
+    chạy đa tiến trình). Mỗi file HOÀN TẤT tăng nó lên 1 — đó là tín hiệu còn sống
+    duy nhất mà cha nhìn thấy. Tham số này KHÔNG được gộp vào ``pipe``: ``pipe`` ở
+    đây vẫn mang nghĩa cũ là gửi nguyên HashTable (~419 MB) và không được dùng lại.
+
+    Bắt buộc là keyword-only: hàm này được cài đè lên ``audfprint.make_ht_from_list``
+    và bản vendored gọi nó bằng tham số vị trí.
+    """
     import hash_table
 
     ht = hash_table.HashTable(hashbits=hashbits, depth=depth, maxtime=maxtime)
@@ -87,6 +114,12 @@ def instrumented_make_ht_from_list(
             elapsed_seconds=time.monotonic() - started,
             process_pid=os.getpid(),
         )
+        # Nhịp sống báo về cha. Đặt SAU clip_finished để một nhịp chứng minh công
+        # việc ĐÃ XONG, không phải chỉ mới bắt đầu. Tuyệt đối không phát nhịp này
+        # từ một thread hẹn giờ: thread vẫn tick khi luồng chính kẹt cứng, và
+        # watchdog sẽ thành đồ trang trí.
+        if nhip is not None:
+            nhip.value = nhip.value + 1
     if pipe:
         pipe.send(ht)
     else:
@@ -138,15 +171,17 @@ def _worker_ghi_hash_table(
     maxtime,
     pipe,
     duong_dan,
+    nhip=None,
 ) -> None:
     """Chạy trong tiến trình con: tính hash table rồi GHI RA FILE, không gửi qua pipe.
 
-    Pipe chỉ mang một dict trạng thái vài chục byte.
+    Pipe chỉ mang một dict trạng thái vài chục byte. ``nhip`` là bộ đếm file đã xong,
+    dùng chung với cha để cha phân biệt "chậm mà khoẻ" với "kẹt thật".
     """
     cai_dat_theo_doi_giai_ma()      # spawn: bản vá của cha không đi theo sang con
     try:
         ht = instrumented_make_ht_from_list(
-            analyzer, filelist, hashbits, depth, maxtime
+            analyzer, filelist, hashbits, depth, maxtime, nhip=nhip
         )
         with gzip.open(duong_dan, "wb", compresslevel=1) as fh:
             pickle.dump(ht, fh, protocol=pickle.HIGHEST_PROTOCOL)
@@ -196,10 +231,15 @@ def instrumented_multiproc_add(analyzer, hash_tab, filename_iter, report, ncores
     rx: list = []
     pr: list = []
     duong_dan: list = []
+    nhip: list = []
     try:
         for ix in range(ncores):
             doc, ghi = multiprocessing.Pipe(False)
             path = os.path.join(thu_muc, f"hash_table_{ix}.pklz")
+            # lock=False là cố ý: một người ghi, một người đọc, int32 căn thẳng. Khoá
+            # tốn chi phí mỗi file và về lý thuyết có thể bị worker đã chết giữ lại.
+            # Cha chỉ so sánh THAY ĐỔI nên không phụ thuộc giá trị tuyệt đối.
+            dem = multiprocessing.Value("i", 0, lock=False)
             process = multiprocessing.Process(
                 target=_worker_ghi_hash_table,
                 args=(
@@ -210,6 +250,7 @@ def instrumented_multiproc_add(analyzer, hash_tab, filename_iter, report, ncores
                     (1 << hash_tab.maxtimebits),
                     ghi,
                     path,
+                    dem,
                 ),
             )
             process.start()
@@ -218,14 +259,32 @@ def instrumented_multiproc_add(analyzer, hash_tab, filename_iter, report, ncores
             rx.append(doc)
             pr.append(process)
             duong_dan.append(path)
+            nhip.append(dem)
 
         for core in range(ncores):
             try:
-                if not rx[core].poll(CHO_WORKER_S):
-                    raise RuntimeError(
-                        f"Worker vân tay {core} không phản hồi sau "
-                        f"{CHO_WORKER_S:.0f} giây."
-                    )
+                # Chờ theo NHỊP SỐNG, không theo tổng thời gian làm việc. Chỉ báo lỗi
+                # khi bộ đếm file-đã-xong của worker này đứng yên suốt CHO_WORKER_S.
+                #
+                # Quét theo TỪNG core chứ không quét tất cả mỗi vòng: chia file là
+                # round-robin (`filelists[ix % ncores]`), nên khi ncores > số file sẽ
+                # có worker nhận danh sách RỖNG và không bao giờ tick. Quét tất cả sẽ
+                # giết oan đúng những worker đó. Theo từng core thì chúng an toàn tự
+                # nhiên — kết quả của chúng đã nằm sẵn trong pipe nên poll trả True
+                # ngay vòng đầu và hạn chót không bao giờ được xét tới.
+                moc = time.monotonic()
+                da_thay = nhip[core].value
+                while not rx[core].poll(NHIP_KIEM_S):
+                    hien = nhip[core].value
+                    if hien != da_thay:
+                        da_thay = hien
+                        moc = time.monotonic()
+                    elif time.monotonic() - moc > CHO_WORKER_S:
+                        raise RuntimeError(
+                            f"Worker vân tay {core} không phản hồi sau "
+                            f"{CHO_WORKER_S:.0f} giây "
+                            f"(đã xong {hien} file, không tiến thêm)."
+                        )
                 ket_qua = rx[core].recv()
             except EOFError as exc:
                 pr[core].join(timeout=30)
