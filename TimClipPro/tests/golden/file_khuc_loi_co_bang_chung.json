@@ -1,0 +1,226 @@
+{
+ "ket_qua": {
+  "chan_doan": {
+   "canh_bao": [],
+   "da_chon": 1,
+   "da_thu_toc_do": [],
+   "dau_hieu_nhac_hieu": false,
+   "dong_co_matched": 1,
+   "dong_tho": 4,
+   "duoc_chap_nhan": 1,
+   "duong_di": "quet_bu_toan_bo",
+   "giai_doan_mat": "",
+   "gop_lai": 1,
+   "hash_tho_lon_nhat": 1200,
+   "khop_tho_dai_nhat": 60.0,
+   "ly_do_khong_bu_toc_do": "",
+   "manh_nhat_bi_loai": null,
+   "mat_o_dau": "",
+   "parse_duoc": 1,
+   "qua_min_hash": 1,
+   "qua_min_match_s": 1,
+   "so_clip_kho": 0,
+   "so_khuc": 4,
+   "so_khuc_cham_tran": 0,
+   "ten_kho": "",
+   "toc_do_tim_duoc": "",
+   "tran_max_matches": 200
+  },
+  "channel_id": "",
+  "channel_name": "",
+  "channel_url": "",
+  "chinh_sach": "v1:d5c4787c4e7081be",
+  "dat_muc_tieu": true,
+  "duration_s": 600.0,
+  "job_id": 1,
+  "kho_id": "db:db.pklz",
+  "kho_phien_ban": "-:?",
+  "kho_ten": "",
+  "ly_do_pham_vi": "loi_khuc",
+  "matches": [
+   {
+    "clip": "B [bbbbbbbbbbb].opus",
+    "clip_bat_dau_s": 10.0,
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 70.0,
+    "hashes": 1200,
+    "matched_s": 60.0,
+    "start_s": 10.0,
+    "ty_le": 4.0,
+    "vung": "Đầu",
+    "vung_khop_s": 10.0
+   }
+  ],
+  "matches_loai": [],
+  "note": "Chưa quét trọn video: lỗi xử lý 1 vùng (00:05:40–00:07:00); đã so khớp 00:08:40/00:10:00. Bằng chứng chỉ nằm trong phần đã so khớp.",
+  "pham_vi_quet_s": 600.0,
+  "quet_day_du": false,
+  "quet_mot_phan": true,
+  "so_dat_nguong": 1,
+  "source_id": "",
+  "source_name": "video_vi_pham.mp4",
+  "source_ref": "<TMP>\\video_vi_pham.mp4",
+  "status": "ok",
+  "upload_date": "",
+  "vung_da_khop": [
+   [
+    0.0,
+    340.0
+   ],
+   [
+    420.0,
+    600.0
+   ]
+  ],
+  "vung_loi": [
+   [
+    340.0,
+    420.0
+   ]
+  ]
+ },
+ "lich_su": {
+  "jobs": [
+   {
+    "chinh_sach": "v1:d5c4787c4e7081be",
+    "dat_muc_tieu": 1,
+    "day_du": 0,
+    "duration_s": 600.0,
+    "id": 1,
+    "kho_id": "db:db.pklz",
+    "kho_phien_ban": "-:?",
+    "kho_ten": "",
+    "n_matches": 1,
+    "note": "Chưa quét trọn video: lỗi xử lý 1 vùng (00:05:40–00:07:00); đã so khớp 00:08:40/00:10:00. Bằng chứng chỉ nằm trong phần đã so khớp.",
+    "pham_vi": "{\"vung_da_khop\": [[0.0, 340.0], [420.0, 600.0]], \"vung_loi\": [[340.0, 420.0]], \"ly_do\": \"loi_khuc\", \"pham_vi_quet_s\": 600.0}",
+    "source_id": "",
+    "source_name": "video_vi_pham.mp4",
+    "source_ref": "<TMP>\\video_vi_pham.mp4",
+    "source_type": "file",
+    "status": "ok"
+   }
+  ],
+  "matches": [
+   {
+    "clip": "B [bbbbbbbbbbb].opus",
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 70.0,
+    "hashes": 1200,
+    "id": 1,
+    "job_id": 1,
+    "matched_s": 60.0,
+    "start_s": 10.0
+   }
+  ]
+ },
+ "nhat_ky": [
+  [
+   "cat",
+   0
+  ],
+  [
+   "cat",
+   140
+  ],
+  [
+   "cat",
+   280
+  ],
+  [
+   "cat",
+   280
+  ],
+  [
+   "cat",
+   420
+  ],
+  [
+   "cat",
+   560
+  ],
+  [
+   "khop",
+   "_uu_tien",
+   [
+    "chunk_0000000.wav"
+   ]
+  ],
+  [
+   "khop",
+   "_con_lai",
+   [
+    "chunk_0000140.wav",
+    "chunk_0000420.wav",
+    "chunk_0000560.wav"
+   ]
+  ]
+ ],
+ "tien_do": [
+  [
+   0.0,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.066,
+   "Đang cắt khúc 1/5 (mốc 00:00:00)..."
+  ],
+  [
+   0.133,
+   "Đang cắt khúc 2/5 (mốc 00:02:20)..."
+  ],
+  [
+   0.199,
+   "Đang cắt khúc 3/5 (mốc 00:04:40)..."
+  ],
+  [
+   0.266,
+   "Đang cắt khúc 4/5 (mốc 00:07:00)..."
+  ],
+  [
+   0.332,
+   "Đang cắt khúc 5/5 (mốc 00:09:20)..."
+  ],
+  [
+   0.332,
+   "Tìm nhanh 1 kết quả đáng tin — đang kiểm tra phần đầu video..."
+  ],
+  [
+   0.332,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.549,
+   "Đang so khớp vân tay... khúc 1/1"
+  ],
+  [
+   0.549,
+   "Chưa có bằng chứng đủ mạnh ở phần đầu — đang mở rộng quét toàn bộ video..."
+  ],
+  [
+   0.549,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.682,
+   "Đang so khớp vân tay... khúc 1/3"
+  ],
+  [
+   0.816,
+   "Đang so khớp vân tay... khúc 2/3"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 3/3"
+  ],
+  [
+   0.95,
+   "⚠️ Chưa quét trọn video: lỗi xử lý 1 vùng (00:05:40–00:07:00); đã so khớp 00:08:40/00:10:00. Bằng chứng chỉ nằm trong phần đã so khớp."
+  ],
+  [
+   1.0,
+   "Xong — chọn 1 kết quả tốt nhất."
+  ]
+ ]
+}

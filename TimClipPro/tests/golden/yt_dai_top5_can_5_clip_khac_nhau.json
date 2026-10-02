@@ -1,0 +1,599 @@
+{
+ "ket_qua": {
+  "chan_doan": {
+   "canh_bao": [],
+   "da_chon": 5,
+   "da_thu_toc_do": [],
+   "dau_hieu_nhac_hieu": false,
+   "dong_co_matched": 10,
+   "dong_tho": 17,
+   "duoc_chap_nhan": 5,
+   "duong_di": "quet_toan_bo",
+   "giai_doan_mat": "",
+   "gop_lai": 5,
+   "hash_tho_lon_nhat": 2000,
+   "khop_tho_dai_nhat": 100.0,
+   "ly_do_khong_bu_toc_do": "",
+   "manh_nhat_bi_loai": null,
+   "mat_o_dau": "",
+   "parse_duoc": 10,
+   "qua_min_hash": 10,
+   "qua_min_match_s": 10,
+   "so_clip_kho": 0,
+   "so_khuc": 16,
+   "so_khuc_cham_tran": 0,
+   "ten_kho": "",
+   "toc_do_tim_duoc": "",
+   "tran_max_matches": 200
+  },
+  "channel_id": "UCthu",
+  "channel_name": "Kênh thử",
+  "channel_url": "https://www.youtube.com/channel/UCthu",
+  "chinh_sach": "v1:d5c4787c4e7081be",
+  "dat_muc_tieu": true,
+  "duration_s": 3000.0,
+  "job_id": 1,
+  "kho_id": "db:db.pklz",
+  "kho_phien_ban": "-:?",
+  "kho_ten": "",
+  "ly_do_pham_vi": "dung_som",
+  "matches": [
+   {
+    "clip": "B [bbbbbbbbbbb].opus",
+    "clip_bat_dau_s": 100.0,
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 200.0,
+    "hashes": 2000,
+    "matched_s": 100.0,
+    "start_s": 100.0,
+    "ty_le": 6.7,
+    "vung": "Đầu",
+    "vung_khop_s": 100.0
+   },
+   {
+    "clip": "C [ccccccccccc].opus",
+    "clip_bat_dau_s": 300.0,
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 400.0,
+    "hashes": 2000,
+    "matched_s": 100.0,
+    "start_s": 300.0,
+    "ty_le": 8.0,
+    "vung": "Đầu",
+    "vung_khop_s": 300.0
+   },
+   {
+    "clip": "D [ddddddddddd].opus",
+    "clip_bat_dau_s": 500.0,
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 600.0,
+    "hashes": 2000,
+    "matched_s": 100.0,
+    "start_s": 500.0,
+    "ty_le": 8.0,
+    "vung": "Đầu",
+    "vung_khop_s": 500.0
+   },
+   {
+    "clip": "E [eeeeeeeeeee].opus",
+    "clip_bat_dau_s": 1000.0,
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 1100.0,
+    "hashes": 2000,
+    "matched_s": 100.0,
+    "start_s": 1000.0,
+    "ty_le": 8.0,
+    "vung": "Giữa",
+    "vung_khop_s": 1000.0
+   },
+   {
+    "clip": "F [fffffffffff].opus",
+    "clip_bat_dau_s": 1800.0,
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 1900.0,
+    "hashes": 2000,
+    "matched_s": 100.0,
+    "start_s": 1800.0,
+    "ty_le": 8.0,
+    "vung": "Giữa",
+    "vung_khop_s": 1800.0
+   }
+  ],
+  "matches_loai": [],
+  "note": "Đã dừng sớm sau khi so khớp 00:38:20/00:50:00 — đã đủ bằng chứng nên không quét tiếp. Bằng chứng chỉ nằm trong phần đã quét.",
+  "pham_vi_quet_s": 2300.0,
+  "quet_day_du": false,
+  "quet_mot_phan": true,
+  "so_dat_nguong": 5,
+  "source_id": "vidvipham01",
+  "source_name": "Video vi phạm thử",
+  "source_ref": "https://youtu.be/vidvipham01",
+  "status": "ok",
+  "upload_date": "20260101",
+  "vung_da_khop": [
+   [
+    0.0,
+    2300.0
+   ]
+  ],
+  "vung_loi": []
+ },
+ "lich_su": {
+  "jobs": [
+   {
+    "chinh_sach": "v1:d5c4787c4e7081be",
+    "dat_muc_tieu": 1,
+    "day_du": 0,
+    "duration_s": 3000.0,
+    "id": 1,
+    "kho_id": "db:db.pklz",
+    "kho_phien_ban": "-:?",
+    "kho_ten": "",
+    "n_matches": 5,
+    "note": "Đã dừng sớm sau khi so khớp 00:38:20/00:50:00 — đã đủ bằng chứng nên không quét tiếp. Bằng chứng chỉ nằm trong phần đã quét.",
+    "pham_vi": "{\"vung_da_khop\": [[0.0, 2300.0]], \"vung_loi\": [], \"ly_do\": \"dung_som\", \"pham_vi_quet_s\": 2300.0}",
+    "source_id": "vidvipham01",
+    "source_name": "Video vi phạm thử",
+    "source_ref": "https://youtu.be/vidvipham01",
+    "source_type": "youtube",
+    "status": "ok"
+   }
+  ],
+  "matches": [
+   {
+    "clip": "B [bbbbbbbbbbb].opus",
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 200.0,
+    "hashes": 2000,
+    "id": 1,
+    "job_id": 1,
+    "matched_s": 100.0,
+    "start_s": 100.0
+   },
+   {
+    "clip": "C [ccccccccccc].opus",
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 400.0,
+    "hashes": 2000,
+    "id": 2,
+    "job_id": 1,
+    "matched_s": 100.0,
+    "start_s": 300.0
+   },
+   {
+    "clip": "D [ddddddddddd].opus",
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 600.0,
+    "hashes": 2000,
+    "id": 3,
+    "job_id": 1,
+    "matched_s": 100.0,
+    "start_s": 500.0
+   },
+   {
+    "clip": "E [eeeeeeeeeee].opus",
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 1100.0,
+    "hashes": 2000,
+    "id": 4,
+    "job_id": 1,
+    "matched_s": 100.0,
+    "start_s": 1000.0
+   },
+   {
+    "clip": "F [fffffffffff].opus",
+    "clip_offset_s": 0.0,
+    "confidence": "Rất chắc chắn",
+    "end_s": 1900.0,
+    "hashes": 2000,
+    "id": 5,
+    "job_id": 1,
+    "matched_s": 100.0,
+    "start_s": 1800.0
+   }
+  ]
+ },
+ "nhat_ky": [
+  [
+   "info",
+   "https://youtu.be/vidvipham01"
+  ],
+  [
+   "tai",
+   720.0
+  ],
+  [
+   "cat",
+   0
+  ],
+  [
+   "cat",
+   140
+  ],
+  [
+   "cat",
+   280
+  ],
+  [
+   "cat",
+   420
+  ],
+  [
+   "cat",
+   560
+  ],
+  [
+   "cat",
+   700
+  ],
+  [
+   "khop",
+   "",
+   [
+    "chunk_0000000.wav",
+    "chunk_0000140.wav",
+    "chunk_0000280.wav",
+    "chunk_0000420.wav",
+    "chunk_0000560.wav",
+    "chunk_0000700.wav"
+   ]
+  ],
+  [
+   "tai",
+   null
+  ],
+  [
+   "cat",
+   0
+  ],
+  [
+   "cat",
+   140
+  ],
+  [
+   "cat",
+   280
+  ],
+  [
+   "cat",
+   420
+  ],
+  [
+   "cat",
+   560
+  ],
+  [
+   "cat",
+   700
+  ],
+  [
+   "khop",
+   "",
+   [
+    "chunk_0000000.wav",
+    "chunk_0000140.wav",
+    "chunk_0000280.wav",
+    "chunk_0000420.wav",
+    "chunk_0000560.wav",
+    "chunk_0000700.wav"
+   ]
+  ],
+  [
+   "cat",
+   840
+  ],
+  [
+   "cat",
+   980
+  ],
+  [
+   "cat",
+   1120
+  ],
+  [
+   "cat",
+   1260
+  ],
+  [
+   "cat",
+   1400
+  ],
+  [
+   "khop",
+   "",
+   [
+    "chunk_0000840.wav",
+    "chunk_0000980.wav",
+    "chunk_0001120.wav",
+    "chunk_0001260.wav",
+    "chunk_0001400.wav"
+   ]
+  ],
+  [
+   "cat",
+   1540
+  ],
+  [
+   "cat",
+   1680
+  ],
+  [
+   "cat",
+   1820
+  ],
+  [
+   "cat",
+   1960
+  ],
+  [
+   "cat",
+   2100
+  ],
+  [
+   "khop",
+   "",
+   [
+    "chunk_0001540.wav",
+    "chunk_0001680.wav",
+    "chunk_0001820.wav",
+    "chunk_0001960.wav",
+    "chunk_0002100.wav"
+   ]
+  ]
+ ],
+ "tien_do": [
+  [
+   0.02,
+   "Đang lấy thông tin video..."
+  ],
+  [
+   0.05,
+   "Video vi phạm thử (00:50:00) — chuẩn bị tải audio..."
+  ],
+  [
+   0.4,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.432,
+   "Đang cắt khúc 1/6 (mốc 00:00:00)..."
+  ],
+  [
+   0.464,
+   "Đang cắt khúc 2/6 (mốc 00:02:20)..."
+  ],
+  [
+   0.496,
+   "Đang cắt khúc 3/6 (mốc 00:04:40)..."
+  ],
+  [
+   0.528,
+   "Đang cắt khúc 4/6 (mốc 00:07:00)..."
+  ],
+  [
+   0.56,
+   "Đang cắt khúc 5/6 (mốc 00:09:20)..."
+  ],
+  [
+   0.593,
+   "Đang cắt khúc 6/6 (mốc 00:11:40)..."
+  ],
+  [
+   0.593,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.652,
+   "Đang so khớp vân tay... khúc 1/6"
+  ],
+  [
+   0.712,
+   "Đang so khớp vân tay... khúc 2/6"
+  ],
+  [
+   0.771,
+   "Đang so khớp vân tay... khúc 3/6"
+  ],
+  [
+   0.831,
+   "Đang so khớp vân tay... khúc 4/6"
+  ],
+  [
+   0.89,
+   "Đang so khớp vân tay... khúc 5/6"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 6/6"
+  ],
+  [
+   1.0,
+   "Xong — chọn 3 kết quả tốt nhất."
+  ],
+  [
+   0.4,
+   "Mới có 3/5 đoạn trong 00:12:00 đầu — tải nốt phần còn lại để quét trọn..."
+  ],
+  [
+   0.4,
+   "Quét đoạn 1/5 (00:00:00 → 00:12:00)..."
+  ],
+  [
+   0.4,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.406,
+   "Đang cắt khúc 1/6 (mốc 00:00:00)..."
+  ],
+  [
+   0.413,
+   "Đang cắt khúc 2/6 (mốc 00:02:20)..."
+  ],
+  [
+   0.419,
+   "Đang cắt khúc 3/6 (mốc 00:04:40)..."
+  ],
+  [
+   0.426,
+   "Đang cắt khúc 4/6 (mốc 00:07:00)..."
+  ],
+  [
+   0.432,
+   "Đang cắt khúc 5/6 (mốc 00:09:20)..."
+  ],
+  [
+   0.439,
+   "Đang cắt khúc 6/6 (mốc 00:11:40)..."
+  ],
+  [
+   0.439,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.45,
+   "Đang so khớp vân tay... khúc 1/6"
+  ],
+  [
+   0.462,
+   "Đang so khớp vân tay... khúc 2/6"
+  ],
+  [
+   0.474,
+   "Đang so khớp vân tay... khúc 3/6"
+  ],
+  [
+   0.486,
+   "Đang so khớp vân tay... khúc 4/6"
+  ],
+  [
+   0.498,
+   "Đang so khớp vân tay... khúc 5/6"
+  ],
+  [
+   0.51,
+   "Đang so khớp vân tay... khúc 6/6"
+  ],
+  [
+   0.51,
+   "Quét đoạn 2/5 (00:12:00 → 00:24:00)..."
+  ],
+  [
+   0.51,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.518,
+   "Đang cắt khúc 1/5 (mốc 00:14:00)..."
+  ],
+  [
+   0.525,
+   "Đang cắt khúc 2/5 (mốc 00:16:20)..."
+  ],
+  [
+   0.533,
+   "Đang cắt khúc 3/5 (mốc 00:18:40)..."
+  ],
+  [
+   0.541,
+   "Đang cắt khúc 4/5 (mốc 00:21:00)..."
+  ],
+  [
+   0.548,
+   "Đang cắt khúc 5/5 (mốc 00:23:20)..."
+  ],
+  [
+   0.548,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.563,
+   "Đang so khớp vân tay... khúc 1/5"
+  ],
+  [
+   0.577,
+   "Đang so khớp vân tay... khúc 2/5"
+  ],
+  [
+   0.591,
+   "Đang so khớp vân tay... khúc 3/5"
+  ],
+  [
+   0.606,
+   "Đang so khớp vân tay... khúc 4/5"
+  ],
+  [
+   0.62,
+   "Đang so khớp vân tay... khúc 5/5"
+  ],
+  [
+   0.62,
+   "Quét đoạn 3/5 (00:24:00 → 00:36:00)..."
+  ],
+  [
+   0.62,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.628,
+   "Đang cắt khúc 1/5 (mốc 00:25:40)..."
+  ],
+  [
+   0.635,
+   "Đang cắt khúc 2/5 (mốc 00:28:00)..."
+  ],
+  [
+   0.643,
+   "Đang cắt khúc 3/5 (mốc 00:30:20)..."
+  ],
+  [
+   0.651,
+   "Đang cắt khúc 4/5 (mốc 00:32:40)..."
+  ],
+  [
+   0.658,
+   "Đang cắt khúc 5/5 (mốc 00:35:00)..."
+  ],
+  [
+   0.658,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.673,
+   "Đang so khớp vân tay... khúc 1/5"
+  ],
+  [
+   0.687,
+   "Đang so khớp vân tay... khúc 2/5"
+  ],
+  [
+   0.701,
+   "Đang so khớp vân tay... khúc 3/5"
+  ],
+  [
+   0.716,
+   "Đang so khớp vân tay... khúc 4/5"
+  ],
+  [
+   0.73,
+   "Đang so khớp vân tay... khúc 5/5"
+  ],
+  [
+   0.95,
+   "ℹ️ Đã dừng sớm sau khi so khớp 00:38:20/00:50:00 — đã đủ bằng chứng nên không quét tiếp. Bằng chứng chỉ nằm trong phần đã quét."
+  ],
+  [
+   1.0,
+   "Xong — chọn 5 kết quả tốt nhất."
+  ]
+ ]
+}

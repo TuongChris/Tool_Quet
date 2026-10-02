@@ -1,0 +1,141 @@
+{
+ "ket_qua": {
+  "chan_doan": {
+   "canh_bao": [],
+   "da_chon": 0,
+   "da_thu_toc_do": [],
+   "dau_hieu_nhac_hieu": false,
+   "dong_co_matched": 0,
+   "dong_tho": 0,
+   "duoc_chap_nhan": 0,
+   "duong_di": "",
+   "giai_doan_mat": "khong_cat_duoc_khuc",
+   "gop_lai": 0,
+   "hash_tho_lon_nhat": 0,
+   "khop_tho_dai_nhat": 0.0,
+   "ly_do_khong_bu_toc_do": "",
+   "manh_nhat_bi_loai": null,
+   "mat_o_dau": "Không cắt được khúc audio nào từ file — nghi file tải hỏng hoặc ffmpeg lỗi.",
+   "parse_duoc": 0,
+   "qua_min_hash": 0,
+   "qua_min_match_s": 0,
+   "so_clip_kho": 0,
+   "so_khuc": 0,
+   "so_khuc_cham_tran": 0,
+   "ten_kho": "",
+   "toc_do_tim_duoc": "",
+   "tran_max_matches": 0
+  },
+  "channel_id": "",
+  "channel_name": "",
+  "channel_url": "",
+  "chinh_sach": "v1:011e2239c0233a3a",
+  "dat_muc_tieu": false,
+  "duration_s": 600.0,
+  "job_id": 1,
+  "kho_id": "db:db.pklz",
+  "kho_phien_ban": "-:?",
+  "kho_ten": "",
+  "ly_do_pham_vi": "",
+  "matches": [],
+  "matches_loai": [],
+  "note": "Lỗi khi so khớp:\nTraceback giả\nlỗi audfprint giả",
+  "pham_vi_quet_s": 0.0,
+  "quet_day_du": false,
+  "quet_mot_phan": false,
+  "so_dat_nguong": 0,
+  "source_id": "",
+  "source_name": "video_vi_pham.mp4",
+  "source_ref": "<TMP>\\video_vi_pham.mp4",
+  "status": "error",
+  "upload_date": "",
+  "vung_da_khop": null,
+  "vung_loi": []
+ },
+ "lich_su": {
+  "jobs": [
+   {
+    "chinh_sach": "v1:011e2239c0233a3a",
+    "dat_muc_tieu": 0,
+    "day_du": 0,
+    "duration_s": 600.0,
+    "id": 1,
+    "kho_id": "db:db.pklz",
+    "kho_phien_ban": "-:?",
+    "kho_ten": "",
+    "n_matches": 0,
+    "note": "Lỗi khi so khớp:\nTraceback giả\nlỗi audfprint giả",
+    "pham_vi": "{\"vung_da_khop\": null, \"vung_loi\": [], \"ly_do\": \"\", \"pham_vi_quet_s\": 0.0}",
+    "source_id": "",
+    "source_name": "video_vi_pham.mp4",
+    "source_ref": "<TMP>\\video_vi_pham.mp4",
+    "source_type": "file",
+    "status": "error"
+   }
+  ],
+  "matches": []
+ },
+ "nhat_ky": [
+  [
+   "cat",
+   0
+  ],
+  [
+   "cat",
+   140
+  ],
+  [
+   "cat",
+   280
+  ],
+  [
+   "cat",
+   420
+  ],
+  [
+   "cat",
+   560
+  ],
+  [
+   "khop",
+   "_uu_tien",
+   [
+    "chunk_0000000.wav"
+   ]
+  ]
+ ],
+ "tien_do": [
+  [
+   0.0,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.066,
+   "Đang cắt khúc 1/5 (mốc 00:00:00)..."
+  ],
+  [
+   0.133,
+   "Đang cắt khúc 2/5 (mốc 00:02:20)..."
+  ],
+  [
+   0.199,
+   "Đang cắt khúc 3/5 (mốc 00:04:40)..."
+  ],
+  [
+   0.266,
+   "Đang cắt khúc 4/5 (mốc 00:07:00)..."
+  ],
+  [
+   0.332,
+   "Đang cắt khúc 5/5 (mốc 00:09:20)..."
+  ],
+  [
+   0.332,
+   "Tìm nhanh 1 kết quả đáng tin — đang kiểm tra phần đầu video..."
+  ],
+  [
+   0.332,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ]
+ ]
+}

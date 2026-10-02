@@ -1,0 +1,418 @@
+{
+ "ket_qua": {
+  "chan_doan": {
+   "canh_bao": [],
+   "da_chon": 0,
+   "da_thu_toc_do": [
+    "lưới cao độ 0.960",
+    "lưới cao độ 0.980",
+    "lưới cao độ 1.020",
+    "lưới cao độ 1.040"
+   ],
+   "dau_hieu_nhac_hieu": false,
+   "dong_co_matched": 0,
+   "dong_tho": 21,
+   "duoc_chap_nhan": 0,
+   "duong_di": "quet_bu_toan_bo",
+   "giai_doan_mat": "audfprint_khong_ra_match",
+   "gop_lai": 0,
+   "hash_tho_lon_nhat": 0,
+   "khop_tho_dai_nhat": 0.0,
+   "ly_do_khong_bu_toc_do": "",
+   "manh_nhat_bi_loai": null,
+   "mat_o_dau": "Video không chứa đoạn tiếng nào của kho đang chọn. Kho nạp bình thường (6 clip) và đã phân tích 21 khúc tiếng, nên KHÔNG phải lỗi kho hay lỗi tải. Nếu bạn chắc đây là bản reup thì khả năng cao clip gốc của nó chưa có trong kho.",
+   "parse_duoc": 0,
+   "qua_min_hash": 0,
+   "qua_min_match_s": 0,
+   "so_clip_kho": 6,
+   "so_khuc": 21,
+   "so_khuc_cham_tran": 0,
+   "ten_kho": "",
+   "toc_do_tim_duoc": "",
+   "tran_max_matches": 200
+  },
+  "channel_id": "",
+  "channel_name": "",
+  "channel_url": "",
+  "chinh_sach": "v1:011e2239c0233a3a",
+  "dat_muc_tieu": false,
+  "duration_s": 600.0,
+  "job_id": 1,
+  "kho_id": "db:db.pklz",
+  "kho_phien_ban": "-:?",
+  "kho_ten": "",
+  "ly_do_pham_vi": "loi_khuc",
+  "matches": [],
+  "matches_loai": [],
+  "note": "Lượt bù tốc độ không chạy trọn: 1 vùng chưa được kiểm.\nKhông xử lý được một phần video: lỗi xử lý 1 vùng (00:03:20–00:04:40); đã so khớp 00:10:00/00:10:00. Chưa thể kết luận video này không chứa clip gốc — hãy quét lại.",
+  "pham_vi_quet_s": 600.0,
+  "quet_day_du": false,
+  "quet_mot_phan": true,
+  "so_dat_nguong": 0,
+  "source_id": "",
+  "source_name": "video_vi_pham.mp4",
+  "source_ref": "<TMP>\\video_vi_pham.mp4",
+  "status": "error",
+  "upload_date": "",
+  "vung_da_khop": [
+   [
+    0.0,
+    600.0
+   ]
+  ],
+  "vung_loi": [
+   [
+    200.0,
+    280.0
+   ]
+  ]
+ },
+ "lich_su": {
+  "jobs": [
+   {
+    "chinh_sach": "v1:011e2239c0233a3a",
+    "dat_muc_tieu": 0,
+    "day_du": 0,
+    "duration_s": 600.0,
+    "id": 1,
+    "kho_id": "db:db.pklz",
+    "kho_phien_ban": "-:?",
+    "kho_ten": "",
+    "n_matches": 0,
+    "note": "Lượt bù tốc độ không chạy trọn: 1 vùng chưa được kiểm.\nKhông xử lý được một phần video: lỗi xử lý 1 vùng (00:03:20–00:04:40); đã so khớp 00:10:00/00:10:00. Chưa thể kết luận video này không chứa clip gốc — hãy quét lại.",
+    "pham_vi": "{\"vung_da_khop\": [[0.0, 600.0]], \"vung_loi\": [[200.0, 280.0]], \"ly_do\": \"loi_khuc\", \"pham_vi_quet_s\": 600.0}",
+    "source_id": "",
+    "source_name": "video_vi_pham.mp4",
+    "source_ref": "<TMP>\\video_vi_pham.mp4",
+    "source_type": "file",
+    "status": "error"
+   }
+  ],
+  "matches": []
+ },
+ "nhat_ky": [
+  [
+   "cat",
+   0
+  ],
+  [
+   "cat",
+   140
+  ],
+  [
+   "cat",
+   280
+  ],
+  [
+   "cat",
+   420
+  ],
+  [
+   "cat",
+   560
+  ],
+  [
+   "khop",
+   "_uu_tien",
+   [
+    "chunk_0000000.wav"
+   ]
+  ],
+  [
+   "khop",
+   "_con_lai",
+   [
+    "chunk_0000140.wav",
+    "chunk_0000280.wav",
+    "chunk_0000420.wav",
+    "chunk_0000560.wav"
+   ]
+  ],
+  [
+   "bien_doi",
+   "chunk_0000000_k104167.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000140_k104167.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000280_k104167.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000420_k104167.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000560_k104167.wav"
+  ],
+  [
+   "khop",
+   "_k104167_resample",
+   [
+    "chunk_0000000_k104167.wav",
+    "chunk_0000280_k104167.wav",
+    "chunk_0000420_k104167.wav",
+    "chunk_0000560_k104167.wav"
+   ]
+  ],
+  [
+   "bien_doi",
+   "chunk_0000000_k102041.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000140_k102041.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000280_k102041.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000420_k102041.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000560_k102041.wav"
+  ],
+  [
+   "khop",
+   "_k102041_resample",
+   [
+    "chunk_0000000_k102041.wav",
+    "chunk_0000280_k102041.wav",
+    "chunk_0000420_k102041.wav",
+    "chunk_0000560_k102041.wav"
+   ]
+  ],
+  [
+   "bien_doi",
+   "chunk_0000000_k098039.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000140_k098039.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000280_k098039.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000420_k098039.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000560_k098039.wav"
+  ],
+  [
+   "khop",
+   "_k098039_resample",
+   [
+    "chunk_0000000_k098039.wav",
+    "chunk_0000280_k098039.wav",
+    "chunk_0000420_k098039.wav",
+    "chunk_0000560_k098039.wav"
+   ]
+  ],
+  [
+   "bien_doi",
+   "chunk_0000000_k096154.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000140_k096154.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000280_k096154.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000420_k096154.wav"
+  ],
+  [
+   "bien_doi",
+   "chunk_0000560_k096154.wav"
+  ],
+  [
+   "khop",
+   "_k096154_resample",
+   [
+    "chunk_0000000_k096154.wav",
+    "chunk_0000280_k096154.wav",
+    "chunk_0000420_k096154.wav",
+    "chunk_0000560_k096154.wav"
+   ]
+  ]
+ ],
+ "tien_do": [
+  [
+   0.0,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.066,
+   "Đang cắt khúc 1/5 (mốc 00:00:00)..."
+  ],
+  [
+   0.133,
+   "Đang cắt khúc 2/5 (mốc 00:02:20)..."
+  ],
+  [
+   0.199,
+   "Đang cắt khúc 3/5 (mốc 00:04:40)..."
+  ],
+  [
+   0.266,
+   "Đang cắt khúc 4/5 (mốc 00:07:00)..."
+  ],
+  [
+   0.332,
+   "Đang cắt khúc 5/5 (mốc 00:09:20)..."
+  ],
+  [
+   0.332,
+   "Tìm nhanh 1 kết quả đáng tin — đang kiểm tra phần đầu video..."
+  ],
+  [
+   0.332,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.549,
+   "Đang so khớp vân tay... khúc 1/1"
+  ],
+  [
+   0.549,
+   "Chưa có bằng chứng đủ mạnh ở phần đầu — đang mở rộng quét toàn bộ video..."
+  ],
+  [
+   0.549,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.649,
+   "Đang so khớp vân tay... khúc 1/4"
+  ],
+  [
+   0.749,
+   "Đang so khớp vân tay... khúc 2/4"
+  ],
+  [
+   0.85,
+   "Đang so khớp vân tay... khúc 3/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 4/4"
+  ],
+  [
+   0.95,
+   "Thử bù tốc độ (lượt 1) — lưới cao độ 0.960..."
+  ],
+  [
+   0.95,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 1/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 2/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 3/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 4/4"
+  ],
+  [
+   0.95,
+   "Thử bù tốc độ (lượt 2) — lưới cao độ 0.980..."
+  ],
+  [
+   0.95,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 1/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 2/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 3/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 4/4"
+  ],
+  [
+   0.95,
+   "Thử bù tốc độ (lượt 3) — lưới cao độ 1.020..."
+  ],
+  [
+   0.95,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 1/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 2/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 3/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 4/4"
+  ],
+  [
+   0.95,
+   "Thử bù tốc độ (lượt 4) — lưới cao độ 1.040..."
+  ],
+  [
+   0.95,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 1/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 2/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 3/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 4/4"
+  ],
+  [
+   0.95,
+   "⚠️ Không xử lý được một phần video: lỗi xử lý 1 vùng (00:03:20–00:04:40); đã so khớp 00:10:00/00:10:00. Chưa thể kết luận video này không chứa clip gốc — hãy quét lại."
+  ],
+  [
+   1.0,
+   "Xong — chọn 0 kết quả tốt nhất."
+  ]
+ ]
+}

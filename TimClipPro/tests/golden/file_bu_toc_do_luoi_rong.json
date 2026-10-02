@@ -1,0 +1,188 @@
+{
+ "ket_qua": {
+  "chan_doan": {
+   "canh_bao": [],
+   "da_chon": 0,
+   "da_thu_toc_do": [],
+   "dau_hieu_nhac_hieu": false,
+   "dong_co_matched": 0,
+   "dong_tho": 5,
+   "duoc_chap_nhan": 0,
+   "duong_di": "quet_bu_toan_bo",
+   "giai_doan_mat": "audfprint_khong_ra_match",
+   "gop_lai": 0,
+   "hash_tho_lon_nhat": 0,
+   "khop_tho_dai_nhat": 0.0,
+   "ly_do_khong_bu_toc_do": "Chưa thử bù tốc độ lượt nào: không đọc được độ trôi từ các mảnh khớp (cần ≥4 mảnh của CÙNG một clip gốc), mà cả hai lưới quét mù «luoi_tempo» và «luoi_resample» trong data/cau_hinh.json đều rỗng. Nghĩa là reup bị ĐỔI CAO ĐỘ sẽ không bắt được. Thêm mức vào «luoi_resample» nếu cần — đánh đổi là mỗi video không có kết quả sẽ quét lâu hơn khoảng 2,9 lần.",
+   "manh_nhat_bi_loai": null,
+   "mat_o_dau": "Video không chứa đoạn tiếng nào của kho đang chọn. Kho nạp bình thường (6 clip) và đã phân tích 5 khúc tiếng, nên KHÔNG phải lỗi kho hay lỗi tải. Nếu bạn chắc đây là bản reup thì khả năng cao clip gốc của nó chưa có trong kho.",
+   "parse_duoc": 0,
+   "qua_min_hash": 0,
+   "qua_min_match_s": 0,
+   "so_clip_kho": 6,
+   "so_khuc": 5,
+   "so_khuc_cham_tran": 0,
+   "ten_kho": "",
+   "toc_do_tim_duoc": "",
+   "tran_max_matches": 200
+  },
+  "channel_id": "",
+  "channel_name": "",
+  "channel_url": "",
+  "chinh_sach": "v1:6fbbd375c6806322",
+  "dat_muc_tieu": false,
+  "duration_s": 600.0,
+  "job_id": 1,
+  "kho_id": "db:db.pklz",
+  "kho_phien_ban": "-:?",
+  "kho_ten": "",
+  "ly_do_pham_vi": "",
+  "matches": [],
+  "matches_loai": [],
+  "note": "",
+  "pham_vi_quet_s": 600.0,
+  "quet_day_du": true,
+  "quet_mot_phan": false,
+  "so_dat_nguong": 0,
+  "source_id": "",
+  "source_name": "video_vi_pham.mp4",
+  "source_ref": "<TMP>\\video_vi_pham.mp4",
+  "status": "ok",
+  "upload_date": "",
+  "vung_da_khop": [
+   [
+    0.0,
+    600.0
+   ]
+  ],
+  "vung_loi": []
+ },
+ "lich_su": {
+  "jobs": [
+   {
+    "chinh_sach": "v1:6fbbd375c6806322",
+    "dat_muc_tieu": 0,
+    "day_du": 1,
+    "duration_s": 600.0,
+    "id": 1,
+    "kho_id": "db:db.pklz",
+    "kho_phien_ban": "-:?",
+    "kho_ten": "",
+    "n_matches": 0,
+    "note": "",
+    "pham_vi": "{\"vung_da_khop\": [[0.0, 600.0]], \"vung_loi\": [], \"ly_do\": \"\", \"pham_vi_quet_s\": 600.0}",
+    "source_id": "",
+    "source_name": "video_vi_pham.mp4",
+    "source_ref": "<TMP>\\video_vi_pham.mp4",
+    "source_type": "file",
+    "status": "ok"
+   }
+  ],
+  "matches": []
+ },
+ "nhat_ky": [
+  [
+   "cat",
+   0
+  ],
+  [
+   "cat",
+   140
+  ],
+  [
+   "cat",
+   280
+  ],
+  [
+   "cat",
+   420
+  ],
+  [
+   "cat",
+   560
+  ],
+  [
+   "khop",
+   "_uu_tien",
+   [
+    "chunk_0000000.wav"
+   ]
+  ],
+  [
+   "khop",
+   "_con_lai",
+   [
+    "chunk_0000140.wav",
+    "chunk_0000280.wav",
+    "chunk_0000420.wav",
+    "chunk_0000560.wav"
+   ]
+  ]
+ ],
+ "tien_do": [
+  [
+   0.0,
+   "Khúc gối thực tế: 60 giây (không có metadata thời lượng, dùng cấu hình hiện tại)."
+  ],
+  [
+   0.066,
+   "Đang cắt khúc 1/5 (mốc 00:00:00)..."
+  ],
+  [
+   0.133,
+   "Đang cắt khúc 2/5 (mốc 00:02:20)..."
+  ],
+  [
+   0.199,
+   "Đang cắt khúc 3/5 (mốc 00:04:40)..."
+  ],
+  [
+   0.266,
+   "Đang cắt khúc 4/5 (mốc 00:07:00)..."
+  ],
+  [
+   0.332,
+   "Đang cắt khúc 5/5 (mốc 00:09:20)..."
+  ],
+  [
+   0.332,
+   "Tìm nhanh 1 kết quả đáng tin — đang kiểm tra phần đầu video..."
+  ],
+  [
+   0.332,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.549,
+   "Đang so khớp vân tay... khúc 1/1"
+  ],
+  [
+   0.549,
+   "Chưa có bằng chứng đủ mạnh ở phần đầu — đang mở rộng quét toàn bộ video..."
+  ],
+  [
+   0.549,
+   "Đang nạp kho vân tay và bắt đầu so khớp..."
+  ],
+  [
+   0.649,
+   "Đang so khớp vân tay... khúc 1/4"
+  ],
+  [
+   0.749,
+   "Đang so khớp vân tay... khúc 2/4"
+  ],
+  [
+   0.85,
+   "Đang so khớp vân tay... khúc 3/4"
+  ],
+  [
+   0.95,
+   "Đang so khớp vân tay... khúc 4/4"
+  ],
+  [
+   1.0,
+   "Xong — chọn 0 kết quả tốt nhất."
+  ]
+ ]
+}
