@@ -417,6 +417,12 @@ class ScanResult:
     kho_ten: str = ""
     kho_phien_ban: str = ""
     chinh_sach: str = ""
+    # Ứng viên ĐẠT tiêu chí chấp nhận, TRƯỚC khi cắt còn Top-N — đúng tập mà `so_dat_nguong`
+    # đếm. Chế độ «một video gốc chung cho cả lô» cần nó: video gốc chung có thể không bao
+    # giờ là Top-1 của video nào. `matches_loai` không thay được vì nó trộn ứng viên bị loại
+    # với ứng viên đạt mà không được chọn. Chỉ sống trong bộ nhớ: không vào lịch sử, không vào
+    # báo cáo 16/34 cột, không đổi phép so sánh `==`.
+    ung_vien_dat: list = field(default_factory=list, repr=False, compare=False)
 
     @property
     def quet_day_du(self) -> bool:
@@ -433,6 +439,52 @@ class ScanResult:
         if self.vung_da_khop is not None:
             return not self.quet_day_du
         return bool(self.duration_s and 0 < self.pham_vi_quet_s < self.duration_s - 1)
+
+
+# Mục tiêu của MỘT lượt quét trong chế độ «một video gốc chung cho cả lô». Nơi gọi không
+# truyền mục tiêu (None) = hành vi cũ, chọn Top-N từng video, không đi qua lớp dưới đây.
+MUC_TIEU_THU_THAP = "collect"   # cần TẬP ĐỦ ứng viên: không dừng sớm, không tải một phần
+MUC_TIEU_XAC_MINH = "verify"    # chỉ dừng sớm khi đã thấy đúng video gốc cần xác minh
+
+
+@dataclass(frozen=True)
+class ScanObjective:
+    """Điều kiện được DỪNG SỚM của một lượt quét — không đổi chính sách nhận diện.
+
+    * ``collect``: liệt kê đủ mọi ứng viên đạt chuẩn của video (video mốc). Không bao giờ
+      dừng sớm, không tải một phần, file tải về thiếu đuôi thì luôn tải lại.
+    * ``verify``: chỉ được dừng sớm khi đã thấy video gốc cần xác minh. Thấy một nguồn KHÁC,
+      dù rất mạnh, không bao giờ là lý do dừng — đó chính là lỗi mà Top-N từng video mắc
+      phải khi đem ra tìm nguồn chung.
+
+    Mỗi nhóm là tập basename clip trong kho của MỘT video gốc. Đạt khi MỌI nhóm trong
+    ``nhom_can_du`` có ứng viên đạt chuẩn, hoặc khi MỘT nhóm trong ``nhom_du_mot`` có mặt
+    (video gốc đã có mặt ở mọi video khác của lô — thấy là đủ kết luận cả lô).
+    """
+    mode: str
+    nhom_can_du: tuple = ()
+    nhom_du_mot: tuple = ()
+
+    def __post_init__(self) -> None:
+        if self.mode not in (MUC_TIEU_THU_THAP, MUC_TIEU_XAC_MINH):
+            raise ValueError(f"Mục tiêu quét không hợp lệ: {self.mode!r}")
+        can_du = tuple(frozenset(n) for n in self.nhom_can_du)
+        du_mot = tuple(frozenset(n) for n in self.nhom_du_mot)
+        if any(not n for n in can_du + du_mot):
+            raise ValueError("Nhóm clip đích không được rỗng.")
+        if self.mode == MUC_TIEU_XAC_MINH and not (can_du or du_mot):
+            raise ValueError("Mục tiêu xác minh cần ít nhất một nhóm clip đích.")
+        object.__setattr__(self, "nhom_can_du", can_du)
+        object.__setattr__(self, "nhom_du_mot", du_mot)
+
+    def da_dat(self, dat: Iterable) -> bool:
+        """Các ứng viên ĐẠT CHUẨN ``dat`` đã đủ để dừng quét chưa?"""
+        if self.mode == MUC_TIEU_THU_THAP:
+            return False
+        co = {getattr(m, "clip", "") for m in dat}
+        if any(co & nhom for nhom in self.nhom_du_mot):
+            return True
+        return bool(self.nhom_can_du) and all(co & nhom for nhom in self.nhom_can_du)
 
 
 class Cancelled(Exception):
@@ -600,6 +652,12 @@ class _PhamViQuet:
     # Tính THEO TỪNG LƯỢT: hệ số này chạy được không bù cho hệ số kia bị hỏng.
     loi_bu_toc_do: set = field(default_factory=set)
     bu_toc_do_ok: set = field(default_factory=set)
+    # Mục tiêu của lượt quét (chế độ một video gốc chung); None = hành vi cũ. Nằm trong sổ
+    # của MỘT lượt nên không thể rò sang video sau hay sang Engine gốc.
+    muc_tieu: Optional["ScanObjective"] = None
+    # Basename (chữ thường) của file đang quét: ứng viên trùng tên là TỰ KHỚP, không được
+    # tính khi xét mục tiêu (AUD-022 — nhánh cũ giữ nguyên hành vi).
+    ten_tu_khop: str = ""
 
 
 def do_dai_wav(path: str) -> Optional[float]:
@@ -1278,6 +1336,24 @@ class Engine:
         self.chan_doan_quet = job.chan_doan_quet
         self.canh_bao_gop = job.canh_bao_gop
         self.canh_bao_mang = job.canh_bao_mang
+
+    @contextlib.contextmanager
+    def phien_job(self):
+        """MỘT job gồm nhiều lượt quét trên cùng bản Engine đã ghim kho/cấu hình (TCP-01).
+
+        Cho bộ điều phối nằm ngoài engine (chế độ một video gốc chung cho cả lô) dùng đúng
+        cơ chế ghim mà ``scan_iter`` dùng. KHÔNG xoá cờ huỷ: người gọi tự xoá đúng một lần
+        lúc bắt đầu job, để một cú bấm Dừng rơi vào khoảng giữa không bị nuốt (TCP-13).
+        """
+        job = self._ban_sao_cho_job()
+        try:
+            yield job
+        finally:
+            self._nhan_ket_qua_job(job)
+
+    def danh_tinh_kho(self) -> dict:
+        """Định danh bền, tên và phiên bản hiệu lực của kho đang dùng/đang ghim. Chỉ đọc."""
+        return dict(self._danh_tinh_kho())
 
     def _danh_tinh_kho(self) -> dict:
         """Kho của lượt quét: định danh bền, tên, phiên bản hiệu lực (audit TCP-07).
@@ -3877,11 +3953,21 @@ class Engine:
                 pv.da_gui.extend(ds)
             return ds
 
-        du_dieu_kien = (
-            cfg.top1_tim_nhanh
-            and cfg.top_n == 1
-            and len(chunks) >= max(2, cfg.top1_khuc_toi_thieu)
-        )
+        muc_tieu = getattr(pv, "muc_tieu", None)
+        if muc_tieu is None:
+            du_dieu_kien = (
+                cfg.top1_tim_nhanh
+                and cfg.top_n == 1
+                and len(chunks) >= max(2, cfg.top1_khuc_toi_thieu)
+            )
+        else:
+            # Chế độ nguồn chung: «thu thập» không bao giờ dừng sớm; «xác minh» xét khúc
+            # đầu trước BẤT KỂ top_n — điều kiện dừng là mục tiêu, không phải Top-N.
+            du_dieu_kien = (
+                muc_tieu.mode == MUC_TIEU_XAC_MINH
+                and cfg.top1_tim_nhanh
+                and len(chunks) >= max(2, cfg.top1_khuc_toi_thieu)
+            )
         if not du_dieu_kien:
             cd.duong_di = "quet_toan_bo"
             return self._match_chunks(gui(chunks), progress, pct0, pct1,
@@ -3889,6 +3975,9 @@ class Engine:
 
         # Chia đôi tiến độ: phần đầu cho vùng ưu tiên, phần sau cho quét bù.
         giua = pct0 + (pct1 - pct0) * 0.35
+        if muc_tieu is not None:
+            return self._quet_tho_xac_minh(chunks, duration, progress, pct0, giua, pct1,
+                                           workspace, gui, muc_tieu)
         self._bao(progress, pct0,
                   "Tìm nhanh 1 kết quả đáng tin — đang kiểm tra phần đầu video...")
         dau = self._match_chunks(gui(chunks[:1]), progress, pct0, giua,
@@ -3911,6 +4000,50 @@ class Engine:
         cd.duong_di = "quet_bu_toan_bo"
         self._bao(progress, giua,
                   "Chưa có bằng chứng đủ mạnh ở phần đầu — đang mở rộng quét toàn bộ video...")
+        con_lai = self._match_chunks(gui(chunks[1:]), progress, giua, pct1,
+                                     workspace=workspace, hau_to="_con_lai")
+        return dau + con_lai
+
+    def _dat_cho_muc_tieu(self, tho: list, duration: float) -> list:
+        """Ứng viên đạt chuẩn từ kết quả thô, BỎ ứng viên tự khớp — chỉ để xét mục tiêu.
+
+        Chung tiêu chí với ``_ung_vien_dat`` (cùng ``_merge`` + ``loc_chap_nhan``): chế độ
+        nguồn chung không có chính sách nhận diện riêng, chỉ có điều kiện dừng riêng.
+        """
+        dat = self._ung_vien_dat(tho, duration)
+        pv = getattr(self, "_pham_vi", None)
+        ten = getattr(pv, "ten_tu_khop", "") if pv is not None else ""
+        return [m for m in dat if not ten or m.clip.lower() != ten]
+
+    def _quet_tho_xac_minh(self, chunks: list, duration: float,
+                           progress: Optional[Callable], pct0: float, giua: float,
+                           pct1: float, workspace: str, gui: Callable,
+                           muc_tieu: "ScanObjective") -> list:
+        """Đường nhanh khúc đầu của chế độ XÁC MINH.
+
+        Cổng dừng là «đã thấy video gốc cần xác minh, đạt chuẩn», KHÔNG phải cổng ≥5000
+        hash của Top-1: Top-1 chặt vì dừng sớm là bỏ cơ hội tìm bằng chứng tốt hơn, còn ở
+        đây câu hỏi chỉ là «có mặt không» — bằng chứng đạt chuẩn đã trả lời xong. Một nguồn
+        KHÁC dù mạnh tới đâu cũng không làm dừng.
+        """
+        cd = self.chan_doan_quet
+        pv = getattr(self, "_pham_vi", None)
+        self._bao(progress, pct0,
+                  "Đang tìm video gốc cần xác minh ở phần đầu video...")
+        dau = self._match_chunks(gui(chunks[:1]), progress, pct0, giua,
+                                 workspace=workspace, hau_to="_uu_tien")
+        if muc_tieu.da_dat(self._dat_cho_muc_tieu(dau, duration)):
+            if pv is not None:
+                pv.dung_som = True
+            cd.duong_di = "dung_som_thay_dich"
+            LOGGER_SCAN.info("event=scan.verify.early_accept chunks=1")
+            self._bao(progress, pct1,
+                      "✓ Đã thấy video gốc cần xác minh ở phần đầu — bỏ qua phần còn lại.")
+            return dau
+
+        cd.duong_di = "quet_bu_toan_bo"
+        self._bao(progress, giua,
+                  "Chưa thấy video gốc cần xác minh ở phần đầu — đang quét tiếp phần còn lại...")
         con_lai = self._match_chunks(gui(chunks[1:]), progress, giua, pct1,
                                      workspace=workspace, hau_to="_con_lai")
         return dau + con_lai
@@ -4082,10 +4215,13 @@ class Engine:
                         workspace: str) -> list:
         """Quét lại ở các tốc độ đã hiệu chỉnh; trả về kết quả thô ĐÃ quy đổi mốc.
 
-        Chỉ được gọi khi lượt quét thường không có ứng viên nào đạt chuẩn.
+        Chỉ được gọi khi lượt quét thường không có ứng viên nào đạt chuẩn — hoặc, ở chế độ
+        xác minh, khi CHƯA thấy video gốc cần xác minh (dù đã có nguồn khác).
         """
         cfg = self.config
         cd = self.chan_doan_quet
+        muc_tieu = getattr(getattr(self, "_pham_vi", None), "muc_tieu", None)
+        theo_dich = muc_tieu is not None and muc_tieu.mode == MUC_TIEU_XAC_MINH
         hang_doi = self._ke_hoach_toc_do(tho)
         if not hang_doi:
             # Ghi RÕ vì sao không có gì để thử. Không ghi thì `da_thu_toc_do` rỗng
@@ -4151,7 +4287,10 @@ class Engine:
                 continue
             them.extend(ket)
 
-            if self._co_ung_vien_dat(tho + them, 0.0):
+            # Xác minh: thấy nguồn KHÁC sau khi bù không phải lý do dừng — chỉ dừng khi
+            # video gốc cần xác minh đã có mặt.
+            if (muc_tieu.da_dat(self._dat_cho_muc_tieu(tho + them, 0.0)) if theo_dich
+                    else self._co_ung_vien_dat(tho + them, 0.0)):
                 cd.toc_do_tim_duoc = mo_ta
                 LOGGER_SCAN.info(
                     "event=scan.tempo.recovered factor=%.5f family=%s note=%s",
@@ -4179,7 +4318,8 @@ class Engine:
 
     def scan_media(self, path: str, label: Optional[str] = None, ref: str = "",
                    source_type: str = "file", progress: Optional[Callable] = None,
-                   luu_lich_su: bool = True, pct_start: float = 0.0) -> ScanResult:
+                   luu_lich_su: bool = True, pct_start: float = 0.0, *,
+                   muc_tieu: Optional[ScanObjective] = None) -> ScanResult:
         """
         Quét 1 file media dài có sẵn trên đĩa.
         pct_start: mốc % bắt đầu — bằng 0 khi quét file trực tiếp, bằng 0.40 khi
@@ -4188,19 +4328,24 @@ class Engine:
         Gọi trực tiếp một file = một JOB mới: xoá cờ huỷ đúng một lần rồi chạy trên bản
         Engine đã ghim kho/cấu hình. Gọi từ bên trong một job (batch, quét YouTube) thì
         KHÔNG xoá cờ huỷ — yêu cầu Dừng của batch phải còn nguyên (audit TCP-13).
+
+        ``muc_tieu``: chỉ dành cho chế độ một video gốc chung (xem ``ScanObjective``).
+        ``None`` = hành vi cũ; mục tiêu KHÔNG được kế thừa từ lượt trước.
         """
         if source_type == "file" and not getattr(self, "_la_ban_ghim", False):
             self.cancel_event.clear()
         job = self._ban_sao_cho_job()
+        them = {} if muc_tieu is None else {"muc_tieu": muc_tieu}
         try:
             return job._scan_media(path, label, ref, source_type, progress,
-                                   luu_lich_su, pct_start)
+                                   luu_lich_su, pct_start, **them)
         finally:
             self._nhan_ket_qua_job(job)
 
     def _scan_media(self, path: str, label: Optional[str] = None, ref: str = "",
                     source_type: str = "file", progress: Optional[Callable] = None,
-                    luu_lich_su: bool = True, pct_start: float = 0.0) -> ScanResult:
+                    luu_lich_su: bool = True, pct_start: float = 0.0, *,
+                    muc_tieu: Optional[ScanObjective] = None) -> ScanResult:
         """Thân của ``scan_media`` — chạy trên bản Engine đã ghim, không đụng cờ huỷ."""
         self.require(can_db=True)
         # Mỗi video là một đơn vị nhất quán: chụp chữ ký kho ở đây và kiểm lại trước mỗi
@@ -4215,6 +4360,10 @@ class Engine:
         self.chan_doan_quet = ChanDoanQuet()
         # Sổ phạm vi THẬT của lượt quét này: khúc nào đã gửi đi khớp, khúc nào lỗi.
         pv = self._pham_vi = _PhamViQuet()
+        if muc_tieu is not None:
+            pv.muc_tieu = muc_tieu
+            pv.ten_tu_khop = os.path.basename(path).lower()
+        theo_dich = muc_tieu is not None and muc_tieu.mode == MUC_TIEU_XAC_MINH
         try:
             if not os.path.isfile(path):
                 raise RuntimeError(f"Không tìm thấy file: {path}")
@@ -4248,8 +4397,12 @@ class Engine:
                     da_quet_den = min(den, tong)
                     # DỪNG KHI THẤY: đã có bằng chứng đạt chuẩn thì phần còn lại không
                     # đổi được kết luận. Không mất độ phủ vì nếu KHÔNG thấy gì, vòng lặp
-                    # vẫn chạy hết video.
-                    if len(doan) > 1 and self._du_de_dung_som(tho, tong):
+                    # vẫn chạy hết video. Chế độ nguồn chung dừng theo MỤC TIÊU: «thu
+                    # thập» không bao giờ dừng, «xác minh» chỉ dừng khi thấy đúng đích.
+                    if len(doan) > 1 and (
+                            self._du_de_dung_som(tho, tong) if muc_tieu is None
+                            else theo_dich and muc_tieu.da_dat(
+                                self._dat_cho_muc_tieu(tho, tong))):
                         if i < len(doan) - 1:
                             pv.dung_som = True
                         break
@@ -4258,8 +4411,12 @@ class Engine:
                 self._chot_pham_vi(kq, tong, da_quet_den)
                 # Không có gì đạt chuẩn thì thử bù tốc độ trước khi kết luận là
                 # không có. Đây là lúc DUY NHẤT lượt quét phụ được chạy, nên video
-                # có kết quả bình thường không tốn thêm giây nào.
-                if self.config.quet_da_toc_do and not self._co_ung_vien_dat(tho, tong):
+                # có kết quả bình thường không tốn thêm giây nào. Xác minh: chạy khi
+                # CHƯA thấy đích, kể cả khi đã có nguồn khác — nguồn khác đạt chuẩn
+                # không chứng minh được video gốc cần xác minh vắng mặt.
+                if self.config.quet_da_toc_do and (
+                        not muc_tieu.da_dat(self._dat_cho_muc_tieu(tho, tong))
+                        if theo_dich else not self._co_ung_vien_dat(tho, tong)):
                     tho = tho + self._quet_da_toc_do(
                         chunks, tho, progress, p_match1, p_match1, ws
                     )
@@ -4280,6 +4437,7 @@ class Engine:
             # Chỉ định nghĩa "đạt" là mở rộng thêm bậc phủ vân tay cao.
             dat_chuan, _, _ = loc_chap_nhan(tat_ca, self.config)
             kq.so_dat_nguong = len(dat_chuan)
+            kq.ung_vien_dat = list(dat_chuan)
             # Chia vùng chọn lọc theo PHẦN ĐÃ QUÉT, không theo cả video: chia theo cả
             # video thì các vùng sau rơi vào khoảng chưa quét — vùng rỗng, và Top-N trả
             # về ít kết quả hơn hẳn mức đáng ra có. Còn nhãn Đầu/Giữa/Cuối ở
@@ -4287,7 +4445,13 @@ class Engine:
             kq.matches, kq.matches_loai = self._chon_loc(
                 tat_ca, kq.pham_vi_quet_s or tong)
             kq.dat_muc_tieu = self._du_muc_tieu(kq.matches)
-            hong_bu = self._vung_hong_bu_toc_do(pv, tong) if not kq.matches else []
+            if theo_dich:
+                # Xác minh: lượt bù chạy vì CHƯA thấy đích; nó hỏng thì «đích vắng mặt» chưa
+                # được chứng minh, dù video có nguồn khác đạt chuẩn.
+                hong_bu = ([] if muc_tieu.da_dat(kq.ung_vien_dat)
+                           else self._vung_hong_bu_toc_do(pv, tong))
+            else:
+                hong_bu = self._vung_hong_bu_toc_do(pv, tong) if not kq.matches else []
             if hong_bu:
                 # Không thấy gì mà lượt bù tốc độ lại không chạy trọn: chưa chứng minh được
                 # âm tính theo chính sách đang bật — coi như vùng chưa kiểm (phản biện).
@@ -4314,9 +4478,14 @@ class Engine:
                     kq.ly_do_pham_vi = "dung_som"
                 da_khop = (tong_do_dai(kq.vung_da_khop) if kq.vung_da_khop is not None
                            else kq.pham_vi_quet_s)
-                tin = (f"Đã dừng sớm sau khi so khớp {hhmmss(da_khop)}"
-                       f"/{hhmmss(tong)} — đã đủ bằng chứng nên không quét tiếp. "
-                       "Bằng chứng chỉ nằm trong phần đã quét.")
+                if theo_dich and pv.dung_som:
+                    tin = (f"Đã dừng sớm sau khi so khớp {hhmmss(da_khop)}"
+                           f"/{hhmmss(tong)} — đã thấy video gốc cần xác minh nên không "
+                           "quét tiếp. Các video gốc khác chỉ được tìm trong phần đã quét.")
+                else:
+                    tin = (f"Đã dừng sớm sau khi so khớp {hhmmss(da_khop)}"
+                           f"/{hhmmss(tong)} — đã đủ bằng chứng nên không quét tiếp. "
+                           "Bằng chứng chỉ nằm trong phần đã quét.")
                 kq.note = "\n".join([x for x in (kq.note, tin) if x])
                 self._bao(progress, p_match1, "ℹ️ " + tin)
             tb = f"Xong — chọn {len(kq.matches)} kết quả tốt nhất"
@@ -4378,31 +4547,48 @@ class Engine:
         return len(matches) >= n
 
     def scan_youtube(self, url: str, progress: Optional[Callable] = None,
-                     luu_lich_su: bool = True) -> ScanResult:
+                     luu_lich_su: bool = True, *,
+                     muc_tieu: Optional[ScanObjective] = None,
+                     info: Optional[dict] = None) -> ScanResult:
         """Tải audio 1 link YouTube rồi quét.
 
         Gọi trực tiếp = một JOB mới: xoá cờ huỷ một lần, ghim kho/cấu hình. Bên trong
         batch (``scan_iter``) thì không xoá cờ — trước đây chính dòng xoá cờ ở đây làm
         nút Dừng chỉ dừng được video đang chạy, video kế tiếp lại chạy (audit TCP-13).
+
+        Chỉ dành cho chế độ một video gốc chung: ``muc_tieu`` (xem ``ScanObjective``) và
+        ``info`` — thông tin video đã lấy sẵn bằng ``youtube_info`` để không hỏi YouTube
+        lần nữa. ``None`` = hành vi cũ.
         """
         if not getattr(self, "_la_ban_ghim", False):
             self.cancel_event.clear()
         job = self._ban_sao_cho_job()
+        them = {}
+        if muc_tieu is not None:
+            them["muc_tieu"] = muc_tieu
+        if info is not None:
+            them["info"] = dict(info)
         try:
-            return job._scan_youtube(url, progress, luu_lich_su)
+            return job._scan_youtube(url, progress, luu_lich_su, **them)
         finally:
             self._nhan_ket_qua_job(job)
 
     def _scan_youtube(self, url: str, progress: Optional[Callable] = None,
-                      luu_lich_su: bool = True) -> ScanResult:
+                      luu_lich_su: bool = True, *,
+                      muc_tieu: Optional[ScanObjective] = None,
+                      info: Optional[dict] = None) -> ScanResult:
         """Thân của ``scan_youtube`` — chạy trên bản ghim, không đụng cờ huỷ."""
         self.require(can_ytdlp=True, can_db=True)
         self.canh_bao_mang = []
         kq = ScanResult(source_name=url, source_ref=url)
         self._gan_danh_tinh(kq)
+        # Chỉ chuyển mục tiêu xuống các lượt quét lồng khi có — lời gọi kiểu cũ y nguyên.
+        mt = {} if muc_tieu is None else {"muc_tieu": muc_tieu}
+        theo_dich = muc_tieu is not None and muc_tieu.mode == MUC_TIEU_XAC_MINH
         try:
             self._bao(progress, 0.02, "Đang lấy thông tin video...")
-            info = self.youtube_info(url)
+            if info is None:
+                info = self.youtube_info(url)
             kq.source_name = info["title"] or url
             kq.source_id = info["id"]
             kq.channel_name = info["channel"]
@@ -4414,22 +4600,32 @@ class Engine:
             # Tải một phần trước cho video rất dài. Không thấy gì thì mới tải trọn —
             # nhờ vậy KHÔNG mất độ phủ, chỉ đổi thứ tự. Đo 19/08: video 66 tiếng có
             # 18,4 GB, tải 3 tiếng đầu chỉ khoảng 840 MB.
-            gioi_han = self._gioi_han_tai(info.get("duration") or 0)
+            # Thu thập (video mốc) cần TẬP ĐỦ ứng viên nên tải trọn ngay: tải một phần rồi
+            # đằng nào cũng phải tải nốt và quét lại từ đầu.
+            if muc_tieu is not None and muc_tieu.mode == MUC_TIEU_THU_THAP:
+                gioi_han = None
+            else:
+                gioi_han = self._gioi_han_tai(info.get("duration") or 0)
             f = self.download_audio(url, info["id"], progress,
                                     gioi_han_giay=gioi_han)
             r = self.scan_media(f, label=kq.source_name, ref=url,
                                 source_type="youtube", progress=progress,
-                                luu_lich_su=False, pct_start=0.40)
+                                luu_lich_su=False, pct_start=0.40, **mt)
             can_top_n = max(1, self.config.top_n)
-            if gioi_han and len(r.matches) < can_top_n:
+            if gioi_han and (not muc_tieu.da_dat(r.ung_vien_dat) if theo_dich
+                             else len(r.matches) < can_top_n):
                 # Phần đầu chưa đủ kết luận cho cả video: phải tải nốt.
                 #
                 # So với `top_n` chứ không so với 0. Với `top_n = 5`, tìm được 1 đoạn
                 # trong 3 tiếng đầu KHÔNG có nghĩa là đã xong: 4 suất còn lại nằm ở
                 # phần chưa tải, và điều kiện cũ `not r.matches` khiến chúng mất trắng.
                 # Với `top_n = 1` (mặc định) điều kiện này y hệt điều kiện cũ.
-                thieu = (f"mới có {len(r.matches)}/{can_top_n} đoạn"
-                         if r.matches else "không thấy gì")
+                # Xác minh: phần đầu có nguồn khác vẫn chưa đủ — chỉ đích mới đủ.
+                if theo_dich:
+                    thieu = "chưa thấy video gốc cần xác minh"
+                else:
+                    thieu = (f"mới có {len(r.matches)}/{can_top_n} đoạn"
+                             if r.matches else "không thấy gì")
                 self._bao(progress, 0.40,
                           f"{thieu.capitalize()} trong {hhmmss(gioi_han)} đầu — "
                           "tải nốt phần còn lại để quét trọn...")
@@ -4441,7 +4637,7 @@ class Engine:
                 f = self.download_audio(url, info["id"], progress)
                 r = self.scan_media(f, label=kq.source_name, ref=url,
                                     source_type="youtube", progress=progress,
-                                    luu_lich_su=False, pct_start=0.40)
+                                    luu_lich_su=False, pct_start=0.40, **mt)
             elif gioi_han:
                 # File chỉ dài `gioi_han` nên scan_media tưởng đã quét trọn "video" và
                 # KHÔNG ghi chú gì. Sửa lại theo thời lượng THẬT, rồi phải TỰ ghi chú ở
@@ -4452,15 +4648,21 @@ class Engine:
                 if r.quet_mot_phan and not r.vung_loi:
                     r.ly_do_pham_vi = "gioi_han_tai"
                 if r.quet_mot_phan:
-                    tin = (f"Chỉ TẢI và quét {hhmmss(r.pham_vi_quet_s)} đầu "
-                           f"/{hhmmss(r.duration_s)} — đã đủ bằng chứng nên không tải "
-                           "tiếp. Bằng chứng chỉ nằm trong phần đã quét.")
+                    if theo_dich:
+                        tin = (f"Chỉ TẢI và quét {hhmmss(r.pham_vi_quet_s)} đầu "
+                               f"/{hhmmss(r.duration_s)} — đã thấy video gốc cần xác minh "
+                               "nên không tải tiếp. Các video gốc khác chỉ được tìm trong "
+                               "phần đã quét.")
+                    else:
+                        tin = (f"Chỉ TẢI và quét {hhmmss(r.pham_vi_quet_s)} đầu "
+                               f"/{hhmmss(r.duration_s)} — đã đủ bằng chứng nên không tải "
+                               "tiếp. Bằng chứng chỉ nằm trong phần đã quét.")
                     r.note = "\n".join([x for x in (r.note, tin) if x])
             # File tải về NGẮN hơn video (yt-dlp bỏ fragment lỗi, file đệm cũ bị cụt): phần
             # thiếu chưa từng được quét — không được thành "quét trọn" (phản biện TCP-04).
             if (r.ly_do_pham_vi != "gioi_han_tai" and r.vung_da_khop is not None
                     and self._thieu_duoi(info.get("duration"), r.duration_s)):
-                r, f = self._xu_ly_tai_thieu(url, info, r, f, progress)
+                r, f = self._xu_ly_tai_thieu(url, info, r, f, progress, **mt)
             r.source_ref = url
             r.source_id = info["id"]
             r.channel_name = info["channel"]
@@ -4505,7 +4707,8 @@ class Engine:
         return not con_lai
 
     def _xu_ly_tai_thieu(self, url: str, info: dict, r: ScanResult, f: str,
-                         progress: Optional[Callable]) -> tuple:
+                         progress: Optional[Callable], *,
+                         muc_tieu: Optional[ScanObjective] = None) -> tuple:
         """File tải về ngắn hơn video: trả ``(kết quả, file)`` sau khi đã giải thích được.
 
         Chỉ một lần tải ĐỘC LẬP thứ hai mới phân biệt được hai nguyên nhân, nên khi chưa có
@@ -4521,10 +4724,21 @@ class Engine:
 
         Đã có bằng chứng thì giữ bằng chứng và ghi rõ là chưa quét trọn — không tải lại cả
         video dài chỉ để quét nốt phần đuôi.
+
+        Chế độ một video gốc chung: «thu thập» cần tập ĐỦ ứng viên nên luôn tải lại; «xác
+        minh» tải lại khi CHƯA thấy đích (bằng chứng của nguồn khác không thay được đích).
+        Lượt quét bản tải lại hỏng thì giữ bằng chứng của lượt đầu thay vì vứt đi.
         """
         dai_that = float(info.get("duration") or 0)
         dai_file = float(r.duration_s or 0)
-        if not r.matches and self._trong_thu_muc_dem(f) and self._bo_ban_dem(info["id"]):
+        mt = {} if muc_tieu is None else {"muc_tieu": muc_tieu}
+        if muc_tieu is None:
+            can_tai_lai = not r.matches
+        elif muc_tieu.mode == MUC_TIEU_THU_THAP:
+            can_tai_lai = True
+        else:
+            can_tai_lai = not muc_tieu.da_dat(r.ung_vien_dat)
+        if can_tai_lai and self._trong_thu_muc_dem(f) and self._bo_ban_dem(info["id"]):
             self._bao(progress, 0.40,
                       f"File tải về chỉ dài {hhmmss(dai_file)}/{hhmmss(dai_that)} — tải lại "
                       "một lần để kiểm...")
@@ -4540,10 +4754,16 @@ class Engine:
             if f_moi and dai_moi > 0 and not self._thieu_duoi(dai_that, dai_moi):
                 r_moi = self.scan_media(f_moi, label=r.source_name, ref=url,
                                         source_type="youtube", progress=progress,
-                                        luu_lich_su=False, pct_start=0.40)
-                if not self._thieu_duoi(dai_that, r_moi.duration_s):
+                                        luu_lich_su=False, pct_start=0.40, **mt)
+                if muc_tieu is not None and r_moi.status != "ok" and r.ung_vien_dat:
+                    # Lượt quét bản tải lại HỎNG: giữ bằng chứng của lượt đầu, phần đuôi
+                    # thiếu vẫn là vùng chưa kiểm (đánh dấu ở dưới).
+                    LOGGER_SCAN.warning("event=scan.redownload_scan_failed video=%s",
+                                        info["id"])
+                elif not self._thieu_duoi(dai_that, r_moi.duration_s):
                     return r_moi, f_moi
-                r, f, dai_file = r_moi, f_moi, float(r_moi.duration_s or 0)
+                else:
+                    r, f, dai_file = r_moi, f_moi, float(r_moi.duration_s or 0)
             elif f_moi and dai_moi > 0 and abs(dai_moi - dai_file) <= DUNG_SAI_TAI_LAI_S:
                 r.vung_da_khop = hop_khoang(list(r.vung_da_khop or [])
                                             + [(dai_file, dai_that)])

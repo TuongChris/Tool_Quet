@@ -45,6 +45,8 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 | `danh_sach_video.py` | Liệt kê tên video thật của một kho (chỉ đọc, offline) rồi ghi đè lên trang tính riêng | Đổi cách kiểm kê kho / cột danh sách |
 | `app.py` | Giao diện Streamlit 6 tab | Đổi giao diện |
 | `cli.py` | Giao diện dòng lệnh, dùng chung engine | Thêm lệnh tự động hoá |
+| `common_original.py` | Chế độ «Một video gốc chung cho cả lô» — phần THUẦN: bằng chứng, kết luận, lập kế hoạch, báo cáo | Đổi luật kết luận / chọn nguồn chung |
+| `common_original_jobs.py` | Bộ điều phối lô nguồn chung: luồng nền, `tool.lock`, lấy thông tin trước, snapshot | Đổi cách chạy lô nguồn chung |
 
 ## Kiến thức nghiệp vụ quan trọng (đã kiểm chứng bằng thực nghiệm)
 
@@ -90,6 +92,39 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 
 Ba khái niệm trên không được dùng thay thế cho nhau. Khi dựng báo cáo hoặc link mốc, luôn dùng
 thời điểm clip bắt đầu; khi chẩn đoán vân tay mới dùng vùng khớp và offset.
+
+## Chế độ «Một video gốc chung cho cả lô» — bất biến
+
+Thiết kế đầy đủ: `docs/COMMON_ORIGINAL_DESIGN.md`. Những điều KHÔNG được phá:
+
+- Ứng viên lấy từ `ScanResult.ung_vien_dat` (đạt chuẩn TRƯỚC khi cắt Top-N), không bao giờ từ
+  `matches`: video gốc chung có thể không là Top-1 của video nào. Trường này chỉ sống trong bộ
+  nhớ — không vào lịch sử, không vào báo cáo 16/34 cột.
+- Mục tiêu quét (`ScanObjective`) truyền TƯỜNG MINH bằng `muc_tieu=`; `None` = hành vi cũ, không
+  kế thừa. Ở mọi điểm dừng sớm / tải tiếp / bù tốc độ, nhánh cũ giữ NGUYÊN VĂN biểu thức cũ —
+  `tests/test_golden_quet_cu.py` (golden sinh trên `f87cc85`) khoá điều đó. Đừng gom các luật cũ
+  vào một hàm: chúng khác nhau thật (đếm clip khác nhau ≠ đếm đoạn đã chọn).
+- Chế độ xác minh chỉ dừng khi thấy ĐÚNG video gốc cần xác minh; nguồn khác dù mạnh tới đâu cũng
+  không làm dừng, không chặn bù tốc độ.
+- Chỉ loại một video gốc bằng lượt quét HỢP LỆ và TRỌN (`quet_day_du`, không vùng lỗi). Dừng sớm,
+  tải một phần, lỗi, huỷ không bao giờ là «vắng mặt».
+- Định danh = (kho, basename clip). Không dùng tiêu đề, không gộp theo mã `[ID]` trong tên file
+  (tên kiểu «X [Compilation].mp3» cũng ra mã 11 ký tự).
+- `_merge` chỉ giữ basename nên hai bản ghi vân tay cùng tên (ví dụ `dir1/same.opus` và
+  `dir2/same.opus`) cho ra CÙNG một `Match.clip`. Tên có >1 bản ghi trong kho không bao giờ được
+  xác nhận là nguồn chung và không điều khiển kế hoạch (không làm đích, không xác nhận ngay);
+  chỉ còn ứng viên trùng tên thì lô CHƯA KẾT LUẬN. Không đọc được danh sách clip của kho thì
+  không chạy lô — chạy tiếp là mất chốt chặn này một cách lặng lẽ.
+- «Không tìm thấy» không phải chứng minh tuyệt đối: kết luận mang `gioi_han` (khúc chạm trần
+  `max_matches`, lượt quét trọn không thử bù tốc độ) tới tận giao diện và CSV. Đừng hạ thành
+  «chưa kết luận» chỉ vì chạm trần — gần như mọi lượt quét thật đều chạm
+  (`docs/ZERO_MATCH_ROOT_CAUSE.md` mục 9).
+- Lô giữ `data/tool.lock` suốt thời gian chạy và so định danh kho/chính sách ở MỖI lượt quét;
+  lệch là dừng, không trộn hai phiên bản kho.
+- Lô KHÔNG ghi `lichsu.db` (lượt dừng sớm sẽ làm Watch bỏ qua video mãi mãi) và chưa đẩy Sheets.
+- Mỗi video tối đa 2 lượt quét; bộ điều phối luôn kết thúc. Mô phỏng 2.000 thế giới ngẫu nhiên
+  trong `tests/test_nguon_chung_ke_hoach.py` khoá tính đúng/đủ.
+- Khớp vân tay không phải xác nhận quyền sở hữu — giao diện phải nói rõ điều này.
 
 ## Kiểm thử — LÀM ƠN CHẠY TRƯỚC KHI BÁO XONG
 

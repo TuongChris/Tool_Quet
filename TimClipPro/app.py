@@ -18,16 +18,26 @@ import pandas as pd
 import streamlit as st
 
 import bang_ngang
+import common_original as nguon_chung
 import danh_sach_video
 import lich_su
 from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
 from clip_metadata import configure_metadata_logging
 import ytdlp_chung
+from common_original_jobs import TEN_PHA as TEN_PHA_NGUON_CHUNG
+from common_original_jobs import CommonOriginalJobController, xuat_csv
 from engine import Engine, ScanResult, hhmmss, mo_ta_pham_vi, o_bang_tinh_an_toan
 from fingerprint_progress import FingerprintJobController
 from khoa import DangChayRoi
+from publication_date import format_publication_date
 from scan_jobs import ScanJobController, ScanLaunchConfig
-from scan_ui import build_scan_status_dataframe, goi_y_quet_mot_phan
+from scan_ui import (
+    build_nguon_chung_status_dataframe,
+    build_scan_status_dataframe,
+    csv_nguon_chung,
+    df_nguon_chung,
+    goi_y_quet_mot_phan,
+)
 from sheet_delivery import SheetDelivery, SheetDeliveryWorker, khoa_giao_hang
 from channel import ChannelSync
 from sheets import SheetsExporter
@@ -92,11 +102,21 @@ if "scan_controller" not in st.session_state:
     )
 scan_sheet_worker: SheetDeliveryWorker = st.session_state.scan_sheet_worker
 scan_controller: ScanJobController = st.session_state.scan_controller
+if "common_controller" not in st.session_state:
+    st.session_state.common_controller = CommonOriginalJobController(eng)
+common_controller: CommonOriginalJobController = st.session_state.common_controller
+
+
+def dang_co_tac_vu() -> bool:
+    """Có tác vụ nào đang chạy không. Mọi controller dùng chung cờ huỷ của Engine: khởi
+    động cái này khi cái kia còn chạy là xoá mất một cú bấm Dừng đang chờ (TCP-13)."""
+    return bool(job.get("running") or scan_controller.running
+                or common_controller.running or fingerprint_controller.running)
 
 
 def chay_quet(nguon: list, source_type: str) -> None:
     """Khởi động batch quét. Kết quả hiện ngay từng video; Sheets gửi song song."""
-    if job.get("running") or scan_controller.running:
+    if dang_co_tac_vu():
         st.warning("Đang có tác vụ chạy; không tạo job trùng.")
         return
     # SNAPSHOT toàn bộ cấu hình NGAY TẠI ĐÂY, trên main thread. Thread nền không
@@ -145,6 +165,23 @@ def chay_quet(nguon: list, source_type: str) -> None:
     st.rerun()
 
 
+def chay_nguon_chung(nguon: list) -> None:
+    """Khởi động lô «Một video gốc chung cho cả lô».
+
+    Bản đầu không đẩy Google Sheets và không ghi lịch sử quét (xem
+    ``docs/COMMON_ORIGINAL_DESIGN.md``); kết quả xuất CSV.
+    """
+    if dang_co_tac_vu():
+        st.warning("Đang có tác vụ chạy; không tạo job trùng.")
+        return
+    ma_lo = common_controller.start(nguon, "youtube")
+    job.update({
+        "running": True, "pct": 0.0, "msg": "Đang chuẩn bị...", "results": [],
+        "error": "", "kind": "nguon_chung", "da_day_sheet": True, "ma_lo": ma_lo,
+    })
+    st.rerun()
+
+
 def chay_nen(kind: str, ham, *args, **kwargs):
     """Chạy một tác vụ dài trong luồng nền để giao diện không bị đơ và nút Dừng vẫn bấm được."""
     job.update({"running": True, "pct": 0.0, "msg": "Đang khởi động...",
@@ -169,7 +206,7 @@ def chay_nen(kind: str, ham, *args, **kwargs):
 
 def chay_van_tay(thumuc: str, mode: str) -> None:
     """Khởi động đúng một controller; worker không gọi API Streamlit."""
-    if job.get("running") or fingerprint_controller.running:
+    if dang_co_tac_vu():
         st.warning("Đang có tác vụ chạy; không tạo thêm job trùng.")
         return
     eng.cancel_event.clear()
@@ -456,6 +493,69 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
                     st.code("\n".join(fs))
             except Exception as e:  # noqa: BLE001
                 st.error(str(e))
+
+
+def hien_ket_qua_nguon_chung(kql: nguon_chung.KetQuaLo) -> None:
+    """Kết quả lô «Một video gốc chung»: KHÔNG âm thầm chuyển về «mỗi video một nguồn»."""
+    n = kql.tong
+    if kql.trang_thai == nguon_chung.TIM_THAY:
+        st.success(f"✅ Tìm thấy video gốc chung khớp vân tay ở cả **{n}/{n}** video.")
+    elif kql.trang_thai == nguon_chung.KHONG_TIM_THAY:
+        st.warning("Không xác minh được một video gốc chung cho toàn bộ lô.")
+    elif kql.trang_thai == nguon_chung.DA_HUY:
+        st.info("⏹️ Đã dừng theo yêu cầu — chưa kết luận cho cả lô.")
+    else:
+        st.warning("Chưa kết luận được cho cả lô.")
+    if kql.gioi_han:
+        # «Không tìm thấy» chưa loại trừ tuyệt đối: giới hạn phải nổi rõ, không chìm trong
+        # một dòng chú thích.
+        st.info(kql.ly_do)
+    elif kql.ly_do:
+        st.caption(kql.ly_do)
+
+    goc = kql.goc
+    if goc is not None:
+        tt_goc = kql.thong_tin_goc or {}
+        dai = tt_goc.get("duration")
+        nhan = ("VIDEO GỐC CHUNG" if kql.la_nguon_chung
+                else f"ỨNG VIÊN TỐT NHẤT — có mặt {kql.so_co_mat}/{n} video "
+                     "(KHÔNG phải nguồn chung)")
+        with st.container(border=True):
+            st.markdown(f"**{nhan}**")
+            st.markdown(f"### {tt_goc.get('title') or goc.clip}")
+            c1, c2, c3 = st.columns(3)
+            c1.markdown(f"🔗 {tt_goc.get('url') or '—'}")
+            c2.markdown("📅 Ngày đăng: "
+                        f"{format_publication_date(tt_goc.get('upload_date') or '') or '—'}")
+            c3.markdown("⏱️ Thời lượng: "
+                        + (hhmmss(dai) if isinstance(dai, (int, float)) and dai > 0 else "—"))
+            st.caption(f"Clip trong kho: `{goc.clip}` · Kho: {kql.kho_ten or kql.kho_id}")
+    for canh_bao in kql.canh_bao:
+        st.warning(f"⚠️ {canh_bao}")
+    if kql.goc_khac:
+        st.caption("Các video gốc khác cũng có ở mọi video: "
+                   + ", ".join(k.clip for k in kql.goc_khac[:10]))
+
+    st.dataframe(df_nguon_chung(kql), width="stretch", hide_index=True)
+    so_lieu = kql.so_lieu or {}
+    if so_lieu:
+        st.caption(
+            f"{so_lieu.get('so_luot', 0)} lượt quét ({so_lieu.get('luot_tron', 0)} trọn, "
+            f"{so_lieu.get('luot_mot_phan', 0)} dừng sớm vì đã thấy video gốc cần xác minh)"
+            f" trong {_thoi_luong(so_lieu.get('thoi_gian_s'))}.")
+    st.caption(
+        "Khớp vân tay âm thanh là bằng chứng kỹ thuật, không phải xác nhận quyền sở hữu — "
+        "hãy xem lại từng mốc trước khi gửi khiếu nại. Chế độ này không ghi vào «Lịch sử "
+        "quét» và chưa đẩy Google Sheets; hãy tải CSV để lưu.")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.download_button("⬇️ Tải báo cáo CSV", csv_nguon_chung(kql),
+                           file_name=f"nguonchung_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                           mime="text/csv", width="stretch", key="tai_csv_nguon_chung")
+    with c2:
+        if st.button("💾 Lưu CSV vào thư mục ketqua\\", width="stretch",
+                     key="luu_csv_nguon_chung"):
+            st.success(f"Đã lưu: {xuat_csv(kql, eng.out_dir)}")
 
 
 # =====================================================================
@@ -831,6 +931,36 @@ if job["running"]:
         if st.button("⏹️ Dừng lại", type="secondary", disabled=anh.cancelled):
             scan_controller.cancel()
             st.warning("Đã gửi yêu cầu dừng; kết quả đã xong vẫn được giữ.")
+    elif job.get("kind") == "nguon_chung":
+        anh = common_controller.snapshot()
+        if not common_controller.running:
+            job["running"] = False
+            job["results"] = [common_controller.result] if common_controller.result else []
+            job["error"] = common_controller.error
+
+        st.header("🧩 Đang tìm video gốc chung cho cả lô")
+        da_quet = sum(1 for v in anh.videos if v.so_luot)
+        st.progress(
+            min(1.0, (da_quet + anh.tien_do) / anh.tong) if anh.tong else 0.0,
+            text=f"Đã quét {da_quet}/{anh.tong} video" if anh.tong else "Đang chuẩn bị...",
+        )
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Giai đoạn", TEN_PHA_NGUON_CHUNG.get(anh.pha, anh.pha))
+        b2.metric("Đã xác minh", f"{anh.so_xac_minh}/{anh.tong}" if anh.ung_vien else "—")
+        b3.metric("Đang quét", f"Video {anh.video_dang_quet}" if anh.video_dang_quet else "—")
+        b4.metric("Đã chạy", _thoi_luong(anh.elapsed_seconds))
+        if anh.ung_vien:
+            st.info(f"**Video gốc đang xét:** {anh.ung_vien_tieu_de}  \n`{anh.ung_vien}`")
+        if anh.message:
+            st.caption(anh.message)
+        st.dataframe(build_nguon_chung_status_dataframe(anh.videos), width="stretch",
+                     hide_index=True, height=260)
+        st.caption("Trong lúc lô chạy, Giám sát tự động và tạo kho phải chờ — kho vân tay "
+                   "phải giữ nguyên suốt lô thì kết luận «không có» mới có nghĩa.")
+        if st.button("⏹️ Dừng lại", type="secondary", disabled=anh.cancelled,
+                     key="dung_nguon_chung"):
+            common_controller.cancel()
+            st.warning("Đã gửi yêu cầu dừng; bằng chứng đã có vẫn được giữ.")
     else:
         st.header("⏳ Đang xử lý...")
         st.progress(job["pct"], text=f"{job['pct']*100:.0f}%")
@@ -908,6 +1038,8 @@ if not job["running"] and (job["results"] or job["error"]):
             st.caption("Những video này giữ tên suy từ tên file và vẫn bị đánh dấu "
                        "«cần kiểm tra» ở tab «Danh sách video trong kho».")
         st.info("Mở tab «📋 Danh sách video trong kho» và bấm xem lại để thấy tên mới.")
+    elif job["kind"] == "nguon_chung":
+        hien_ket_qua_nguon_chung(job["results"][0])
     elif job["kind"] == "sua":
         r = job["results"]
         st.success(f"✅ Đã dựng lại danh sách: {r['tren_dia']} video thực có trên đĩa "
@@ -1462,8 +1594,31 @@ with tab3:
              if x.strip() and not x.strip().startswith("#")]
     if links:
         st.caption(f"Đã nhận {len(links)} link.")
-    if st.button("🚀 Bắt đầu quét", type="primary", disabled=not links or not env["database"]):
-        chay_quet(links, "youtube")
+    che_do = st.radio(
+        "Cách chọn kết quả",
+        ["Mỗi video tự chọn kết quả", "Một video gốc chung cho cả lô"],
+        index=0, horizontal=True, key="che_do_chon_ket_qua",
+        help="«Một video gốc chung cho cả lô»: tìm MỘT clip gốc trong kho có mặt ở TẤT CẢ "
+             "các link (để gom một khiếu nại), kèm một đoạn bằng chứng cho từng video.",
+    )
+    nguon_chung_bat = che_do == "Một video gốc chung cho cả lô"
+    thieu_link = nguon_chung_bat and len(set(links)) < 2
+    if nguon_chung_bat:
+        st.caption(
+            "Tool lấy thông tin cả lô trước, quét TRỌN video ngắn nhất làm mốc, rồi xác minh "
+            "ứng viên mạnh nhất trên các video còn lại; cần thì quét bổ sung (tối đa 2 lượt "
+            "mỗi video). Trong lúc chạy, Giám sát tự động và tạo kho phải chờ. Không ghi "
+            "lịch sử, chưa đẩy Google Sheets — tải CSV ở cuối."
+            + ("" if eng.config.keep_downloads else
+               " ⚠️ «Giữ lại audio đã tải» đang tắt nên lượt quét lại sẽ phải tải lại."))
+        if links and thieu_link:
+            st.warning("Cần ít nhất 2 link khác nhau để tìm video gốc chung.")
+    if st.button("🚀 Bắt đầu quét", type="primary",
+                 disabled=not links or not env["database"] or thieu_link):
+        if nguon_chung_bat:
+            chay_nguon_chung(links)
+        else:
+            chay_quet(links, "youtube")
     if not env["database"]:
         st.warning("Chưa có kho vân tay — hãy làm tab «Kho clip gốc» trước.")
 

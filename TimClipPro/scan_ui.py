@@ -33,6 +33,13 @@ from typing import Any, Mapping, Optional, Sequence
 
 import pandas as pd
 
+from common_original import (
+    COT_SO_NGUON_CHUNG,
+    HEADER_NGUON_CHUNG,
+    TEN_TRANG_THAI_CAP,
+    dong_bao_cao,
+)
+
 # Ký hiệu "chưa có dữ liệu". Dùng chung để UI và test không lệch nhau.
 CHUA_CO = "—"
 
@@ -134,3 +141,48 @@ def build_scan_status_dataframe(
     # Khai báo dtype cho CẢ khung rỗng: bảng lúc mới bắt đầu quét cũng phải có
     # schema ổn định, nếu không lần render đầu vẫn rơi vào nhánh sửa dtype.
     return khung.astype({cot: "string" for cot in COT})
+
+
+# =====================================================================
+#  Chế độ «Một video gốc chung cho cả lô»
+# =====================================================================
+
+COT_NGUON_CHUNG = ("#", "Video", "Lượt quét", "Video gốc đang xét", "Phạm vi đã quét",
+                   "Ghi chú")
+
+
+def build_nguon_chung_status_dataframe(videos: Sequence[Any]) -> pd.DataFrame:
+    """Bảng trạng thái lúc chạy (``common_original_jobs.VideoNguonChung``); toàn chuỗi."""
+    dong = []
+    for v in videos:
+        trang_thai = str(getattr(v, "trang_thai", "") or "")
+        loi = str(getattr(v, "loi", "") or "")
+        dong.append({
+            "#": str(getattr(v, "thu_tu", "")),
+            "Video": ("⏳ " if getattr(v, "dang_quet", False) else "")
+            + str(getattr(v, "tieu_de", "") or getattr(v, "nguon", ""))[:60],
+            "Lượt quét": str(getattr(v, "so_luot", 0)),
+            "Video gốc đang xét": TEN_TRANG_THAI_CAP.get(trang_thai, trang_thai or CHUA_CO),
+            "Phạm vi đã quét": str(getattr(v, "pham_vi", "") or CHUA_CO),
+            "Ghi chú": loi.splitlines()[0][:80] if loi else "",
+        })
+    khung = pd.DataFrame(dong, columns=list(COT_NGUON_CHUNG))
+    return khung.astype({cot: "string" for cot in COT_NGUON_CHUNG})
+
+
+def df_nguon_chung(kql: Any) -> pd.DataFrame:
+    """Bảng kết quả lô (một dòng mỗi video) với cột số ĐÚNG KIỂU (xem CLAUDE.md mục 7)."""
+    df = pd.DataFrame(dong_bao_cao(kql, an_toan=False), columns=HEADER_NGUON_CHUNG)
+    for cot in COT_SO_NGUON_CHUNG:
+        so = pd.to_numeric(df[cot], errors="coerce")
+        khong_rong = so.dropna()
+        if not khong_rong.empty and (khong_rong % 1 == 0).all():
+            so = so.astype("Int64")
+        df[cot] = so
+    return df
+
+
+def csv_nguon_chung(kql: Any) -> bytes:
+    """CSV utf-8-sig của kết quả lô, ô đã chặn công thức bảng tính."""
+    df = pd.DataFrame(dong_bao_cao(kql), columns=HEADER_NGUON_CHUNG)
+    return df.to_csv(index=False).encode("utf-8-sig")

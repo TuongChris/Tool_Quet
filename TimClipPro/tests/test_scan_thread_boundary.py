@@ -45,7 +45,8 @@ def _chi_lay_code(duong_dan: Path) -> str:
     return " ".join(giu)
 
 
-@pytest.mark.parametrize("ten_file", ["scan_jobs.py", "sheet_delivery.py", "scan_ui.py"])
+@pytest.mark.parametrize("ten_file", ["scan_jobs.py", "sheet_delivery.py", "scan_ui.py",
+                                      "common_original.py", "common_original_jobs.py"])
 def test_module_chay_o_thread_nen_khong_cham_streamlit(ten_file):
     code = _chi_lay_code(REPO / ten_file)
     assert not re.search(r"\bimport streamlit\b", code), ten_file
