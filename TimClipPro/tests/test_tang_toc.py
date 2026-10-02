@@ -1,13 +1,24 @@
 # -*- coding: utf-8 -*-
 """Test cấu hình tăng tốc mà không chạy ffmpeg hoặc audfprint thật."""
 
+import wave
 from types import SimpleNamespace
-from pathlib import Path
 
 import pytest
 
 import engine as engine_module
+from kho_gia import ghi_kho_tu_lenh
 from engine import so_nhan_nen_dung
+
+
+def _wav_khuc(path) -> None:
+    """Khúc WAV HỢP LỆ (1 giây im lặng). Khúc mà header không đọc được nay bị coi là cắt
+    lỗi (phản biện TCP-04), nên bộ giả không còn ghi bytes rác."""
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(11025)
+        w.writeframes(bytes(2 * 11025))
 
 
 @pytest.mark.parametrize(
@@ -43,7 +54,7 @@ def test_dung_kho_da_nhan_dem_du_so_file(engine, tmp_path, monkeypatch):
         for i, so_file in enumerate((1, 1, 1, 1, 0, 0, 0, 0)):
             on_line(f"hash_table {i} has {so_file} files 100 hashes")
         on_line("Saved fprints for 4 files (400 hashes) to db.pklz")
-        Path(lenh[lenh.index("--dbase") + 1]).write_bytes(b"fake db")
+        ghi_kho_tu_lenh(lenh)
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
@@ -130,10 +141,12 @@ def test_cut_chunks_dung_overlap_tu_dong(engine, tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "duration_of", lambda media: 1500)
 
     def ffmpeg_gia(lenh, **kwargs):
-        tmp_path.joinpath(lenh[-1]).write_bytes(b"x" * 2048)
-        return SimpleNamespace(returncode=0)
+        _wav_khuc(tmp_path.joinpath(lenh[-1]))
+        return SimpleNamespace(returncode=0, cancelled=False, timed_out=False,
+                               stdout="", stderr="", ly_do="")
 
-    monkeypatch.setattr(engine_module.subprocess, "run", ffmpeg_gia)
+    # Mọi lời gọi FFmpeg của engine đi qua `chay_lenh_media` (có huỷ + hạn im lặng).
+    monkeypatch.setattr(engine_module, "chay_lenh_media", ffmpeg_gia)
 
     chunks, duration = engine._cut_chunks("video.mp4")
 
@@ -154,10 +167,12 @@ def test_cut_chunks_khong_goi_ffmpeg_tai_dung_eof(engine, tmp_path, monkeypatch)
 
     def ffmpeg_gia(lenh, **kwargs):
         cac_moc.append(int(lenh[lenh.index("-ss") + 1]))
-        tmp_path.joinpath(lenh[-1]).write_bytes(b"x" * 2048)
-        return SimpleNamespace(returncode=0)
+        _wav_khuc(tmp_path.joinpath(lenh[-1]))
+        return SimpleNamespace(returncode=0, cancelled=False, timed_out=False,
+                               stdout="", stderr="", ly_do="")
 
-    monkeypatch.setattr(engine_module.subprocess, "run", ffmpeg_gia)
+    # Mọi lời gọi FFmpeg của engine đi qua `chay_lenh_media` (có huỷ + hạn im lặng).
+    monkeypatch.setattr(engine_module, "chay_lenh_media", ffmpeg_gia)
 
     chunks, _ = engine._cut_chunks("video.mp4")
 

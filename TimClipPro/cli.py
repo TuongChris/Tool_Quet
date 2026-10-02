@@ -22,7 +22,9 @@ import watch
 from channel import ChannelSync
 from clip_metadata import configure_metadata_logging
 from dung_lai import YeuCauDung
-from engine import Engine, liet_ke_media, thu_muc_data_mac_dinh
+from khoa import DangChayRoi
+from engine import (Engine, SoKhoHong, liet_ke_media, mo_ta_pham_vi,
+                    thu_muc_data_mac_dinh)
 from ytdlp_chung import CauHinhMang
 
 try:
@@ -82,6 +84,8 @@ def _chay_lenh_watch(a, eng: Engine) -> None:
         return
     if a.gioi_han > 0:
         wl.gioi_han_moi_lan = a.gioi_han
+    # Chỉ truyền khi bật, để lời gọi mặc định giữ đúng chữ ký cũ.
+    them = {"quet_lai": True} if getattr(a, "quet_lai", False) else {}
     try:
         bc = watch.chay_giam_sat(
             eng,
@@ -90,15 +94,37 @@ def _chay_lenh_watch(a, eng: Engine) -> None:
             sheet_link=a.sheet,
             dang_ngang=not a.dang_doc,
             dung_lai=dung_lai,
+            **them,
         )
     finally:
         dung_lai.don_file_dung()
     print("\n" + bc.tom_tat())
+    if getattr(bc, "ban", False):
+        # Một tác vụ khác đang giữ tool.lock: "bận", không phải lỗi — cùng mã 2 như mọi
+        # lệnh CLI khác (phản biện vòng 3).
+        print("\nĐANG BẬN: " + "; ".join(bc.loi), file=sys.stderr)
+        raise SystemExit(2)
     if bc.loi:
         raise SystemExit(1)
 
 
 def main():
+    """Kho/lịch sử đang bị lượt khác giữ khoá thì báo gọn và thoát mã 2 — không in
+    traceback như lỗi lập trình (phản biện vòng 2). Mã 2 để script lịch biết là "bận",
+    khác lỗi thật (mã 1)."""
+    try:
+        _main()
+    except DangChayRoi as e:
+        print(f"\nĐANG BẬN: {e}\nHãy chờ lượt đang chạy xong rồi thử lại.",
+              file=sys.stderr)
+        raise SystemExit(2) from None
+    except SoKhoHong as e:
+        # Sổ đăng ký kho hỏng/mất: cần người khôi phục — báo gọn, không traceback.
+        print(f"\nLỖI SỔ ĐĂNG KÝ KHO: {e}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
+def _main():
     ap = argparse.ArgumentParser(description="TimClip Pro — bản dòng lệnh")
     ap.add_argument(
         "lenh",
@@ -142,6 +168,14 @@ def main():
         help="Xuất báo cáo watch theo dạng dọc cũ",
     )
     ap.add_argument(
+        "--quet-lai",
+        action="store_true",
+        help=(
+            "Watch: quét lại cả video lịch sử nói đã kiểm xong với kho này "
+            "(không xoá lịch sử)"
+        ),
+    )
+    ap.add_argument(
         "--xem-truoc",
         action="store_true",
         help="Chỉ xem các file sẽ xóa với lệnh dondep",
@@ -181,6 +215,10 @@ def main():
 
     eng = Engine()
     eng.config.ncores = a.ncores
+    # Cảnh báo lúc khởi động (sổ đăng ký kho hỏng/mất…): giao diện hiện ở thanh bên, CLI
+    # trước đây không in gì nên người chạy lệnh không biết vì sao lệnh bị chặn.
+    for canh_bao in getattr(eng, "canh_bao_khoi_dong", None) or []:
+        print(f"⚠️ {canh_bao}", file=sys.stderr)
 
     if a.lenh == "vametak":
         ket_qua = eng.va_metadata_thieu(in_tien_do)
@@ -250,6 +288,11 @@ def main():
               f"bỏ qua {r['bo_qua']} video đã có.")
         if r["loi"]:
             print("Lỗi:", *r["loi"][:10], sep="\n  - ")
+        if r.get("nghi_hong"):
+            print("File nghi hỏng/nén dở (đã tải lại; bản cũ chuyển vào _hong, không xoá):",
+                  *r["nghi_hong"][:10], sep="\n  - ")
+        if r.get("da_doi_soat"):
+            print(f"Đã bổ sung metadata tại chỗ cho {r['da_doi_soat']} file có sẵn trên đĩa.")
         print("Tiếp theo: python cli.py themclip \"%s\"" % a.kho)
         return
 
@@ -264,6 +307,8 @@ def main():
             f"đã có {r.get('bo_qua', 0)}, lỗi {r.get('that_bai', 0)} "
             f"trong {r['giay']:.0f} giây."
         )
+        for canh_bao in r.get("canh_bao") or []:
+            print(f"⚠️ {canh_bao}")
         return
 
     if a.lenh == "youtube":
@@ -308,6 +353,10 @@ def main():
         cd = getattr(kq, "chan_doan", None)
         if kq.matches and cd is not None and cd.toc_do_tim_duoc:
             print(f"   🔎 Chỉ khớp sau khi bù tốc độ — {cd.toc_do_tim_duoc}")
+        if kq.status == "ok" and kq.quet_mot_phan:
+            # Dừng sớm / chỉ tải phần đầu / vùng lỗi: không để người đọc tưởng đã quét
+            # trọn video (audit TCP-04/TCP-06).
+            print(f"   ℹ️ Chưa quét trọn — {mo_ta_pham_vi(kq)}")
         for m in kq.matches:
             print(f"   • {m.clip} | {m.start_hhmmss} → {m.end_hhmmss} "
                   f"| {m.hashes} hash ({m.confidence})")

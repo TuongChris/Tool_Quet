@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from engine import Cancelled
+from kho_gia import ghi_kho, ghi_kho_tu_lenh
 
 
 PREFIX = "TIMCLIP_FINGERPRINT_EVENT "
@@ -35,6 +36,7 @@ def test_engine_phat_event_that_theo_tung_file_va_tong_ket(engine, tmp_path, mon
     folder, files = _clips(tmp_path)
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
     events = []
+    kho_tam = []
 
     def run_stream(command, on_line=None, **kwargs):
         for path in files:
@@ -48,7 +50,7 @@ def test_engine_phat_event_that_theo_tung_file_va_tong_ket(engine, tmp_path, mon
                 message="file lỗi" if failed else "",
                 elapsed_seconds=0.2,
             ))
-        Path(command[command.index("--dbase") + 1]).write_bytes(b"database moi")
+        kho_tam.append(ghi_kho_tu_lenh(command, loi=("hỏng.wav",)))
         return 0, ["Saved fprints"]
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
@@ -57,7 +59,7 @@ def test_engine_phat_event_that_theo_tung_file_va_tong_ket(engine, tmp_path, mon
     assert result["thanh_cong"] == 2
     assert result["that_bai"] == 1
     assert result["da_xu_ly"] == 3
-    assert Path(engine.db_file).read_bytes() == b"database moi"
+    assert Path(engine.db_file).read_bytes() == kho_tam[0]
     assert events[0].phase == "discovering"
     assert any(event.phase == "validating" and event.total == 3 for event in events)
     assert [event.file_name for event in events if event.status == "running" and event.file_name]
@@ -85,7 +87,7 @@ def test_phase_decoding_den_tu_event_that_chu_khong_phai_doan_theo_tien_trinh(
         on_line(_line("clip_phase", files[0], phase="decoding"))
         on_line(_line("clip_phase", files[0], phase="fingerprinting"))
         on_line(_line("clip_finished", files[0], status="success", elapsed_seconds=0.1))
-        Path(command[command.index("--dbase") + 1]).write_bytes(b"db")
+        ghi_kho_tu_lenh(command)
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
@@ -111,7 +113,7 @@ def test_clip_phase_la_pha_ket_thuc_thi_bi_bo_qua(engine, tmp_path, monkeypatch)
         on_line(_line("clip_phase", files[0], phase="completed"))
         on_line(_line("clip_phase", files[0], phase="khong_ton_tai"))
         on_line(_line("clip_finished", files[0], status="success", elapsed_seconds=0.1))
-        Path(command[command.index("--dbase") + 1]).write_bytes(b"db")
+        ghi_kho_tu_lenh(command)
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
@@ -130,17 +132,11 @@ def test_add_bo_qua_fingerprint_da_co_nhung_thu_lai_record_zero_hash(
     monkeypatch,
 ):
     folder, files = _clips(tmp_path, ("đã có.wav", "zero hash.wav", "mới.wav"))
-    Path(engine.db_file).write_bytes(b"database cu")
+    # Kho cũ THẬT: files[0] đã có vân tay, files[2] là bản ghi 0 hash cần thử lại.
+    ghi_kho(engine.db_file, [(files[0], 100), (files[2], 0)])
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
-    monkeypatch.setattr(
-        engine,
-        "db_clips",
-        lambda bo_cache=False: [
-            {"duong_dan": files[0], "so_hash": 100},
-            {"duong_dan": files[2], "so_hash": 0},
-        ],
-    )
     seen = []
+    kho_tam = []
 
     def run_stream(command, on_line=None, **kwargs):
         listfile = command[command.index("--list") + 1]
@@ -154,7 +150,7 @@ def test_add_bo_qua_fingerprint_da_co_nhung_thu_lai_record_zero_hash(
                 status="success",
                 elapsed_seconds=0.1,
             ))
-        Path(command[command.index("--dbase") + 1]).write_bytes(b"database them")
+        kho_tam.append(ghi_kho_tu_lenh(command))
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
@@ -164,7 +160,7 @@ def test_add_bo_qua_fingerprint_da_co_nhung_thu_lai_record_zero_hash(
     assert result["thanh_cong"] == 2
     assert files[0] not in seen
     assert files[2] in seen
-    assert Path(engine.db_file).read_bytes() == b"database them"
+    assert Path(engine.db_file).read_bytes() == kho_tam[0]
 
 
 def test_cancel_giu_nguyen_database_cu_va_khong_bao_staged_la_da_commit(
@@ -225,7 +221,7 @@ def test_log_ky_thuat_duoc_dong_sau_job_de_windows_xoa_duoc(engine, tmp_path, mo
             status="success",
             elapsed_seconds=0.1,
         ))
-        Path(command[command.index("--dbase") + 1]).write_bytes(b"db")
+        ghi_kho_tu_lenh(command)
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)

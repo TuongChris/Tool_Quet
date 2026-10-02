@@ -76,19 +76,39 @@ def _engine_chi_doc(root: str, data_dir: str, kho_name: str | None) -> tuple[Eng
     return eng, registry
 
 
-def _history_matches(sqlite_file: str, video_id: str) -> dict:
+def _history_matches(sqlite_file: str, video_id: str, kho_id: str = "") -> dict:
+    """Lần quét gần nhất của video với ĐÚNG kho đang xem (audit TCP-07).
+
+    Lấy job mới nhất của BẤT KỲ kho nào rồi đối chiếu clip với kho đang xem sẽ cho chẩn
+    đoán sai. Không có job của kho này thì mới lùi về lịch sử cũ chưa rõ kho, kèm cảnh báo.
+    """
     if not os.path.isfile(sqlite_file):
         return {"job": None, "matches": [], "warning": "Không có lichsu.db."}
     uri = Path(sqlite_file).resolve().as_uri() + "?mode=ro&immutable=1"
+    canh_bao = ""
     try:
         connection = sqlite3.connect(uri, uri=True)
         connection.row_factory = sqlite3.Row
         try:
-            job = connection.execute(
-                "SELECT id, created_at, source_name, source_ref, source_id, status, "
-                "n_matches FROM jobs WHERE source_id=? ORDER BY id DESC LIMIT 1",
-                (video_id,),
-            ).fetchone()
+            chon = ("SELECT id, created_at, source_name, source_ref, source_id, status, "
+                    "n_matches FROM jobs WHERE source_id=?")
+            cot = {r[1] for r in connection.execute("PRAGMA table_info(jobs)")}
+            if kho_id and "kho_id" in cot:
+                job = connection.execute(
+                    chon + " AND kho_id=? ORDER BY id DESC LIMIT 1", (video_id, kho_id),
+                ).fetchone()
+                if job is None:
+                    job = connection.execute(
+                        chon + " AND (kho_id IS NULL OR kho_id='') ORDER BY id DESC LIMIT 1",
+                        (video_id,),
+                    ).fetchone()
+                    if job is not None:
+                        canh_bao = ("Chỉ có lịch sử cũ chưa rõ kho cho video này — clip "
+                                    "trong job có thể thuộc kho khác.")
+            else:
+                job = connection.execute(
+                    chon + " ORDER BY id DESC LIMIT 1", (video_id,),
+                ).fetchone()
             if job is None:
                 return {"job": None, "matches": [], "warning": "Không thấy job phù hợp."}
             rows = connection.execute(
@@ -107,7 +127,7 @@ def _history_matches(sqlite_file: str, video_id: str) -> dict:
     return {
         "job": dict(job),
         "matches": [dict(row) for row in rows],
-        "warning": "",
+        "warning": canh_bao,
     }
 
 
@@ -172,7 +192,9 @@ def _report(eng: Engine, requested_name: str | None, video_id: str) -> dict:
         warehouse_folder=eng.kho_thu_muc,
         sample_limit=20,
     )
-    history = _history_matches(eng.sqlite_file, video_id) if video_id else {
+    history = _history_matches(
+        eng.sqlite_file, video_id, kho_id=eng._danh_tinh_kho()["kho_id"],
+    ) if video_id else {
         "job": None,
         "matches": [],
         "warning": "",

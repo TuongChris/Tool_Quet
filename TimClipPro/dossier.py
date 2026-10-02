@@ -36,6 +36,9 @@ class HoSo:
     tong_giay_vi_pham: int
     ty_le_video: float
     muc: list = field(default_factory=list)
+    # Rỗng khi đã so khớp trọn video; ngược lại mô tả phần đã thực sự so khớp
+    # (dừng sớm / chỉ tải phần đầu / vùng lỗi) — audit TCP-04/TCP-06.
+    pham_vi: str = ""
 
 
 def dung_ho_so(
@@ -80,6 +83,8 @@ def dung_ho_so(
         tong_giay_vi_pham=tong_giay_vi_pham,
         ty_le_video=ty_le_video,
         muc=cac_muc,
+        pham_vi=(engine.mo_ta_pham_vi(kq)
+                 if kq.status == "ok" and kq.quet_mot_phan else ""),
     )
 
 
@@ -99,8 +104,13 @@ def render_markdown(ho_so: HoSo) -> str:
         f"- **Tổng số đoạn vi phạm:** {len(ho_so.muc)}",
         f"- **Tổng thời gian vi phạm:** {engine.hhmmss(ho_so.tong_giay_vi_pham)}",
         f"- **Tỷ lệ video bị chiếm:** {ho_so.ty_le_video}%",
-        "",
     ]
+    if ho_so.pham_vi:
+        cac_dong.append(
+            f"- **Phạm vi đã quét:** CHƯA QUÉT TRỌN — {ho_so.pham_vi}. Số đoạn và tỷ lệ "
+            "ở trên chỉ tính trong phần đã so khớp."
+        )
+    cac_dong.append("")
 
     if not ho_so.muc:
         cac_dong.append("*Không phát hiện đoạn vi phạm nào.*")

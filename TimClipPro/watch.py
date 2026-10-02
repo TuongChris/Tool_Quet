@@ -51,6 +51,9 @@ class BaoCao:
     sheets_so_dong: int = 0
     sheets_note: str = ""
     loi: list = field(default_factory=list)
+    # Lượt không chạy vì một tác vụ khác đang giữ `tool.lock` — "bận", không phải lỗi
+    # (CLI thoát mã 2 để lịch chạy phân biệt được; phản biện vòng 3).
+    ban: bool = False
 
     def tom_tat(self) -> str:
         """Trả về bản tóm tắt nhiều dòng, tiếng Việt, để in ra console hoặc gửi email."""
@@ -275,8 +278,13 @@ def chay_giam_sat(
     sheet_link: str = "",
     dang_ngang: bool = True,
     dung_lai: Any = None,
+    quet_lai: bool = False,
 ) -> BaoCao:
-    """Chạy một lượt giám sát đầy đủ."""
+    """Chạy một lượt giám sát đầy đủ.
+
+    ``quet_lai=True``: quét lại cả video lịch sử nói đã kiểm xong với kho này (ví dụ
+    sau khi nghi kết quả cũ). Không xoá lịch sử — lượt mới chỉ thêm dòng.
+    """
     # Vòng giám sát chạy lặp lại theo lịch nên là nơi tích luỹ nguy cơ bị YouTube coi
     # là bot cao nhất. `mo_rong_watchlist` mặc định dùng `ChannelSync.list_channel`
     # trần, tức mất cookie và mất nhịp người dùng đã đặt; dựng sẵn lister mang cấu
@@ -296,9 +304,10 @@ def chay_giam_sat(
                 sheet_link=sheet_link,
                 dang_ngang=dang_ngang,
                 dung_lai=dung_lai,
+                quet_lai=quet_lai,
             )
     except DangChayRoi as e:
-        return BaoCao(loi=[str(e)])
+        return BaoCao(loi=[str(e)], ban=True)
 
 
 def _chay_giam_sat_da_khoa(
@@ -309,6 +318,7 @@ def _chay_giam_sat_da_khoa(
     sheet_link: str = "",
     dang_ngang: bool = True,
     dung_lai: Any = None,
+    quet_lai: bool = False,
 ) -> BaoCao:
     """Thực hiện lượt giám sát sau khi caller đã giữ khóa liên tiến trình."""
     bao_cao = BaoCao()
@@ -322,6 +332,7 @@ def _chay_giam_sat_da_khoa(
             sheet_link=sheet_link,
             dang_ngang=dang_ngang,
             dung_lai=dung_lai,
+            quet_lai=quet_lai,
         )
     finally:
         try:
@@ -356,6 +367,77 @@ def _chay_giam_sat_da_khoa(
             bao_cao.loi.append(f"Không dọn được thư mục job: {e}")
 
 
+def _db_theo_so(engine: Any, ten: str) -> str:
+    """File vân tay của kho ``ten`` theo sổ đăng ký — CHỈ ĐỌC; rỗng nếu không tra được
+    (khi đó ``use_kho`` tự báo lỗi đúng nguyên nhân mà không ghi gì)."""
+    doc_so = getattr(engine, "_doc_khos", None)
+    duong_dan = getattr(engine, "_duong_dan_db_kho", None)
+    if not (callable(doc_so) and callable(duong_dan)):
+        return ""
+    try:
+        kho = next((k for k in doc_so().get("danh_sach", []) if k.get("ten") == ten), None)
+        return duong_dan(kho.get("db")) if kho else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _kho_khong_dung_duoc(engine: Any, wl: WatchList) -> str:
+    """Lý do KHÔNG được quét lượt này; chuỗi rỗng = kho dùng được.
+
+    * Watchlist chỉ định kho: phải mở được ĐÚNG kho đó và kho đã có vân tay.
+    * Không chỉ định: dùng kho đang chọn trong sổ đăng ký — nhưng Engine lặng lẽ lùi về
+      ``data/db.pklz`` khi sổ hỏng hoặc kho đang chọn không mở được; quét như vậy là đối
+      chiếu nhầm kho (phản biện TCP-08). So sổ với kho Engine đang mở để phát hiện.
+    """
+    if wl.kho:
+        # Kiểm file vân tay TRƯỚC khi `use_kho` ghi «kho đang dùng» vào sổ: lượt bị dừng
+        # không được đổi kho mà giao diện đang chọn (phản biện vòng 2).
+        db = _db_theo_so(engine, wl.kho)
+        if db and not os.path.isfile(db):
+            return (f"Kho «{wl.kho}» chưa có vân tay ({os.path.basename(db)} chưa được "
+                    "tạo) — hãy tạo kho trước.")
+        try:
+            engine.use_kho(wl.kho)
+        except Exception as e:  # noqa: BLE001
+            return f"Không dùng được kho «{wl.kho}»: {str(e).rstrip('. ')}."
+        dang_mo = getattr(engine, "kho_dang_dung", wl.kho)
+        if dang_mo != wl.kho:
+            return f"Không dùng được kho «{wl.kho}» (đang mở «{dang_mo}»)."
+        db = getattr(engine, "db_file", "")
+        if db and not os.path.isfile(db):
+            return (f"Kho «{wl.kho}» chưa có vân tay ({os.path.basename(db)} chưa được "
+                    "tạo) — hãy tạo kho trước.")
+        return ""
+    doc_so = getattr(engine, "_doc_khos", None)
+    if not callable(doc_so):
+        return ""
+    try:
+        so = doc_so()
+    except Exception as e:  # noqa: BLE001
+        return f"Không đọc được sổ đăng ký kho: {str(e).rstrip('. ')}."
+    if not so.get("danh_sach"):
+        # Sổ trống. Chưa từng tạo kho (cài mới) thì không có kho nào để nhầm — lượt quét
+        # tự báo thiếu kho vân tay như cũ. Nhưng sổ trống vì vừa HỎNG hoặc MẤT (còn
+        # khos.json.hong.* / khos.json.bak) thì Engine đang lùi về data/db.pklz: quét như
+        # vậy là đối chiếu nhầm kho (phản biện vòng 2 + 3).
+        vua_hong = getattr(engine, "_so_kho_vua_hong", None)
+        if not (callable(vua_hong) and vua_hong()):
+            return ""
+        chi_tiet = " ".join(getattr(engine, "canh_bao_khoi_dong", None) or [])
+        return ("Sổ đăng ký kho đã hỏng — không có kho nào dùng được."
+                + (f" {chi_tiet}" if chi_tiet else ""))
+    yeu_cau = so.get("dang_dung") or ""
+    dang_mo = getattr(engine, "kho_dang_dung", "")
+    if not yeu_cau or dang_mo != yeu_cau:
+        return (f"Kho đang chọn trong sổ đăng ký («{yeu_cau or 'trống'}») không mở được — "
+                f"Engine đang dùng «{dang_mo or 'kho mặc định data/db.pklz'}».")
+    db = getattr(engine, "db_file", "")
+    if db and not os.path.isfile(db):
+        return (f"Kho «{yeu_cau}» chưa có vân tay ({os.path.basename(db)} chưa được tạo) — "
+                "hãy tạo kho trước.")
+    return ""
+
+
 def _thuc_hien_giam_sat(
     engine: Any,
     wl: WatchList,
@@ -365,17 +447,24 @@ def _thuc_hien_giam_sat(
     sheet_link: str = "",
     dang_ngang: bool = True,
     dung_lai: Any = None,
+    quet_lai: bool = False,
 ) -> BaoCao:
     """Quét nguồn, xuất CSV và đẩy Sheets trong một lượt giám sát."""
-    if wl.kho:
-        try:
-            engine.use_kho(wl.kho)
-        except Exception as e:  # noqa: BLE001
-            bao_cao.loi.append(f"Không dùng được kho «{wl.kho}»: {e}")
+    # Kho không dùng được thì DỪNG cả lượt trước mọi thao tác (audit TCP-08). Trước đây
+    # chỉ ghi một dòng lỗi rồi quét tiếp bằng kho đang chọn từ trước: đối chiếu sai kho,
+    # xuất CSV và đẩy Sheets như thể đúng kho.
+    ly_do = _kho_khong_dung_duoc(engine, wl)
+    if ly_do:
+        bao_cao.loi.append(
+            f"{ly_do} Đã dừng lượt giám sát: không liệt kê, không tải, không quét, không "
+            "xuất CSV hay Google Sheets — để không quét nhầm bằng kho khác."
+        )
+        return bao_cao
 
     ung_vien, loi = lay_ung_vien(wl, lister=lister)
     bao_cao.loi.extend(loi)
-    da_quet = id_da_quet(engine)
+    # Lịch sử chỉ tính video đã kiểm XONG với đúng kho này (audit TCP-07).
+    da_quet = set() if quet_lai else id_da_quet(engine)
     can_quet = loc_can_quet(ung_vien, da_quet, wl.gioi_han_moi_lan)
     bao_cao.tong_ung_vien = len(ung_vien)
     bao_cao.da_quet_truoc = len(ung_vien) - len(can_quet)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Test tham số subframe shifts mà không chạy audfprint hay xử lý audio thật."""
 
-from pathlib import Path
+from kho_gia import ghi_kho, ghi_kho_tu_lenh
 
 
 def _chuan_bi_lenh(engine, tmp_path, monkeypatch):
@@ -20,7 +20,7 @@ def _chuan_bi_lenh(engine, tmp_path, monkeypatch):
                 on_line("Analyzed #1")
             else:
                 on_line("ingesting #1: clip.wav...")
-                Path(lenh[lenh.index("--dbase") + 1]).write_bytes(b"fake db")
+                ghi_kho_tu_lenh(lenh)
         return 0, []
 
     monkeypatch.setattr(engine, "_run_stream", run_stream)
@@ -69,7 +69,7 @@ def test_shifts_am_duoc_kep_ve_0(engine, tmp_path, monkeypatch):
 def test_canh_bao_khi_kho_lech_shifts(engine, tmp_path, monkeypatch):
     thu_muc, _ = _chuan_bi_lenh(engine, tmp_path, monkeypatch)
     # Kho cũ không có khóa "shifts" phải được hiểu là shifts=0.
-    Path(engine.db_file).write_bytes(b"old fingerprint database")
+    ghi_kho(engine.db_file, [(str(tmp_path / "clip_cu.wav"), 7)])
     engine.config.shifts_kho = 4
 
     ket_qua = engine.build_database(str(thu_muc), "add")

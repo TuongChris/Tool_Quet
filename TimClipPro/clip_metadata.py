@@ -23,10 +23,21 @@ from urllib.parse import parse_qs, urlparse
 
 
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
-_BRACKET_ID_PATTERN = re.compile(r"\[([A-Za-z0-9_-]{11})\]")
+# Mã video trong TÊN FILE chỉ nằm ở hậu tố ``[ID].đuôi`` — đúng ngữ pháp bộ tải
+# (``channel.ChannelSync._ten_file``: "<ngày> - <tiêu đề> [<ID>].opus"). Ngoặc vuông
+# 11 ký tự ở chỗ khác — trong tiêu đề («[Compilation]») hay tên thư mục
+# («[SML-Channel]») — chỉ là chữ. Trước đây mọi ``[11 ký tự]`` đều bị coi là mã nên
+# clip hợp lệ thành "hai mã" và bị ambiguous, mất URL/ngày/thời lượng (audit TCP-12).
+# Sau `[ID]` có thể còn đuôi do Windows đặt khi chép trùng tên (" (1)", " - Copy",
+# " - Bản sao (2)"), đuôi tệp trung gian của yt-dlp (".f251") hoặc dấu cách trước phần mở
+# rộng — vẫn là cùng một video.
+_HAU_TO_BAN_SAO = (r"(?:\s*\(\d+\)|\s+-\s+(?:[Cc]opy|[Bb]ản sao)(?:\s*\(\d+\))?)?"
+                   r"(?:\.f\d+)?\s*")
+_SUFFIX_ID_PATTERN = re.compile(
+    r"\[([A-Za-z0-9_-]{11})\]" + _HAU_TO_BAN_SAO + r"(?:\.[^./\\\s]+)?$")
 _FILENAME_PATTERN = re.compile(
     r"^(?P<date>\d{8})\s*-\s*(?P<title>.+?)\s+"
-    r"\[(?P<video_id>[A-Za-z0-9_-]{11})\](?:\.[^./\\]+)?$"
+    r"\[(?P<video_id>[A-Za-z0-9_-]{11})\]" + _HAU_TO_BAN_SAO + r"(?:\.[^./\\]+)?$"
 )
 _FIELDS = ("video_id", "title", "url", "upload_date", "duration")
 
@@ -91,13 +102,21 @@ def _youtube_ids_from_url(value: object) -> set[str]:
 
 
 def _ids_from_value(value: object) -> set[str]:
+    """Mã video từ một giá trị: mã trần, URL YouTube, hoặc tên/đường dẫn file.
+
+    Với tên file chỉ đọc hậu tố ``[ID].đuôi`` của BASENAME (xem ``_SUFFIX_ID_PATTERN``).
+    Cắt dấu cách/dấu chấm cuối như Windows trước khi đọc: "x [ID].opus ." và
+    "x [ID].opus" là cùng một file.
+    """
     if not isinstance(value, str) or not value.strip():
         return set()
     text = value.strip()
     ids: set[str] = set()
     if YOUTUBE_ID_PATTERN.fullmatch(text):
         ids.add(text)
-    ids.update(_BRACKET_ID_PATTERN.findall(text))
+    hau_to = _SUFFIX_ID_PATTERN.search(basename_compatible(text).rstrip(" ."))
+    if hau_to:
+        ids.add(hau_to.group(1))
     ids.update(_youtube_ids_from_url(text))
     return ids
 
@@ -559,11 +578,26 @@ def _merge_entries(entries: Iterable[MetadataEntry]) -> tuple[MetadataEntry, tup
     if not ordered:
         raise ValueError("Không có metadata entry để hợp nhất.")
     first = ordered[0]
+    # Nguồn chuẩn (clips_meta.json, kể cả bản .bak khi bản chính hỏng) thắng snapshot cả
+    # về MÃ VIDEO: snapshot chỉ là bản dẫn xuất đã cũ (người dùng vừa sửa `id`). Không bỏ
+    # qua thì clip thành ambiguous và lượt làm mới snapshot không bao giờ hội tụ (phản
+    # biện TCP-09). Mâu thuẫn giữa các nguồn KHÔNG phải snapshot vẫn là ambiguous.
+    lech_dinh_danh: list[str] = []
+    if (first.source_kind.startswith("live") and first.video_id
+            and not _entry_identity_conflict(first)):
+        snapshot_cu = [entry for entry in ordered[1:]
+                       if entry.source_kind.startswith("snapshot") and entry.video_id
+                       and entry.video_id != first.video_id]
+        if snapshot_cu:
+            ordered = [entry for entry in ordered
+                       if all(entry is not cu for cu in snapshot_cu)]
+            lech_dinh_danh.append(
+                f"snapshot_lech:video_id:{basename_compatible(first.key)}")
     trusted_ids = {entry.video_id for entry in ordered if entry.video_id}
     if len(trusted_ids) > 1 or any(_entry_identity_conflict(entry) for entry in ordered):
         warnings = [warning for entry in ordered for warning in entry.warnings]
         warnings.append("conflicting_ids_across_sources")
-        conflicts = (f"conflict:video_id:{basename_compatible(first.key)}",)
+        conflicts = (*lech_dinh_danh, f"conflict:video_id:{basename_compatible(first.key)}")
         # Không merge theo field khi identity không thống nhất: điều đó có thể tạo
         # record lai id=A nhưng URL/title của B. Resolver sẽ coi entry này ambiguous.
         return MetadataEntry(
@@ -581,7 +615,7 @@ def _merge_entries(entries: Iterable[MetadataEntry]) -> tuple[MetadataEntry, tup
         ), conflicts
     values = {field: getattr(first, field) for field in _FIELDS}
     warnings = list(first.warnings)
-    conflicts: list[str] = []
+    conflicts: list[str] = list(lech_dinh_danh)
     origin_method = first.origin_method
     for entry in ordered[1:]:
         warnings.extend(entry.warnings)
@@ -598,7 +632,16 @@ def _merge_entries(entries: Iterable[MetadataEntry]) -> tuple[MetadataEntry, tup
                 and candidate not in ("", None)
                 and current != candidate
             ):
-                conflicts.append(f"conflict:{field}:{basename_compatible(first.key)}")
+                # Nguồn chuẩn (live, kể cả bản .bak khi bản chính hỏng) thắng snapshot theo
+                # CHÍNH SÁCH, nên đây không phải mâu thuẫn chưa giải mà là snapshot đã cũ —
+                # ghi riêng để cảnh báo đúng chỗ cần làm mới (audit TCP-09).
+                loai = (
+                    "snapshot_lech"
+                    if first.source_kind.startswith("live")
+                    and entry.source_kind.startswith("snapshot")
+                    else "conflict"
+                )
+                conflicts.append(f"{loai}:{field}:{basename_compatible(first.key)}")
     return MetadataEntry(
         key=first.key,
         video_id=str(values["video_id"] or ""),

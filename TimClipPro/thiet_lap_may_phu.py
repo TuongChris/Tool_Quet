@@ -16,7 +16,7 @@ import os
 import shutil
 import sys
 
-from luu_tru import doc_json_an_toan, ghi_json_an_toan
+from luu_tru import cap_nhat_json, doc_json_an_toan
 
 GOC = os.path.dirname(os.path.abspath(__file__))
 THU_MUC_META = "kho_meta"
@@ -34,7 +34,8 @@ def sua_duong_dan_kho(goc: str = GOC, chi_kiem_tra: bool = False) -> list:
     if not isinstance(khos, dict) or not khos.get("danh_sach"):
         return ["Không đọc được data/khos.json — gói có vẻ thiếu."]
 
-    ghi_chu, doi = [], False
+    ghi_chu = []
+    can_doi: dict[str, str] = {}
     for k in khos["danh_sach"]:
         ten = k.get("ten") or ""
         moi = os.path.join(goc, THU_MUC_META, ten)
@@ -45,11 +46,18 @@ def sua_duong_dan_kho(goc: str = GOC, chi_kiem_tra: bool = False) -> list:
             continue
         if os.path.normcase(k.get("thu_muc") or "") != os.path.normcase(moi):
             ghi_chu.append(f"Kho «{ten}»: {k.get('thu_muc') or '(trống)'} → {moi}")
-            k["thu_muc"] = moi
-            doi = True
+            can_doi[ten] = moi
+    doi = bool(can_doi)
 
     if doi and not chi_kiem_tra:
-        ghi_json_an_toan(path, khos)      # nguyên tử, tự tạo .bak
+        def sua(d: dict) -> None:
+            # Đọc lại bản MỚI NHẤT dưới khoá rồi chỉ sửa đúng `thu_muc` của kho cần
+            # đổi — không ghi đè cả sổ đăng ký bằng bản đọc từ đầu hàm.
+            for kho in d.get("danh_sach", []):
+                if isinstance(kho, dict) and kho.get("ten") in can_doi:
+                    kho["thu_muc"] = can_doi[kho["ten"]]
+
+        cap_nhat_json(path, sua, mac_dinh={"dang_dung": "", "danh_sach": []})
         ghi_chu.append("Đã ghi lại data/khos.json (bản sao: .bak)")
     elif doi:
         ghi_chu.append("[chỉ kiểm tra] chưa ghi — bỏ cờ --kiem-tra để sửa thật")

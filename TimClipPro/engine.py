@@ -23,8 +23,10 @@ Cách dùng từ code khác:
 from __future__ import annotations
 
 import contextlib
+import copy
 import csv
 import glob
+import hashlib
 import io
 import json
 import logging
@@ -33,7 +35,6 @@ import os
 import re
 import shutil
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
@@ -46,6 +47,7 @@ import channel
 import cau_hinh
 import ytdlp_chung
 import dossier
+import lich_su
 from chan_doan_quet import (
     AUDFPRINT_KHONG_RA_MATCH,
     ChanDoanQuet,
@@ -65,6 +67,7 @@ from clip_metadata import (
     MetadataAudit,
     MetadataRepairResult,
     basename_compatible,
+    extract_youtube_id,
     load_metadata_strict,
     source_from_mapping,
 )
@@ -75,14 +78,22 @@ from fingerprint_progress import (
     tao_fingerprint_logger,
     ten_file_an_toan,
 )
-from khoa import KhoaTienTrinh
+from khoa import DangChayRoi, KhoaTienTrinh
 from luu_tru import (
     LoiDuLieu,
+    cap_nhat_json,
     doc_json_an_toan,
     ghi_json_an_toan,
     ten_file_hop_le,
 )
-from process_runner import ProcessSnapshot, run_observed_process
+from process_runner import (
+    IM_LANG_FFMPEG_S,
+    TRAN_FFPROBE_S,
+    KetQuaLenh,
+    ProcessSnapshot,
+    chay_lenh_media,
+    run_observed_process,
+)
 from publication_date import ghi_log_chan_doan, resolve_publication_date
 
 
@@ -389,15 +400,74 @@ class ScanResult:
     # cái trùng khít nên trước đây một trường phục vụ được cả hai; quét tăng dần làm
     # chúng tách đôi, và không giá trị đơn nào đúng cho cả hai mục đích.
     pham_vi_quet_s: float = 0.0
+    # Phạm vi THỰC SỰ đã so khớp (audit TCP-04/TCP-06). ``None`` = không biết (kết quả
+    # dựng theo kiểu cũ) — khi đó không khẳng định gì về độ phủ.
+    vung_da_khop: Optional[list] = None   # [(từ, đến)] giây, đã hợp
+    vung_loi: list = field(default_factory=list)   # vùng cắt/giải mã/khớp LỖI, chưa phủ
+    # "" | "dung_som" (đủ bằng chứng) | "gioi_han_tai" (chỉ tải phần đầu)
+    # | "loi_khuc" (có vùng lỗi) | "huy" (người dùng dừng)
+    ly_do_pham_vi: str = ""
+    # Chính sách chọn lọc (đủ Top-N, clip khác nhau nếu bật) ĐÃ thoả trong phần đã quét.
+    # Khác hẳn "đã khảo sát toàn bộ video".
+    dat_muc_tieu: bool = False
+    # Kho đã dùng cho lượt quét (audit TCP-07): định danh BỀN, tên hiển thị lúc quét,
+    # phiên bản hiệu lực của file kho và chữ ký chính sách nhận diện. Lịch sử dựa vào
+    # chúng để biết một kết luận cũ còn áp dụng cho kho/chính sách hiện tại hay không.
+    kho_id: str = ""
+    kho_ten: str = ""
+    kho_phien_ban: str = ""
+    chinh_sach: str = ""
+
+    @property
+    def quet_day_du(self) -> bool:
+        """Đã so khớp HẾT video và không có vùng lỗi. Không biết phạm vi → False."""
+        if self.vung_da_khop is None or self.vung_loi:
+            return False
+        if not self.duration_s:
+            return bool(self.vung_da_khop)
+        return tong_do_dai(self.vung_da_khop) >= self.duration_s - DUNG_SAI_PHU_S
 
     @property
     def quet_mot_phan(self) -> bool:
         """Có phải chỉ quét một phần video không? Dùng để ghi rõ trên báo cáo."""
+        if self.vung_da_khop is not None:
+            return not self.quet_day_du
         return bool(self.duration_s and 0 < self.pham_vi_quet_s < self.duration_s - 1)
 
 
 class Cancelled(Exception):
     """Ném ra khi người dùng bấm Dừng."""
+
+
+class SoKhoHong(RuntimeError):
+    """Sổ đăng ký kho (``khos.json``) vừa hỏng hoặc bị mất: không quét, không tạo kho.
+
+    Lúc đó Engine chỉ còn trỏ tạm về ``data/db.pklz``; dùng nó là đối chiếu (hoặc ghi vân
+    tay) nhầm kho mà không ai hay (phản biện vòng 2 + 3).
+    """
+
+
+# Tham số làm THAY ĐỔI kết luận "video này không chứa clip nào trong kho" (audit
+# TCP-07): cắt khúc, ngưỡng audfprint, gộp, ngưỡng chấp nhận, bù tốc độ. Đổi một
+# trong số này thì âm tính cũ không còn chứng minh được gì nên Watch phải quét lại.
+# Tham số chỉ đổi cách CHỌN/HIỂN THỊ kết quả (top_n, phân bố đều...), cách tải hay
+# thứ tự quét (quét tăng dần — không thấy gì thì vẫn quét hết) KHÔNG nằm ở đây, để
+# một lần chỉnh Top-N không kéo theo việc tải lại hàng nghìn video dài.
+TRUONG_CHINH_SACH = (
+    "chunk_s", "overlap_s", "overlap_max_s", "overlap_tu_dong", "min_hash",
+    "min_match_s", "max_matches", "dedup_s", "shifts_quet", "min_hash_floor",
+    "ty_le_chap_nhan", "min_match_chap_nhan", "mat_do_toi_thieu", "mat_do_bac_a",
+    "quet_da_toc_do", "toc_do_min_manh", "toc_do_thang_hang", "toc_do_lech_toi_thieu",
+    "toc_do_lech_toi_da", "luoi_resample", "luoi_tempo", "toc_do_toi_da_thu",
+)
+
+
+def chu_ky_chinh_sach(cfg) -> str:
+    """Chữ ký ngắn của chính sách nhận diện; tiền tố là phiên bản danh sách trường."""
+    gia_tri = {k: getattr(cfg, k, None) for k in TRUONG_CHINH_SACH}
+    tom = hashlib.sha256(json.dumps(gia_tri, sort_keys=True, ensure_ascii=False,
+                                    default=str).encode("utf-8")).hexdigest()[:16]
+    return f"v1:{tom}"
 
 
 # =====================================================================
@@ -428,6 +498,166 @@ def hhmmss(giay: float) -> str:
     """
     giay = max(0, int(giay))
     return f"{giay // 3600:02d}:{(giay % 3600) // 60:02d}:{giay % 60:02d}"
+
+
+# =====================================================================
+#  Phạm vi quét: tập khoảng thời gian (audit TCP-04/TCP-06)
+#
+#  "Đã quét tới giây X" (`max(end)`) KHÔNG phải độ phủ: một khúc giữa lỗi để lại lỗ
+#  hổng mà `max(end)` vẫn bằng cả video. Phạm vi thật là HỢP các khoảng đã thực sự
+#  so khớp; phần lỗi là các khoảng KHÔNG được phủ bởi khúc nào khác.
+# =====================================================================
+
+# Sai số cho phép khi so tổng độ phủ với thời lượng video (độ dài WAV đo từ header có
+# thể ngắn hơn thời lượng ffprobe vài phần trăm giây).
+DUNG_SAI_PHU_S = 2.0
+# File tải về ngắn hơn lengthSeconds của YouTube quá mức này thì phải giải thích được
+# (tải lại để kiểm). Cố định theo GIÂY, không theo tỉ lệ: dung sai 0,2% cũ cho video 10
+# tiếng là 72 giây đuôi không ai quét mà vẫn ghi "quét trọn" (phản biện vòng 2).
+DUNG_SAI_TAI_THIEU_S = 5.0
+# Hai lần tải độc lập lệch nhau không quá mức này thì coi là CÙNG một độ dài.
+DUNG_SAI_TAI_LAI_S = 1.0
+
+
+def hop_khoang(khoang) -> list:
+    """Hợp các khoảng ``[a, b)``: sắp xếp, gộp phần chồng/kề nhau. Bỏ khoảng rỗng."""
+    ds = sorted((float(a), float(b)) for a, b in khoang if float(b) > float(a))
+    ra: list = []
+    for a, b in ds:
+        if ra and a <= ra[-1][1]:
+            ra[-1] = (ra[-1][0], max(ra[-1][1], b))
+        else:
+            ra.append((a, b))
+    return ra
+
+
+def tong_do_dai(khoang) -> float:
+    """Tổng độ dài của HỢP các khoảng — phần chồng lặp chỉ tính một lần."""
+    return sum(b - a for a, b in hop_khoang(khoang))
+
+
+def tru_khoang(goc, bo) -> list:
+    """Phần của ``goc`` KHÔNG nằm trong ``bo``."""
+    con = hop_khoang(goc)
+    for c, d in hop_khoang(bo):
+        moi = []
+        for a, b in con:
+            if d <= a or c >= b:
+                moi.append((a, b))
+                continue
+            if a < c:
+                moi.append((a, c))
+            if d < b:
+                moi.append((d, b))
+        con = moi
+    return hop_khoang(con)
+
+
+def mo_ta_pham_vi(kq) -> str:
+    """Một dòng tiếng Việt nói phần nào của video đã thực sự được so khớp."""
+    tong = float(getattr(kq, "duration_s", 0.0) or 0.0)
+    vung = getattr(kq, "vung_da_khop", None)
+    da_khop = tong_do_dai(vung) if vung is not None else float(
+        getattr(kq, "pham_vi_quet_s", 0.0) or 0.0)
+    phan = f"{hhmmss(da_khop)}/{hhmmss(tong)}" if tong else hhmmss(da_khop)
+    ly_do = getattr(kq, "ly_do_pham_vi", "") or ""
+    loi = list(getattr(kq, "vung_loi", []) or [])
+    if loi:
+        vi_du = ", ".join(f"{hhmmss(a)}–{hhmmss(b)}" for a, b in loi[:3])
+        them = f" (+{len(loi) - 3} vùng)" if len(loi) > 3 else ""
+        return (f"lỗi xử lý {len(loi)} vùng ({vi_du}{them}); "
+                f"đã so khớp {phan}")
+    if ly_do == "gioi_han_tai":
+        return f"chỉ tải và so khớp {phan} — đã đủ bằng chứng nên không tải tiếp"
+    if ly_do == "dung_som":
+        return f"đã đủ bằng chứng sau khi so khớp {phan}, phần còn lại chưa quét"
+    return f"đã so khớp {phan}"
+
+
+def nhan_pham_vi(kq) -> str:
+    """Hậu tố gắn vào TÊN video trên báo cáo khi chưa quét trọn; rỗng nếu đã trọn.
+
+    Không thêm cột: hợp đồng 34 cột (ngang) / 16 cột (dọc) và Apps Script đọc cột theo
+    tên. Cột tên video vốn đã mang trạng thái — dòng lỗi ghi "(LỖI: …)" ngay tại đó.
+    """
+    if getattr(kq, "status", "ok") != "ok" or not getattr(kq, "quet_mot_phan", False):
+        return ""
+    return f" [QUÉT MỘT PHẦN — {mo_ta_pham_vi(kq)}]"
+
+
+@dataclass
+class _PhamViQuet:
+    """Sổ ghi phạm vi của MỘT lượt quét; chỉ tồn tại trong ``_scan_media``."""
+    do_dai_khuc: dict = field(default_factory=dict)     # tên khúc -> giây đo thật
+    loi_cat: list = field(default_factory=list)         # [(a, b)] cắt/giải mã lỗi
+    da_gui: list = field(default_factory=list)          # khúc gốc đã gửi đi so khớp
+    khong_phan_tich: set = field(default_factory=set)   # gửi đi mà audfprint không báo
+    dung_som: bool = False                              # bỏ qua phần sau vì đủ bằng chứng
+    # Luồng ÂM THANH kết thúc trước hình (giây); 0 = như cả file. Phần sau đó không có
+    # tiếng nên không có gì để so khớp — không phải vùng lỗi.
+    het_am_thanh: float = 0.0
+    # Lượt bù tốc độ: cặp (lượt, mốc khúc gốc) biến đổi/khớp lỗi và cặp đã khớp được.
+    # Tính THEO TỪNG LƯỢT: hệ số này chạy được không bù cho hệ số kia bị hỏng.
+    loi_bu_toc_do: set = field(default_factory=set)
+    bu_toc_do_ok: set = field(default_factory=set)
+
+
+def do_dai_wav(path: str) -> Optional[float]:
+    """Độ dài THẬT của một khúc WAV, hoặc ``None`` nếu không đọc được.
+
+    Lấy giá trị nhỏ hơn giữa header và lượng dữ liệu thật trên đĩa: file bị cắt dở
+    có thể mang header ghi độ dài dự kiến.
+    """
+    import wave
+
+    try:
+        with wave.open(path, "rb") as w:
+            khung, tan_so = w.getnframes(), w.getframerate()
+            byte_moi_khung = w.getnchannels() * w.getsampwidth()
+        if tan_so <= 0 or byte_moi_khung <= 0:
+            return None
+        theo_kich_thuoc = max(0, os.path.getsize(path) - 44) / (tan_so * byte_moi_khung)
+        return min(khung / tan_so, theo_kich_thuoc)
+    except (OSError, EOFError, wave.Error):
+        return None
+
+
+def wav_co_tieng(path: str, nguong_dbfs: Optional[float] = None) -> bool:
+    """Khúc WAV PCM 16-bit có tiếng rõ (độ lệch chuẩn — RMS QUANH giá trị trung bình — trên
+    ``nguong_dbfs``, mặc định ``NGUONG_CO_TIENG_DBFS``) không? Không đọc được → False.
+
+    Đo quanh trung bình chứ không quanh 0: PCM hằng số khác 0 (lệch DC) không có biến thiên
+    nào nên audfprint ra 0 hash — đó là im lặng, không phải tiếng (phản biện vòng 3).
+    Đọc theo từng khối để khúc dài không chiếm nhiều RAM.
+    """
+    import wave
+
+    import numpy as np
+
+    if nguong_dbfs is None:
+        nguong_dbfs = NGUONG_CO_TIENG_DBFS
+    try:
+        with wave.open(path, "rb") as w:
+            if w.getsampwidth() != 2:
+                return False
+            tong, tong_binh_phuong, so_mau = 0.0, 0.0, 0
+            while True:
+                khoi = w.readframes(1 << 18)
+                if not khoi:
+                    break
+                mau = np.frombuffer(khoi[: len(khoi) - len(khoi) % 2],
+                                    dtype="<i2").astype(np.float64)
+                tong += float(mau.sum())
+                tong_binh_phuong += float(np.square(mau).sum())
+                so_mau += mau.size
+    except (OSError, EOFError, wave.Error):
+        return False
+    if not so_mau:
+        return False
+    trung_binh = tong / so_mau
+    phuong_sai = max(0.0, tong_binh_phuong / so_mau - trung_binh * trung_binh)
+    do_lech = math.sqrt(phuong_sai) / 32768.0
+    return do_lech > 0 and 20 * math.log10(do_lech) > nguong_dbfs
 
 
 def chi_phi_kiem_tra(m, duration: float) -> tuple:
@@ -571,10 +801,20 @@ def danh_gia(so_hash: int) -> str:
     return "Nên kiểm tra lại"
 
 
-def liet_ke_media(thumuc: str) -> list:
-    """Liệt kê mọi file media trong thư mục (kể cả thư mục con)."""
+def liet_ke_media(thumuc: str, bo_thu_muc_lam_viec: bool = False) -> list:
+    """Liệt kê mọi file media trong thư mục (kể cả thư mục con).
+
+    ``bo_thu_muc_lam_viec=True`` (dùng khi TẠO VÂN TAY kho): bỏ qua thư mục làm việc
+    của đồng bộ kênh (``_tam``: file tải thô, bản đang nén; ``_hong``: file nghi hỏng đã
+    cách ly) — đưa chúng vào vân tay là đưa file dở/hỏng vào kho đối chiếu (audit
+    TCP-10). Mặc định KHÔNG bỏ gì: quét thư mục video của người dùng không được lặng lẽ
+    bỏ một thư mục chỉ vì nó tên ``_tam``.
+    """
+    bo_qua = ({channel.THU_MUC_TAM.lower(), channel.THU_MUC_HONG.lower()}
+              if bo_thu_muc_lam_viec else set())
     ds = []
-    for goc, _, files in os.walk(thumuc):
+    for goc, cac_tm, files in os.walk(thumuc):
+        cac_tm[:] = [d for d in cac_tm if d.lower() not in bo_qua]
         for f in files:
             if os.path.splitext(f)[1].lower() in MEDIA_EXTS:
                 ds.append(os.path.join(goc, f))
@@ -591,6 +831,18 @@ RE_MATCH = re.compile(
 # Tên khúc: `chunk_<mốc bắt đầu>.wav`, hoặc `chunk_<mốc>_k<hệ số x100000>.wav` khi
 # khúc đã bị đổi tốc độ để bù né tránh. Hậu tố là tuỳ chọn nên tên cũ vẫn đọc được.
 RE_TEN_KHUC = re.compile(r"chunk_(\d+)(?:_k(\d+))?\.wav")
+# "NOMATCH <khúc> <độ dài> sec <n> raw hashes". "Độ dài" là mốc HASH CUỐI chứ không phải
+# độ dài file, nên MỌI khúc 0 hash đều ghi "0.0 sec" — khúc không đọc được (với
+# `--continue-on-error`) lẫn khúc IM LẶNG hoàn toàn. Chỉ số hash không phân biệt được
+# hai ca đó (phản biện vòng 2, N1).
+RE_NOMATCH_SO_HASH = re.compile(r"\ssec\s+(\d+)\s+raw\s+hashes\s*$")
+# "wavfile2peaks: Error reading <đường dẫn>/chunk_<mốc>[_k<hệ số>].wav" — neo vào cụm
+# "Error reading" để mỗi lần xuất hiện cho đúng khúc của nó, kể cả khi dòng bị xen.
+RE_LOI_DOC_KHUC = re.compile(r"Error reading .*?(chunk_\d+(?:_k\d+)?\.wav)")
+# Khúc 0 hash mà tiếng to hơn mức này thì KHÔNG thể đã được phân tích: audfprint chuẩn
+# hoá phổ theo đỉnh của chính khúc nên âm thanh thật luôn sinh hash. Đặt thấp hơn hẳn
+# tiếng thật nhưng cao hơn nhiễu nền của video bị tắt tiếng (phản biện vòng 3).
+NGUONG_CO_TIENG_DBFS = -50.0
 
 
 # =====================================================================
@@ -738,7 +990,20 @@ class Engine:
         )
 
     def _ghi_khos(self, d: dict) -> None:
+        """Ghi đè TOÀN BỘ sổ đăng ký. Thao tác sửa vài trường phải dùng ``_sua_khos``."""
         ghi_json_an_toan(self.kho_file, d)
+
+    def _sua_khos(self, ham_sua: Callable[[dict], object]):
+        """Giao dịch đọc-sửa-ghi trên ``khos.json`` (audit TCP-03).
+
+        Giao diện, Watch, build và thiết lập máy phụ đều sửa sổ đăng ký, có khi từ các
+        process khác nhau. Đọc ở đầu thao tác rồi ghi đè cả file ở cuối sẽ xoá mất
+        thay đổi của bên kia; ở đây đọc bản MỚI NHẤT và ghi dưới cùng một khoá.
+        Trả về đúng giá trị mà ``ham_sua`` trả về.
+        """
+        return cap_nhat_json(
+            self.kho_file, ham_sua, mac_dinh={"dang_dung": "", "danh_sach": []}
+        )
 
     def _duong_dan_db_kho(self, ten_file: str) -> str:
         """Chỉ chấp nhận basename `.pklz` nằm trực tiếp trong data_dir."""
@@ -764,6 +1029,57 @@ class Engine:
             raise LoiDuLieu("Đường dẫn file vân tay thoát khỏi thư mục data.")
         return duong_dan
 
+    def _dau_vet_so_kho_hong(self) -> str:
+        """Lời giải thích nếu sổ đăng ký kho TỪNG có rồi hỏng/mất; rỗng nếu không có dấu vết.
+
+        Dấu vết: bản hỏng ``khos.json.hong.*`` (lớp lưu trữ đổi tên khi không đọc được mà
+        không có ``.bak``), hoặc ``khos.json`` biến mất trong khi ``khos.json.bak`` còn —
+        lớp lưu trữ chỉ tự phục hồi từ ``.bak`` khi file chính HỎNG, không khi file MẤT.
+        """
+        if glob.glob(glob.escape(self.kho_file) + ".hong.*"):
+            return ("Sổ đăng ký kho (khos.json) từng bị hỏng — bản hỏng được giữ ở "
+                    "khos.json.hong.*. Tool KHÔNG tự dựng «Kho mặc định» từ data/db.pklz để "
+                    "khỏi đối chiếu nhầm kho, và chưa quét hay tạo kho được. Hãy khôi phục sổ "
+                    "từ bản hỏng, hoặc nếu chắc chắn muốn dùng data/db.pklz thì chuyển các "
+                    "file khos.json.hong.* ra chỗ khác rồi mở lại.")
+        if not os.path.exists(self.kho_file) and os.path.isfile(self.kho_file + ".bak"):
+            return ("Sổ đăng ký kho (khos.json) bị mất nhưng còn bản sao khos.json.bak. Tool "
+                    "KHÔNG tự dựng «Kho mặc định» từ data/db.pklz (và không ghi đè bản sao), "
+                    "chưa quét hay tạo kho được. Khi app đã dừng, chép khos.json.bak thành "
+                    "khos.json rồi mở lại; nếu chắc chắn muốn bỏ sổ cũ thì chuyển "
+                    "khos.json.bak ra chỗ khác.")
+        return ""
+
+    def _giu_ban_sao_so_kho(self) -> str:
+        """Sổ chính MẤT mà còn ``.bak``: chép ``.bak`` ra tên cố định
+        ``khos.json.bak.giu_<thời điểm>`` (một lần cho mỗi nội dung). Người dùng có thể tạo kho
+        mới ngay trong trạng thái này, và lần ghi sổ thứ hai sẽ thay ``.bak`` bằng sổ mới —
+        bản sao cuối cùng của sổ thật mất theo (phản biện vòng 3). Trả đường dẫn bản giữ."""
+        bak = self.kho_file + ".bak"
+        if os.path.exists(self.kho_file) or not os.path.isfile(bak):
+            return ""
+        try:
+            with open(bak, "rb") as f:
+                noi_dung = f.read()
+            for cu in sorted(glob.glob(glob.escape(bak) + ".giu_*")):
+                with open(cu, "rb") as f:
+                    if f.read() == noi_dung:
+                        return cu
+            goc = f"{bak}.giu_{time.strftime('%Y%m%d_%H%M%S')}"
+            dich, i = goc, 2
+            while os.path.exists(dich):
+                dich, i = f"{goc}_{i}", i + 1
+            with open(dich, "xb") as f:
+                f.write(noi_dung)
+            return dich
+        except OSError:
+            LOGGER_SCAN.exception("event=kho.registry_backup_keep_failed")
+            return ""
+
+    def _so_kho_vua_hong(self) -> bool:
+        """Sổ đăng ký trống vì vừa hỏng/mất (không phải cài mới chưa từng có kho)?"""
+        return not getattr(self, "kho_dang_dung", "") and bool(self._dau_vet_so_kho_hong())
+
     def _init_kho(self) -> None:
         """Nạp kho đang dùng. Tự chuyển đổi dữ liệu từ phiên bản cũ (1 kho duy nhất)."""
         try:
@@ -775,11 +1091,30 @@ class Engine:
                 {"dang_dung": "", "danh_sach": []},
             )
             return
-        # Nâng cấp: đã có db.pklz kiểu cũ mà chưa khai báo kho nào
-        if not d["danh_sach"] and os.path.exists(os.path.join(self.data_dir, "db.pklz")):
-            d = {"dang_dung": "Kho mặc định",
-                 "danh_sach": [{"ten": "Kho mặc định", "thu_muc": "", "db": "db.pklz"}]}
-            self._ghi_khos(d)
+        # Nâng cấp: đã có db.pklz kiểu cũ mà chưa khai báo kho nào — nhưng KHÔNG khi sổ
+        # từng tồn tại rồi hỏng/mất: "sổ trống" lúc đó là sổ bị MẤT, tự dựng «Kho mặc
+        # định» từ db.pklz là lặng lẽ đối chiếu nhầm kho (phản biện vòng 2 + 3).
+        dau_vet = self._dau_vet_so_kho_hong() if not d["danh_sach"] else ""
+        if dau_vet:
+            self.canh_bao_khoi_dong.append(dau_vet)
+            giu = self._giu_ban_sao_so_kho()
+            if giu:
+                self.canh_bao_khoi_dong.append(
+                    f"Đã giữ một bản sao cố định của sổ cũ: {os.path.basename(giu)} (không "
+                    "bao giờ bị ghi đè).")
+        elif not d["danh_sach"] and os.path.exists(os.path.join(self.data_dir, "db.pklz")):
+            def nang_cap(moi: dict) -> dict:
+                # Process khác có thể vừa tạo kho đầu tiên: chỉ nâng cấp khi vẫn rỗng.
+                if not moi.get("danh_sach"):
+                    moi["dang_dung"] = "Kho mặc định"
+                    moi["danh_sach"] = [
+                        # id bền: xoá rồi tự tạo lại không được thừa hưởng lịch sử cũ.
+                        {"ten": "Kho mặc định", "thu_muc": "", "db": "db.pklz",
+                         "id": uuid.uuid4().hex}
+                    ]
+                return moi
+
+            d = self._sua_khos(nang_cap)
         try:
             self._ap_dung_kho(d.get("dang_dung", ""), d)
         except LoiDuLieu as e:
@@ -818,47 +1153,171 @@ class Engine:
         ten = (ten or "").strip()
         if not ten:
             raise RuntimeError("Tên kho không được để trống.")
-        d = self._doc_khos()
-        if any(k["ten"] == ten for k in d["danh_sach"]):
-            raise RuntimeError(f"Đã có kho tên «{ten}» rồi.")
         kho = {"ten": ten, "thu_muc": thu_muc.strip('" '),
-               "db": f"kho_{self._slug(ten)}.pklz"}
-        d["danh_sach"].append(kho)
-        d["dang_dung"] = ten
-        self._ghi_khos(d)
+               "db": f"kho_{self._slug(ten)}.pklz",
+               # Định danh BỀN của kho, khác tên hiển thị: lịch sử quét gắn vào đây.
+               # Xoá rồi tạo lại kho cùng tên là một kho KHÁC (id khác).
+               "id": uuid.uuid4().hex}
+
+        def them(d: dict) -> dict:
+            if any(k["ten"] == ten for k in d["danh_sach"]):
+                raise RuntimeError(f"Đã có kho tên «{ten}» rồi.")
+            d["danh_sach"].append(kho)
+            d["dang_dung"] = ten
+            return d
+
+        d = self._sua_khos(them)
         self._ap_dung_kho(ten, d)
         return kho
 
     def use_kho(self, ten: str) -> None:
-        d = self._doc_khos()
-        if not any(k["ten"] == ten for k in d["danh_sach"]):
-            raise RuntimeError(f"Không có kho tên «{ten}».")
-        d["dang_dung"] = ten
-        self._ghi_khos(d)
+        def chon(d: dict) -> dict:
+            kho = next((k for k in d["danh_sach"] if k["ten"] == ten), None)
+            if kho is None:
+                raise RuntimeError(f"Không có kho tên «{ten}».")
+            # Kiểm TRƯỚC khi ghi sổ: ghi `dang_dung` cho một kho trỏ tới file vân tay
+            # không hợp lệ làm mọi lần mở sau lặng lẽ lùi về kho mặc định (phản biện).
+            try:
+                self._duong_dan_db_kho(kho.get("db"))
+            except LoiDuLieu as e:
+                raise RuntimeError(
+                    f"Kho «{ten}» trỏ tới file vân tay không hợp lệ: {e}") from e
+            d["dang_dung"] = ten
+            return d
+
+        d = self._sua_khos(chon)
         self._ap_dung_kho(ten, d)
 
     def update_kho(self, ten: str, thu_muc: str) -> None:
-        d = self._doc_khos()
-        for k in d["danh_sach"]:
-            if k["ten"] == ten:
-                k["thu_muc"] = thu_muc.strip('" ')
-        self._ghi_khos(d)
+        def sua(d: dict) -> dict:
+            for k in d["danh_sach"]:
+                if k["ten"] == ten:
+                    k["thu_muc"] = thu_muc.strip('" ')
+            return d
+
+        d = self._sua_khos(sua)
         self._ap_dung_kho(d.get("dang_dung", ""), d)
 
     def delete_kho(self, ten: str, xoa_van_tay: bool = True) -> None:
-        """Xoá kho khỏi danh sách. KHÔNG bao giờ đụng vào file video/audio gốc."""
-        d = self._doc_khos()
-        kho = next((k for k in d["danh_sach"] if k["ten"] == ten), None)
-        if not kho:
+        """Xoá kho khỏi danh sách. KHÔNG bao giờ đụng vào file video/audio gốc.
+
+        Lấy ``data/tool.lock``: xoá file vân tay là thao tác nặng trên kho, không được
+        chạy khi build/Watch/sửa metadata đang dùng kho (audit TCP-01). Bận thì ném
+        ``DangChayRoi`` để giao diện báo rõ, không xoá gì.
+        """
+        with KhoaTienTrinh(os.path.join(self.data_dir, "tool.lock"), f"xoá kho «{ten}»"):
+            d = self._doc_khos()
+            kho = next((k for k in d["danh_sach"] if k["ten"] == ten), None)
+            if not kho:
+                return
+            if xoa_van_tay:
+                self._cache_khoa = None
+                self._xoa_an_toan(self._duong_dan_db_kho(kho["db"]))
+
+            def bo(d: dict) -> dict:
+                d["danh_sach"] = [k for k in d["danh_sach"] if k["ten"] != ten]
+                if d.get("dang_dung") == ten:
+                    d["dang_dung"] = d["danh_sach"][0]["ten"] if d["danh_sach"] else ""
+                return d
+
+            d = self._sua_khos(bo)
+            self._ap_dung_kho(d.get("dang_dung", ""), d)
+
+    # =================================================================
+    #  NGỮ CẢNH JOB — ghim kho và cấu hình suốt một job (audit TCP-01)
+    #
+    #  Giao diện chạy build/quét trong thread nền trên CHÍNH Engine mà thanh bên vẫn
+    #  sửa trực tiếp: đổi kho gọi `use_kho`, ô tham số gán thẳng vào `self.config`.
+    #  Job đọc `self.db_file`/`self.config` ở nhiều thời điểm nên có thể bắt đầu với
+    #  kho A rồi ghi kết quả của A đè lên kho B. Mỗi job vì thế chạy trên một BẢN SAO
+    #  đã ghim: tên kho, file kho, thư mục kho và một bản sâu của Config được chụp lúc
+    #  bắt đầu. Bản sao dùng chung cờ huỷ (bấm Dừng vẫn tới được job) và bộ nhớ client.
+    # =================================================================
+
+    def _ban_sao_cho_job(self) -> "Engine":
+        """Bản sao Engine ghim cho đúng một job; đã là bản ghim thì trả lại chính nó."""
+        if getattr(self, "_la_ban_ghim", False):
+            return self
+        job = copy.copy(self)
+        job.config = copy.deepcopy(self.config)
+        job.canh_bao_gop = []
+        job.canh_bao_mang = []
+        job.chan_doan_quet = ChanDoanQuet()
+        job._la_ban_ghim = True
+        job._chu_ky_kho_ghim = job._chu_ky_db()
+        return job
+
+    def _chu_ky_db(self) -> tuple:
+        """Chữ ký file kho đang ghim: đường dẫn, kích thước, mtime."""
+        try:
+            st_ = os.stat(self.db_file)
+            return (os.path.normcase(os.path.abspath(self.db_file)),
+                    st_.st_size, st_.st_mtime_ns)
+        except OSError:
+            return (os.path.normcase(os.path.abspath(self.db_file)), None, None)
+
+    def _kiem_kho_khong_doi(self) -> None:
+        """Một lượt quét không được trộn hai phiên bản kho.
+
+        Quét gọi audfprint nhiều lần (từng đoạn, Top-1 hai pha, bù tốc độ). Nếu kho
+        được ghi lại giữa hai lần gọi thì nửa lượt dùng kho cũ, nửa dùng kho mới.
+        Phát hiện là dừng rõ ràng — không âm thầm trộn.
+        """
+        ghim = getattr(self, "_chu_ky_kho_ghim", None)
+        if ghim is not None and self._chu_ky_db() != ghim:
+            raise RuntimeError(
+                f"Kho vân tay «{self.kho_dang_dung or os.path.basename(self.db_file)}» "
+                "vừa được ghi lại trong lúc quét. Kết quả lượt này không được trộn giữa "
+                "hai phiên bản kho — hãy quét lại video này."
+            )
+
+    def _nhan_ket_qua_job(self, job: "Engine") -> None:
+        """Giữ hợp đồng cũ: sau job, trường kết quả vẫn đọc được trên Engine gốc."""
+        if job is self:
             return
-        if xoa_van_tay:
-            self._cache_khoa = None
-            self._xoa_an_toan(self._duong_dan_db_kho(kho["db"]))
-        d["danh_sach"] = [k for k in d["danh_sach"] if k["ten"] != ten]
-        if d.get("dang_dung") == ten:
-            d["dang_dung"] = d["danh_sach"][0]["ten"] if d["danh_sach"] else ""
-        self._ghi_khos(d)
-        self._ap_dung_kho(d.get("dang_dung", ""), d)
+        self.chan_doan_quet = job.chan_doan_quet
+        self.canh_bao_gop = job.canh_bao_gop
+        self.canh_bao_mang = job.canh_bao_mang
+
+    def _danh_tinh_kho(self) -> dict:
+        """Kho của lượt quét: định danh bền, tên, phiên bản hiệu lực (audit TCP-07).
+
+        Phiên bản hiệu lực = ``revision`` trong sổ đăng ký (đổi ĐÚNG lúc công bố kho
+        mới, xem ``_ghi_phien_ban_sau_cong_bo``) + kích thước file kho. Kích thước là
+        lưới an toàn cho kho cũ chưa có ``revision`` hoặc lần cập nhật sổ bị lỗi; nó
+        không đổi khi chép kho sang máy phụ, khác ``mtime``. Không băm file kho —
+        kho thật hàng trăm MB.
+
+        Không đọc được sổ đăng ký, hay sổ đang trỏ sang file khác file đã ghim, thì
+        định danh là RỖNG: kết quả vẫn được lưu nhưng không bao giờ chặn lượt quét sau.
+        """
+        ten = self.kho_dang_dung
+        ky = getattr(self, "_chu_ky_kho_ghim", None) or self._chu_ky_db()
+        kich_thuoc = "?" if ky[1] is None else str(ky[1])
+        if not ten:
+            # Không có sổ đăng ký: file kho mặc định chính là danh tính.
+            return {"kho_id": "db:" + os.path.basename(self.db_file).lower(),
+                    "kho_ten": "", "kho_phien_ban": f"-:{kich_thuoc}"}
+        try:
+            muc = next((k for k in self._doc_khos()["danh_sach"] if k.get("ten") == ten),
+                       None)
+            cung_file = muc is not None and os.path.normcase(
+                self._duong_dan_db_kho(muc["db"])) == os.path.normcase(
+                os.path.abspath(self.db_file))
+        except Exception:  # noqa: BLE001 — sổ hỏng: danh tính không rõ, không chặn gì
+            muc, cung_file = None, False
+        if muc is None or not cung_file:
+            return {"kho_id": "", "kho_ten": ten, "kho_phien_ban": ""}
+        return {"kho_id": self._kho_id_cua(muc), "kho_ten": ten,
+                "kho_phien_ban": f"{muc.get('revision') or '-'}:{kich_thuoc}"}
+
+    def _gan_danh_tinh(self, kq: "ScanResult") -> None:
+        """Gắn kho + chính sách đang ghim vào kết quả (đầu lượt quét)."""
+        dt = self._danh_tinh_kho()
+        kq.kho_id = dt["kho_id"]
+        kq.kho_ten = dt["kho_ten"]
+        kq.kho_phien_ban = dt["kho_phien_ban"]
+        kq.chinh_sach = chu_ky_chinh_sach(self.config)
 
     # ---------- hạ tầng ----------
 
@@ -870,26 +1329,16 @@ class Engine:
         return None
 
     def _init_sqlite(self) -> None:
-        with self._db() as c:
-            c.execute("""CREATE TABLE IF NOT EXISTS jobs(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT, source_type TEXT, source_name TEXT, source_ref TEXT,
-                duration_s REAL, status TEXT, n_matches INTEGER, note TEXT,
-                source_id TEXT DEFAULT '')""")
-            # Nâng cấp DB tạo bởi phiên bản cũ
-            with contextlib.suppress(sqlite3.OperationalError):
-                c.execute("ALTER TABLE jobs ADD COLUMN source_id TEXT DEFAULT ''")
-            c.execute("""CREATE TABLE IF NOT EXISTS matches(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER,
-                clip TEXT, start_s REAL, end_s REAL, matched_s REAL,
-                clip_offset_s REAL, hashes INTEGER, confidence TEXT)""")
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_jobs_source_id "
-                "ON jobs(source_id)"
-            )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS idx_matches_job_id "
-                "ON matches(job_id)"
+        """Tạo hoặc nâng cấp ``lichsu.db`` (lược đồ có phiên bản — xem ``lich_su.py``).
+
+        Nâng cấp chỉ THÊM cột, sao lưu trước bằng SQLite backup API và chạy một lần;
+        các lần mở sau chỉ đọc ``PRAGMA user_version``.
+        """
+        kq = lich_su.dam_bao_luoc_do(self.sqlite_file)
+        if kq["da_nang_cap"]:
+            LOGGER_SCAN.info(
+                "event=history.schema_upgraded from=%s to=%s backup=%r",
+                kq["phien_ban_cu"], kq["phien_ban"], kq["sao_luu"],
             )
 
     @contextlib.contextmanager
@@ -973,6 +1422,12 @@ class Engine:
         }
 
     def require(self, can_ytdlp: bool = False, can_db: bool = False) -> None:
+        if self._so_kho_vua_hong():
+            raise SoKhoHong(
+                "Sổ đăng ký kho (data\\khos.json) đã hỏng hoặc bị mất — tool không quét và "
+                "không tạo kho bằng data\\db.pklz để khỏi đối chiếu nhầm kho. Khôi phục "
+                "khos.json (từ bản hỏng khos.json.hong.* hoặc khos.json.bak) khi app đã dừng "
+                "rồi mở lại; xem cảnh báo lúc khởi động.")
         env = self.check_env()
         thieu = []
         if not env["ffmpeg"]:
@@ -992,13 +1447,98 @@ class Engine:
 
     @staticmethod
     def duration_of(path: str) -> Optional[float]:
-        r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                            "-of", "csv=p=0", path],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
+        # FFprobe chỉ đọc header: có TRẦN TỔNG riêng. Treo (ổ mạng, file khoá) thì trả
+        # None như "không đọc được thời lượng", không giữ job vô hạn (audit TCP-15).
+        r = chay_lenh_media(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "csv=p=0", path],
+            tran_tong_s=TRAN_FFPROBE_S,
+        )
+        if r.timed_out:
+            LOGGER_SCAN.warning("event=ffprobe.timeout path=%s budget_s=%.0f",
+                                os.path.basename(path), TRAN_FFPROBE_S)
+            return None
         try:
             return float(r.stdout.strip().splitlines()[-1])
         except Exception:
             return None
+
+    @staticmethod
+    def do_dai_am_thanh(path: str) -> Optional[float]:
+        """Mốc kết thúc của luồng âm thanh (giây) hoặc ``None`` khi không biết chắc.
+
+        ``duration_of`` là độ dài cả file = luồng dài nhất. mp4 có hình dài hơn tiếng thì
+        phần đuôi không có âm thanh; lập khúc theo độ dài cả file sẽ báo nhầm phần đó là
+        "cắt lỗi" ở MỌI lần quét (phản biện TCP-04).
+
+        mkv/webm để độ dài luồng ở thẻ ``DURATION`` (vòng 2). File có NHIỀU luồng tiếng
+        → ``None``: luồng đầu hết sớm không có nghĩa là phần sau không còn tiếng; luồng
+        bắt đầu trễ thì mốc kết thúc là ``start_time`` + độ dài (vòng 3). Cùng bộ đọc với
+        đồng bộ kênh (``channel.doc_moc_het_tieng``).
+        """
+        try:
+            r = chay_lenh_media([*channel.LENH_FFPROBE_LUONG_TIENG, path],
+                                tran_tong_s=TRAN_FFPROBE_S)
+            if r.timed_out or r.returncode != 0:
+                return None
+        except Exception:  # noqa: BLE001
+            return None
+        return channel.doc_moc_het_tieng(r.stdout)
+
+    def _trong_thu_muc_dem(self, path: str) -> bool:
+        """File nằm trong thư mục đệm tải về của tool (được phép bỏ)?"""
+        try:
+            dem = os.path.abspath(self.dl_dir)
+            return os.path.commonpath([dem, os.path.abspath(path)]) == dem
+        except ValueError:
+            return False
+
+    def _khoang_cua_khuc(self, pv, moc: int, tong: float) -> tuple:
+        ten = f"chunk_{int(moc):07d}.wav"
+        dai = pv.do_dai_khuc.get(ten, min(float(self.config.chunk_s), tong - moc))
+        return (float(moc), min(float(moc) + dai, tong))
+
+    @staticmethod
+    def _luot_bu(he_so: float, ho: str) -> str:
+        """Khoá của MỘT lượt bù tốc độ — cũng là hậu tố file danh sách/kết quả của nó."""
+        return f"k{ma_he_so(he_so)}_{ho}"
+
+    def _vung_hong_bu_toc_do(self, pv, tong: float) -> list:
+        """Vùng mà ít nhất một lượt bù tốc độ KHÔNG kiểm được.
+
+        Theo từng lượt: vùng các khúc hỏng trừ đi vùng các khúc chạy được của CHÍNH lượt
+        đó — khúc gối nhau phủ lẫn nhau, nên đuôi ngắn hỏng mà khúc trước đã phủ trọn thì
+        lượt đó vẫn kiểm đủ (phản biện vòng 2, N2).
+        """
+        vung: list = []
+        for luot in {luot for luot, _ in pv.loi_bu_toc_do}:
+            hong = [self._khoang_cua_khuc(pv, moc, tong)
+                    for l2, moc in pv.loi_bu_toc_do if l2 == luot]
+            chay_duoc = [self._khoang_cua_khuc(pv, moc, tong)
+                         for l2, moc in pv.bu_toc_do_ok if l2 == luot]
+            vung += tru_khoang(hong, hop_khoang(chay_duoc))
+        return hop_khoang(vung)
+
+    def _chay_ffmpeg(self, lenh: list) -> KetQuaLenh:
+        """Một lệnh FFmpeg dài (cắt/đổi tốc độ): huỷ được, dừng khi IM LẶNG quá lâu.
+
+        Không đặt hạn chót tổng: cắt một khúc 1 giờ từ file 90 tiếng có thể chậm mà
+        vẫn khoẻ — chỉ dừng khi FFmpeg không còn báo tiến độ (audit TCP-15).
+        """
+        r = chay_lenh_media(
+            lenh,
+            cancel_event=self.cancel_event,
+            theo_doi_tien_do=True,
+            im_lang_toi_da_s=IM_LANG_FFMPEG_S,
+        )
+        if r.cancelled:
+            raise Cancelled()
+        if r.timed_out:
+            LOGGER_SCAN.warning(
+                "event=ffmpeg.stalled reason=%s output=%s budget_s=%.0f",
+                r.ly_do, os.path.basename(str(lenh[-1])), IM_LANG_FFMPEG_S,
+            )
+        return r
 
     # =================================================================
     #  1) KHO VÂN TAY CLIP GỐC
@@ -1028,30 +1568,55 @@ class Engine:
         if not bo_cache and getattr(self, "_cache_khoa", None) == khoa:
             return self._cache_clips
 
-        thu_muc_af = os.path.dirname(self.audfprint)
+        try:
+            ds = self._doc_danh_sach_clip(self.db_file)
+        except Exception:
+            ds = []
+        self._cache_khoa, self._cache_clips = khoa, ds
+        return ds
+
+    def _doc_danh_sach_clip(self, path: str) -> list:
+        """Danh sách clip của MỘT file kho bất kỳ; ném ``RuntimeError`` nếu không đọc được.
+
+        Cùng loader an toàn với ``db_clips``: đọc trọn vào RAM trong khối ``with`` rồi
+        mới unpickle — không bao giờ giữ handle (chốt chặn WinError 32), không dùng
+        ``hash_table.HashTable(path)``. File kho chỉ nạp từ ``data_dir`` của chính tool
+        (do tool tạo) — pickle không được dùng cho dữ liệu ngoài.
+        Dùng để KIỂM kho tạm trước khi công bố (audit TCP-02).
+        """
+        import gzip
+        import pickle
+
+        thu_muc_af = (os.path.dirname(self.audfprint) if self.audfprint
+                      else os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "audfprint-master"))
         if thu_muc_af not in sys.path:
             sys.path.insert(0, thu_muc_af)
-        ds = []
         try:
-            import gzip
-            import pickle
-            # Đọc trọn vào RAM rồi ĐÓNG NGAY — chốt chặn WinError 32
-            with gzip.open(self.db_file, "rb") as f:
+            with gzip.open(path, "rb") as f:
                 raw = f.read()
             with contextlib.redirect_stdout(io.StringIO()):
                 ht = pickle.loads(raw, encoding="latin1")
             del raw
-            for i, ten in enumerate(getattr(ht, "names", []) or []):
-                if not ten:
-                    continue
-                hpid = getattr(ht, "hashesperid", [])
-                so_hash = hpid[i] if i < len(hpid) else 0
-                ds.append({"ten": os.path.basename(ten), "duong_dan": ten,
-                           "so_hash": int(so_hash)})
-            del ht
-        except Exception:
-            ds = []
-        self._cache_khoa, self._cache_clips = khoa, ds
+        except Exception as e:  # noqa: BLE001 - mọi kiểu hỏng đều là "không đọc được"
+            raise RuntimeError(
+                f"Không đọc được file vân tay {os.path.basename(path)}: "
+                f"{type(e).__name__}"
+            ) from e
+        ten_ds = getattr(ht, "names", None)
+        hpid = getattr(ht, "hashesperid", None)
+        if ten_ds is None or hpid is None:
+            raise RuntimeError(
+                f"Không đọc được file vân tay {os.path.basename(path)}: "
+                "không phải kho audfprint."
+            )
+        ds = []
+        for i, ten in enumerate(ten_ds or []):
+            if not ten:
+                continue
+            so_hash = hpid[i] if i < len(hpid) else 0
+            ds.append({"ten": os.path.basename(ten), "duong_dan": ten,
+                       "so_hash": int(so_hash)})
         return ds
 
     # ---------- xử lý file bị khoá trên Windows ----------
@@ -1107,7 +1672,15 @@ class Engine:
         )
 
     def _metadata_source_candidates(self, clips: list[dict]) -> list[tuple[str, str, int]]:
-        """Nguồn chỉ thuộc kho active, theo thứ tự xác định; không dùng set last-wins."""
+        """Nguồn chỉ thuộc kho active, theo thứ tự xác định; không dùng set last-wins.
+
+        Số ưu tiên NHỎ thắng. ``clips_meta.json`` của thư mục kho là NGUỒN CHUẨN: đồng
+        bộ kênh và các công cụ sửa ngày đăng/thời lượng đều ghi vào đó. Snapshot chỉ
+        bù trường nguồn chuẩn còn thiếu và thay thế khi thư mục kho không truy cập
+        được (ổ mạng/USB). Trước đây snapshot đứng trước nên một lần sửa đã ghi thành
+        công không bao giờ tới báo cáo — kể cả khi làm mới snapshot, vì lượt làm mới
+        cũng đọc qua resolver ưu tiên snapshot cũ (audit TCP-09). Không dựa vào mtime.
+        """
         candidates: list[tuple[str, str, int]] = []
         seen: set[str] = set()
 
@@ -1118,10 +1691,10 @@ class Engine:
                 seen.add(key)
                 candidates.append((absolute, kind, priority))
 
-        if self.kho_dang_dung:
-            add(self._metadata_snapshot_path(), "snapshot", 0)
         if self.kho_thu_muc:
-            add(os.path.join(self.kho_thu_muc, "clips_meta.json"), "live", 10)
+            add(os.path.join(self.kho_thu_muc, "clips_meta.json"), "live", 0)
+        if self.kho_dang_dung:
+            add(self._metadata_snapshot_path(), "snapshot", 10)
 
         # Legacy fallback: chỉ các directory thực sự được tham chiếu bởi DB active.
         thu_muc_db = sorted({
@@ -1208,9 +1781,18 @@ class Engine:
                 warnings.append(
                     f"{os.path.basename(source.path) or source.kind}: {warning}"
                 )
-        if resolver.conflicts:
+        xung_dot = set(resolver.conflicts)
+        lech = {c.split(":", 2)[-1] for c in xung_dot if c.startswith("snapshot_lech:")}
+        if lech:
             warnings.append(
-                f"Phát hiện {len(set(resolver.conflicts))} xung đột metadata; "
+                f"Snapshot metadata lệch với clips_meta.json ở {len(lech)} clip — báo "
+                "cáo dùng clips_meta.json (nguồn chuẩn). Chạy «Khôi phục metadata "
+                "offline» để làm mới snapshot."
+            )
+        con_lai = {c for c in xung_dot if not c.startswith("snapshot_lech:")}
+        if con_lai:
+            warnings.append(
+                f"Phát hiện {len(con_lai)} xung đột metadata; "
                 "các ánh xạ mơ hồ không được tự động chọn."
             )
         if audit.total_db_clips and audit.complete < audit.total_db_clips:
@@ -1686,12 +2268,15 @@ class Engine:
             logger=tao_fingerprint_logger(self.out_dir),
         )
         tracker.discovering()
+        # Ghim kho + cấu hình NGAY lúc người dùng bấm: đổi kho/tham số trên thanh bên
+        # sau đó không được chạm tới job này (audit TCP-01).
+        job = self._ban_sao_cho_job()
         try:
             with KhoaTienTrinh(
                 os.path.join(self.data_dir, "tool.lock"),
                 "dựng kho vân tay",
             ):
-                return self._build_database_da_khoa(
+                return job._build_database_da_khoa(
                     thumuc,
                     mode=mode,
                     progress=progress,
@@ -1717,6 +2302,12 @@ class Engine:
                     "chưa commit khi hủy; kho trước job vẫn nguyên."
                 ],
             }
+        except DangChayRoi as exc:
+            # "Bận" là tình huống vận hành bình thường, không phải lỗi lập trình: một dòng
+            # nhật ký, không traceback (phản biện vòng 3).
+            if tracker.state.status != "failed":
+                tracker.failed(f"Không thể hoàn tất tạo vân tay: {exc}", "DangChayRoi")
+            raise
         except Exception as exc:
             tracker.logger.exception(
                 "job_id=%s event=job_exception category=%s",
@@ -1731,6 +2322,292 @@ class Engine:
             raise
         finally:
             dong_fingerprint_logger(tracker.logger)
+            self._lam_moi_sau_build(job)
+
+    def _lam_moi_sau_build(self, job: "Engine") -> None:
+        """Engine gốc (giao diện) nhìn thấy kết quả build mà không bị đổi kho.
+
+        Chỉ làm mới khi Engine gốc vẫn đang chọn đúng kho của job: file kho có thể đã
+        đổi tên (đường lui khi file cũ bị khoá). Đang chọn kho khác thì để nguyên.
+        """
+        if job is self:
+            return
+        self._cache_khoa = None
+        self._invalidate_metadata_cache()
+        if self.kho_dang_dung and self.kho_dang_dung == job.kho_dang_dung:
+            with contextlib.suppress(Exception):
+                d = self._doc_khos()
+                if any(k.get("ten") == self.kho_dang_dung for k in d["danh_sach"]):
+                    self._ap_dung_kho(self.kho_dang_dung, d)
+
+    # ---------- công bố kho vân tay (audit TCP-01/TCP-02) ----------
+
+    @staticmethod
+    def _khoa_duong_dan(path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    def _clip_huu_ich(self, path: str) -> set:
+        """Tập đường dẫn (đã chuẩn hoá) của clip CÓ hash trong một file kho."""
+        return {
+            self._khoa_duong_dan(c["duong_dan"])
+            for c in self._doc_danh_sach_clip(path)
+            if int(c.get("so_hash") or 0) > 0
+        }
+
+    def _ghi_thu_muc_kho_ghim(self, thumuc: str) -> None:
+        """Ghi thư mục nguồn cho ĐÚNG kho đã ghim — không đổi kho đang chọn của ai."""
+        if not self.kho_dang_dung:
+            return
+        ten = self.kho_dang_dung
+        moi = thumuc.strip('" ')
+
+        def sua(d: dict) -> None:
+            for k in d["danh_sach"]:
+                if k["ten"] == ten:
+                    k["thu_muc"] = moi
+
+        self._sua_khos(sua)
+        if os.path.normcase(moi) != os.path.normcase(self.kho_thu_muc or ""):
+            self.kho_thu_muc = moi
+            self._invalidate_metadata_cache()
+
+    def _kiem_dich_cong_bo(self) -> None:
+        """Ngay trước khi thay file: sổ đăng ký vẫn trỏ kho đã ghim tới đúng file đích."""
+        if not self.kho_dang_dung:
+            return
+        d = self._doc_khos()
+        kho = next((k for k in d["danh_sach"] if k["ten"] == self.kho_dang_dung), None)
+        if kho is None:
+            raise RuntimeError(
+                f"Kho «{self.kho_dang_dung}» không còn trong danh sách kho; "
+                "không ghi kết quả tạo vân tay để tránh ghi nhầm kho."
+            )
+        try:
+            dich = self._duong_dan_db_kho(kho["db"])
+        except LoiDuLieu as e:
+            raise RuntimeError(
+                f"Kho «{self.kho_dang_dung}» có file vân tay không hợp lệ trong sổ đăng ký; "
+                "không ghi kết quả."
+            ) from e
+        if self._khoa_duong_dan(dich) != self._khoa_duong_dan(self.db_file):
+            raise RuntimeError(
+                f"Kho «{self.kho_dang_dung}» đã đổi file vân tay trong lúc tạo vân tay "
+                f"({os.path.basename(self.db_file)} → {kho['db']}); không ghi kết quả "
+                "để tránh ghi nhầm kho. Hãy chạy lại."
+            )
+
+    def _kiem_kho_tam(self, db_tam: str, sub: str, cu_huu_ich: set,
+                      can_xu_ly: list, *, lam_moi: frozenset = frozenset(),
+                      da_go: frozenset = frozenset()) -> tuple:
+        """Kho tạm có được phép thay kho đang dùng không? Trả ``(cong_bo, canh_bao)``.
+
+        Tiến trình audfprint thoát mã 0 và file tạm tồn tại KHÔNG chứng minh kho dùng
+        được: clip 0 hash vẫn được ghi tên vào bảng (audit TCP-02). Quy tắc:
+
+        * kho tạm phải đọc được bằng loader của dự án;
+        * ``new`` mà không clip nào có hash → thất bại, kho cũ nguyên vẹn;
+        * ``new`` thay một kho đang có: clip TỪNG có hash mà lần này lỗi → từ chối, không
+          âm thầm làm hẹp vùng phủ; clip mới/hỏng sẵn chỉ bị cảnh báo;
+        * ``add``: phải còn đủ mọi clip hữu ích của kho cũ (kể cả clip vừa được LÀM MỚI —
+          làm mới thất bại là mất clip, bị từ chối), trừ đúng các clip ``da_go`` (bản đã bị
+          cách ly) — và các clip đó phải thật sự đã ra khỏi kho; không có clip mới hữu
+          ích, không làm mới, không gỡ gì thì không ghi (kho hiện tại giữ nguyên byte).
+        """
+        tam_huu_ich = self._clip_huu_ich(db_tam)
+        da_xu_ly = {self._khoa_duong_dan(p) for p in can_xu_ly}
+        ten_ngan = {self._khoa_duong_dan(p): os.path.basename(p) for p in can_xu_ly}
+
+        def vi_du(tap: set) -> str:
+            ten = sorted(ten_ngan.get(p, os.path.basename(p)) for p in tap)
+            return ", ".join(ten[:10]) + (f" … (+{len(ten) - 10})" if len(ten) > 10 else "")
+
+        canh_bao = []
+        if sub == "new":
+            if not tam_huu_ich:
+                raise RuntimeError(
+                    f"Kho mới không có clip nào có vân tay dùng được ({len(can_xu_ly)} "
+                    "clip đều lỗi hoặc 0 hash). Giữ nguyên kho cũ."
+                )
+            mat = cu_huu_ich - tam_huu_ich
+            mat_do_loi = mat & da_xu_ly
+            if mat_do_loi:
+                raise RuntimeError(
+                    f"{len(mat_do_loi)} clip từng có vân tay trong kho hiện tại nhưng lần "
+                    f"tạo lại này thất bại: {vi_du(mat_do_loi)}. Giữ nguyên kho cũ — kiểm "
+                    "tra file nguồn rồi chạy lại, hoặc dùng «Bổ sung» để thêm clip mới mà "
+                    "không tạo lại toàn bộ."
+                )
+            if mat - da_xu_ly:
+                canh_bao.append(
+                    f"{len(mat - da_xu_ly)} clip của kho cũ không còn trong thư mục nguồn "
+                    "nên không có trong kho mới."
+                )
+            loi_moi = da_xu_ly - tam_huu_ich
+            if loi_moi:
+                canh_bao.append(
+                    f"{len(loi_moi)} clip không tạo được vân tay và không có trong kho: "
+                    f"{vi_du(loi_moi)}."
+                )
+            return True, canh_bao
+
+        chua_go = set(da_go) & tam_huu_ich
+        if chua_go:
+            raise RuntimeError(
+                f"Không gỡ được vân tay của {len(chua_go)} clip đã bị cách ly: "
+                f"{vi_du(chua_go)}. Kho hiện tại giữ nguyên."
+            )
+        thieu = (cu_huu_ich - set(da_go)) - tam_huu_ich
+        lam_moi_hong = thieu & set(lam_moi)
+        if lam_moi_hong:
+            raise RuntimeError(
+                f"{len(lam_moi_hong)} clip có file đã thay sau lần tạo kho gần nhất nhưng "
+                f"file mới không tạo được vân tay: {vi_du(lam_moi_hong)}. Kho hiện tại giữ "
+                "nguyên (vẫn dùng vân tay cũ) — kiểm tra lại các file đó."
+            )
+        if thieu:
+            raise RuntimeError(
+                f"Kho tạm thiếu {len(thieu)} clip có vân tay của kho hiện tại; từ chối ghi "
+                "để không làm mất vân tay. Kho hiện tại giữ nguyên."
+            )
+        moi = tam_huu_ich - cu_huu_ich
+        loi_moi = da_xu_ly - tam_huu_ich
+        if loi_moi:
+            canh_bao.append(
+                f"{len(loi_moi)} clip không tạo được vân tay: {vi_du(loi_moi)}."
+            )
+        if not moi and not (set(lam_moi) & tam_huu_ich) and not da_go:
+            canh_bao.append(
+                "Không có clip mới nào tạo được vân tay; không ghi lại kho — kho hiện tại "
+                "giữ nguyên."
+            )
+            return False, canh_bao
+        return True, canh_bao
+
+    # Sai số mtime khi so file clip với file kho: FAT/exFAT chỉ lưu tới 2 giây.
+    DUNG_SAI_MTIME_S = 2.0
+
+    def _clip_doi_file_sau_cong_bo(self, files: list, da_co: set) -> set:
+        """Khoá các clip có vân tay mà file được sửa SAU khi lần build gần nhất BẮT ĐẦU.
+
+        So với lúc BẮT ĐẦU (``moc_build`` trong sổ đăng ký) chứ không chỉ lúc công bố: file
+        bị thay trong lúc build đang chạy có thể đã được đọc ở bản cũ, mà mtime của nó lại
+        nhỏ hơn mtime file kho — so với lúc công bố thì không bao giờ được làm mới (phản
+        biện vòng 2). Kho cũ chưa có mốc thì lùi về mtime file kho như trước.
+        """
+        try:
+            moc_kho = os.path.getmtime(self.db_file)
+        except OSError:
+            return set()
+        moc_build = self._moc_build_kho_ghim()
+        if moc_build:
+            moc_kho = min(moc_kho, moc_build)
+        doi = set()
+        for path in files:
+            khoa = self._khoa_duong_dan(path)
+            if khoa in da_co:
+                with contextlib.suppress(OSError):
+                    if os.path.getmtime(path) > moc_kho + self.DUNG_SAI_MTIME_S:
+                        doi.add(khoa)
+        return doi
+
+    @staticmethod
+    def _ma_video_khoa(khoa: str) -> str:
+        """Mã video trong tên file của một clip (khoá đã chuẩn hoá); rỗng nếu không có.
+
+        Đọc hậu tố ``[ID]`` (chấp nhận đuôi bản sao Windows) chứ không đòi đủ ngữ pháp
+        ``<ngày> - <tiêu đề> [ID]`` — kho cũ/chép tay có tên không có ngày.
+        """
+        return str(extract_youtube_id(os.path.basename(khoa)) or "").lower()
+
+    def _go_hong_co_ban_thay(self, ung_vien: set, db_tam: str) -> set:
+        """Clip đã bị cách ly có BẢN THAY THẾ cùng mã video mang vân tay trong kho tạm."""
+        con_lai = self._clip_huu_ich(db_tam) - set(ung_vien)
+        ma_co_van_tay = {self._ma_video_khoa(k) for k in con_lai} - {""}
+        return {k for k in ung_vien if self._ma_video_khoa(k) in ma_co_van_tay}
+
+    @staticmethod
+    def _canh_bao_giu_hong(tap: set, ke_ten: Callable) -> str:
+        return (f"Giữ vân tay {len(tap)} clip đã bị cách ly vào {channel.THU_MUC_HONG}/ vì "
+                "chưa có bản thay thế cùng mã video có vân tay — chạy lại «Bổ sung» sau khi "
+                f"bản thay thế tạo được vân tay: {ke_ten(tap)}.")
+
+    def _go_van_tay_cu(self, db_tam: str, lam_moi: set, ds_cu: list, workspace: str,
+                       tracker) -> None:
+        """Gỡ vân tay CŨ của clip sắp làm mới hoặc đã bị cách ly khỏi KHO TẠM
+        (``audfprint remove``).
+
+        Chỉ đụng kho tạm; lỗi thì dừng job, kho đang dùng giữ nguyên.
+        """
+        ten_luu = [c["duong_dan"] for c in ds_cu
+                   if self._khoa_duong_dan(c["duong_dan"]) in lam_moi]
+        if not ten_luu:
+            return
+        ds_go = os.path.join(workspace, "go_van_tay_cu.txt")
+        with open(ds_go, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(ten_luu))
+        tracker.phase("validating",
+                      f"Đang gỡ vân tay cũ của {len(ten_luu)} clip đã đổi file hoặc đã "
+                      "bị cách ly...")
+        rc, duoi = self._run_stream(
+            self._audfprint_cmd("remove", "--list", ds_go, db_file=db_tam),
+            None,
+            logger=tracker.logger,
+            process_name="audfprint-remove",
+        )
+        if rc != 0:
+            chi_tiet = "\n".join(duoi[-8:]) or "(không có thông báo nào)"
+            raise RuntimeError(
+                f"Không gỡ được vân tay cũ của {len(ten_luu)} clip đã đổi file hoặc đã bị "
+                f"cách ly; kho hiện tại giữ nguyên.\n{chi_tiet}"
+            )
+
+    def _ghi_phien_ban_sau_cong_bo(self, *, shifts_kho: int,
+                                   cap_nhat_shifts: bool,
+                                   moc_build: Optional[float] = None) -> list:
+        """Sau khi thay file kho: phiên bản mới (+ id bền, shifts, mốc bắt đầu build) trong
+        sổ đăng ký.
+
+        Lỗi ở đây KHÔNG làm job thất bại — kho đã ghi xong; chỉ cảnh báo. Lịch sử quét
+        vẫn thấy kho đã đổi nhờ kích thước file là một phần của phiên bản hiệu lực.
+        """
+        if not self.kho_dang_dung:
+            return []
+        ten = self.kho_dang_dung
+
+        def sua(d: dict) -> None:
+            for k in d["danh_sach"]:
+                if k["ten"] == ten:
+                    k.setdefault("id", self._kho_id_cua(k))
+                    k["revision"] = uuid.uuid4().hex
+                    if cap_nhat_shifts:
+                        k["shifts"] = shifts_kho
+                    if moc_build:
+                        k["moc_build"] = round(float(moc_build), 3)
+                    break
+
+        try:
+            self._sua_khos(sua)
+        except Exception as e:  # noqa: BLE001
+            LOGGER_SCAN.exception("event=kho.revision_update_failed warehouse=%r", ten)
+            return [f"Kho vân tay đã ghi xong nhưng chưa cập nhật được sổ đăng ký kho: {e}"]
+        return []
+
+    def _moc_build_kho_ghim(self) -> float:
+        """``moc_build`` của kho đang ghim trong sổ đăng ký; 0 nếu chưa có/không đọc được."""
+        if not self.kho_dang_dung:
+            return 0.0
+        try:
+            kho = next((k for k in self._doc_khos()["danh_sach"]
+                        if k.get("ten") == self.kho_dang_dung), None)
+            gia_tri = float((kho or {}).get("moc_build") or 0)
+        except (LoiDuLieu, TypeError, ValueError, KeyError):
+            return 0.0
+        return gia_tri if math.isfinite(gia_tri) and gia_tri > 0 else 0.0
+
+    def _kho_id_cua(self, entry: dict) -> str:
+        """Định danh bền của một kho. Kho cũ chưa có ``id`` dùng định danh suy ra từ tên
+        (ổn định, không cần ghi lại sổ đăng ký)."""
+        return str(entry.get("id") or f"ten:{self._slug(str(entry.get('ten') or ''))}")
 
     def _build_database_da_khoa(
         self,
@@ -1754,13 +2631,17 @@ class Engine:
         self._check_cancel()
         if not os.path.isdir(thumuc):
             raise RuntimeError(f"Không tìm thấy thư mục: {thumuc}")
-        files = liet_ke_media(thumuc)
+        # Mốc BẮT ĐẦU đọc file của lượt build này — file sửa sau mốc này có thể đã được đọc
+        # ở bản cũ, nên lần bổ sung sau phải làm mới (phản biện vòng 2).
+        bat_dau_build = time.time()
+        files = liet_ke_media(thumuc, bo_thu_muc_lam_viec=True)
         tracker.set_files(files)
         if not files:
             raise RuntimeError(f"Thư mục không có file media nào: {thumuc}")
 
-        if self.kho_dang_dung:
-            self.update_kho(self.kho_dang_dung, thumuc)
+        # KHÔNG gọi update_kho: hàm đó áp lại kho "đang chọn" của sổ đăng ký lên Engine,
+        # tức có thể đổi job sang kho khác giữa chừng. Chỉ ghi đúng entry đã ghim.
+        self._ghi_thu_muc_kho_ghim(thumuc)
 
         shifts_kho = max(0, int(self.config.shifts_kho))
         db_da_ton_tai = os.path.exists(self.db_file)
@@ -1784,21 +2665,92 @@ class Engine:
             )
 
         tong = len(files)
-        da_co = set()
-        if mode != "new" and os.path.exists(self.db_file):
-            da_co = {
-                os.path.normcase(os.path.abspath(clip["duong_dan"]))
-                for clip in self.db_clips(bo_cache=True)
-                if int(clip.get("so_hash", 0)) > 0
-            }
+        # Clip HỮU ÍCH (có hash) của kho hiện tại: để bỏ qua khi bổ sung, và để kiểm
+        # kho tạm không làm mất clip đang tốt trước khi thay (audit TCP-02).
+        ds_cu: list = []
+        if db_da_ton_tai:
+            try:
+                ds_cu = self._doc_danh_sach_clip(self.db_file)
+            except RuntimeError as e:
+                if mode != "new":
+                    raise RuntimeError(
+                        f"{e}. Không bổ sung vào một kho không đọc được — hãy «Tạo mới» "
+                        "kho này."
+                    ) from e
+                canh_bao.append(f"{e}. Kho sẽ được tạo lại từ đầu.")
+        cu_huu_ich = {self._khoa_duong_dan(c["duong_dan"]) for c in ds_cu
+                      if int(c.get("so_hash") or 0) > 0}
+        da_co = cu_huu_ich if mode != "new" else set()
+        # Clip ĐÃ có vân tay nhưng FILE bị thay sau lần công bố kho gần nhất (ví dụ đồng
+        # bộ kênh vừa tải lại bản tốt cho một file nén dở — audit TCP-10): bỏ qua theo
+        # đường dẫn như trước sẽ giữ vân tay của bản hỏng mãi. Gỡ rồi tạo lại.
+        lam_moi = self._clip_doi_file_sau_cong_bo(files, da_co) if da_co else set()
         can_xu_ly = []
         for path in files:
-            if os.path.normcase(os.path.abspath(path)) in da_co:
+            khoa = self._khoa_duong_dan(path)
+            if khoa in da_co and khoa not in lam_moi:
                 tracker.skipped(path)
             else:
                 can_xu_ly.append(path)
+        # Clip có vân tay mà file đã VẮNG khỏi thư mục nguồn (phản biện vòng 2 + 3):
+        # * có bản cách ly trong `_hong/` của ĐÚNG thư mục chứa nó → ứng viên gỡ, nhưng chỉ
+        #   gỡ khi bản THAY THẾ cùng mã video có vân tay trong kho tạm (kiểm sau bước
+        #   thêm) — gỡ trước khi bản mới tạo được vân tay là xuất bản một kho không còn vân
+        #   tay nào cho video đó;
+        # * vắng không rõ lý do (ổ chưa gắn, file chưa tải về…) → GIỮ: gỡ nhầm là mất hàng
+        #   giờ tạo lại.
+        ten_goc = {self._khoa_duong_dan(c["duong_dan"]): os.path.basename(c["duong_dan"])
+                   for c in ds_cu}
 
-        if not can_xu_ly:
+        def ke_ten(tap) -> str:
+            ds = sorted(ten_goc.get(k, os.path.basename(k)) for k in tap)
+            return ", ".join(ds[:10]) + (f" … (+{len(ds) - 10})" if len(ds) > 10 else "")
+
+        ung_vien_go: set = set()
+        giu_hong: set = set()
+        if da_co:
+            goc_kho = self._khoa_duong_dan(thumuc)
+            vang = da_co - {self._khoa_duong_dan(p) for p in files}
+            hong_theo_thu_muc: dict = {}
+            for k in vang:
+                thu_muc_k = os.path.dirname(k)
+                try:
+                    trong_kho = os.path.commonpath([thu_muc_k, goc_kho]) == goc_kho
+                except ValueError:
+                    trong_kho = False
+                if not trong_kho:
+                    continue
+                if thu_muc_k not in hong_theo_thu_muc:
+                    hong_theo_thu_muc[thu_muc_k] = channel.ten_da_cach_ly(thu_muc_k)
+                if channel.la_ban_da_cach_ly(os.path.basename(k),
+                                             hong_theo_thu_muc[thu_muc_k]):
+                    ung_vien_go.add(k)
+            # Không có bản thay thế nào (trong kho cũ hoặc trong lượt thêm này) thì khỏi
+            # dựng kho tạm: chắc chắn giữ.
+            ma_co_the_thay = ({self._ma_video_khoa(k) for k in cu_huu_ich - ung_vien_go}
+                              | {self._ma_video_khoa(self._khoa_duong_dan(p))
+                                 for p in can_xu_ly}) - {""}
+            giu_hong = {k for k in ung_vien_go
+                        if self._ma_video_khoa(k) not in ma_co_the_thay}
+            ung_vien_go -= giu_hong
+            con_vang = vang - ung_vien_go - giu_hong
+            if con_vang:
+                canh_bao.append(
+                    f"{len(con_vang)} clip trong kho vân tay không còn file trong thư mục "
+                    "nguồn — giữ nguyên vân tay (ổ chưa gắn, file chưa tải về…?). Dùng «Tạo "
+                    f"mới» nếu chắc chắn muốn gỡ: {ke_ten(con_vang)}.")
+        if lam_moi:
+            ten_lam_moi = sorted(os.path.basename(p) for p in files
+                                 if self._khoa_duong_dan(p) in lam_moi)
+            canh_bao.append(
+                f"Làm mới vân tay {len(lam_moi)} clip có file đã thay sau lần tạo kho gần "
+                f"nhất: {', '.join(ten_lam_moi[:10])}"
+                + (f" … (+{len(ten_lam_moi) - 10})" if len(ten_lam_moi) > 10 else "") + "."
+            )
+
+        if not can_xu_ly and not ung_vien_go:
+            if giu_hong:
+                canh_bao.append(self._canh_bao_giu_hong(giu_hong, ke_ten))
             tracker.saving()
             canh_bao.extend(self._cap_nhat_snapshot_sau_build(mode))
             tracker.completed("Mọi clip đều đã có vân tay; không cần ghi lại kho.", db_written=False)
@@ -1835,6 +2787,8 @@ class Engine:
                 os.fsync(dich.fileno())
             shutil.copystat(self.db_file, db_tam)
             sub = "add"
+            if lam_moi:
+                self._go_van_tay_cu(db_tam, lam_moi, ds_cu, workspace, tracker)
 
         loi_file = []
         structured_seen = False
@@ -1910,23 +2864,26 @@ class Engine:
         if shifts_kho > 0:
             tham_so.extend(["--shifts", str(shifts_kho)])
         tham_so.extend(["--list", listfile])
+        cong_bo = False
         try:
-            rc, duoi = self._run_stream(
-                self._audfprint_build_cmd(sub, *tham_so, db_file=db_tam),
-                on_line,
-                on_heartbeat=on_heartbeat,
-                logger=tracker.logger,
-                process_name="audfprint-build",
-                include_in_tail=lambda line: not line.startswith(
-                    "TIMCLIP_FINGERPRINT_EVENT "
-                ),
-            )
-            if rc != 0:
-                chi_tiet = "\n".join(duoi[-12:]) or "(không có thông báo nào)"
-                raise RuntimeError(
-                    f"audfprint kết thúc với mã lỗi {rc}.\n\n"
-                    f"Thông báo cuối cùng:\n{chi_tiet}"
+            # Chỉ có clip cần GỠ (đã bị cách ly) mà không có gì để thêm: bỏ bước `add`.
+            if can_xu_ly:
+                rc, duoi = self._run_stream(
+                    self._audfprint_build_cmd(sub, *tham_so, db_file=db_tam),
+                    on_line,
+                    on_heartbeat=on_heartbeat,
+                    logger=tracker.logger,
+                    process_name="audfprint-build",
+                    include_in_tail=lambda line: not line.startswith(
+                        "TIMCLIP_FINGERPRINT_EVENT "
+                    ),
                 )
+                if rc != 0:
+                    chi_tiet = "\n".join(duoi[-12:]) or "(không có thông báo nào)"
+                    raise RuntimeError(
+                        f"audfprint kết thúc với mã lỗi {rc}.\n\n"
+                        f"Thông báo cuối cùng:\n{chi_tiet}"
+                    )
 
             # Tương thích adapter/test cũ: nếu không có structured event nhưng process
             # thành công, chỉ lúc này mới đánh dấu các file còn lại thành công.
@@ -1938,40 +2895,86 @@ class Engine:
 
             if not os.path.isfile(db_tam):
                 raise RuntimeError("audfprint báo thành công nhưng không tạo database tạm.")
-            tracker.saving(tracker.state.active_subprocess_pid)
-            self._cache_khoa = None
-            try:
-                os.replace(db_tam, self.db_file)
-            except PermissionError:
-                ten_moi = (
-                    f"kho_{self._slug(self.kho_dang_dung or 'kho')}_"
-                    f"{uuid.uuid4().hex[:6]}.pklz"
-                )
-                db_moi = os.path.join(self.data_dir, ten_moi)
-                os.replace(db_tam, db_moi)
-                dang_ky = self._doc_khos()
-                for kho in dang_ky["danh_sach"]:
-                    if kho["ten"] == self.kho_dang_dung:
-                        kho["db_cu"] = kho["db"]
-                        kho["db"] = ten_moi
-                self._ghi_khos(dang_ky)
-                self._ap_dung_kho(self.kho_dang_dung, dang_ky)
-                canh_bao.append(
-                    "File vân tay cũ đang bị khóa; đã ghi kết quả vào file mới an toàn."
-                )
+            # Clip đã bị cách ly: gỡ SAU bước thêm, chỉ khi bản thay thế cùng mã video có
+            # vân tay trong kho tạm (phản biện vòng 3).
+            go_hong: set = set()
+            if ung_vien_go:
+                go_hong = self._go_hong_co_ban_thay(ung_vien_go, db_tam)
+                if go_hong:
+                    self._go_van_tay_cu(db_tam, go_hong, ds_cu, workspace, tracker)
+                    canh_bao.append(
+                        f"Gỡ vân tay {len(go_hong)} clip đã bị cách ly vào "
+                        f"{channel.THU_MUC_HONG}/ (file nghi hỏng; bản thay thế cùng mã video "
+                        f"đã có vân tay): {ke_ten(go_hong)}.")
+                giu_hong |= ung_vien_go - go_hong
+            if giu_hong:
+                canh_bao.append(self._canh_bao_giu_hong(giu_hong, ke_ten))
+            # Mã thoát 0 + file tạm tồn tại chưa chứng minh kho DÙNG ĐƯỢC (TCP-02).
+            cong_bo, canh_bao_kiem = self._kiem_kho_tam(db_tam, sub, cu_huu_ich, can_xu_ly,
+                                                        lam_moi=lam_moi,
+                                                        da_go=frozenset(go_hong))
+            canh_bao.extend(canh_bao_kiem)
+            if cong_bo:
+                # Sổ đăng ký vẫn trỏ kho đã ghim tới đúng file này? (TCP-01)
+                self._kiem_dich_cong_bo()
+                tracker.saving(tracker.state.active_subprocess_pid)
+                self._cache_khoa = None
+                try:
+                    os.replace(db_tam, self.db_file)
+                except PermissionError:
+                    # File cũ đang bị khoá (Windows/diệt virus): công bố sang file MỚI,
+                    # trỏ đúng kho đã ghim sang đó. Không bao giờ xoá file cũ trước.
+                    ten_moi = (
+                        f"kho_{self._slug(self.kho_dang_dung or 'kho')}_"
+                        f"{uuid.uuid4().hex[:6]}.pklz"
+                    )
+                    db_moi = os.path.join(self.data_dir, ten_moi)
+                    os.replace(db_tam, db_moi)
+                    if self.kho_dang_dung:
+                        ten_kho = self.kho_dang_dung
+
+                        def doi_file(d: dict) -> None:
+                            for kho in d["danh_sach"]:
+                                if kho["ten"] == ten_kho:
+                                    kho["db_cu"] = kho["db"]
+                                    kho["db"] = ten_moi
+
+                        self._sua_khos(doi_file)
+                    self.db_file = db_moi
+                    canh_bao.append(
+                        "File vân tay cũ đang bị khóa; đã ghi kết quả vào file mới an toàn."
+                    )
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
 
-        # Chỉ đổi metadata khi toàn bộ kho vừa được tạo mới, hoặc khi phần bổ sung
-        # dùng đúng shifts cũ. Kho add lệch shifts phải tiếp tục mang metadata cũ
-        # để những lượt sau vẫn cảnh báo cho tới khi người dùng chủ động tạo lại.
-        if self.kho_dang_dung and (sub == "new" or shifts_da_luu == shifts_kho):
-            dang_ky = self._doc_khos()
-            for kho in dang_ky["danh_sach"]:
-                if kho["ten"] == self.kho_dang_dung:
-                    kho["shifts"] = shifts_kho
-                    break
-            self._ghi_khos(dang_ky)
+        if not cong_bo:
+            tracker.completed(
+                "Không có clip mới nào tạo được vân tay; kho hiện tại giữ nguyên.",
+                db_written=False,
+            )
+            state = tracker.state
+            return {
+                "so_clip": tong,
+                "da_xu_ly": state.processed_count,
+                "thanh_cong": 0,
+                "bo_qua": state.skipped_count,
+                "that_bai": state.failed_count,
+                "da_huy": False,
+                "loi_file": [*loi_file, *[x["message"] for x in tracker.errors]],
+                "giay": state.elapsed_seconds,
+                "canh_bao": canh_bao,
+                "da_ghi_kho": False,
+            }
+
+        # Phiên bản mới cho lịch sử quét (TCP-07). Chỉ đổi metadata shifts khi toàn bộ
+        # kho vừa được tạo mới, hoặc khi phần bổ sung dùng đúng shifts cũ. Kho add lệch
+        # shifts phải tiếp tục mang metadata cũ để những lượt sau vẫn cảnh báo cho tới
+        # khi người dùng chủ động tạo lại.
+        canh_bao.extend(self._ghi_phien_ban_sau_cong_bo(
+            shifts_kho=shifts_kho,
+            cap_nhat_shifts=sub == "new" or shifts_da_luu == shifts_kho,
+            moc_build=bat_dau_build,
+        ))
 
         canh_bao.extend(self._cap_nhat_snapshot_sau_build(mode))
         tracker.completed()
@@ -1986,6 +2989,7 @@ class Engine:
             "loi_file": [*loi_file, *[x["message"] for x in tracker.errors]],
             "giay": state.elapsed_seconds,
             "canh_bao": canh_bao,
+            "da_ghi_kho": True,
         }
 
     # =================================================================
@@ -2255,13 +3259,20 @@ class Engine:
         tong = self.duration_of(media)
         if not tong:
             raise RuntimeError(f"Không đọc được thời lượng file: {media}")
+        # Sổ phạm vi của lượt quét (nếu có): khúc lỗi KHÔNG được biến mất khỏi trách
+        # nhiệm quét — vùng của nó phải được ghi là chưa kiểm (audit TCP-04).
+        pv = getattr(self, "_pham_vi", None)
+        # Lập khúc theo độ dài ÂM THANH khi luồng tiếng kết thúc trước hình.
+        tong_quet = float(tong)
+        if pv is not None and pv.het_am_thanh and pv.het_am_thanh < tong_quet:
+            tong_quet = float(pv.het_am_thanh)
 
         buoc = cfg.chunk_s - overlap
-        het = tong if den_giay is None else min(den_giay, tong)
+        het = tong_quet if den_giay is None else min(den_giay, tong_quet)
         moc = [
             bat_dau
-            for bat_dau in range(0, int(tong) + 1, buoc)
-            if bat_dau < tong and tu_giay <= bat_dau < het
+            for bat_dau in range(0, int(tong_quet) + 1, buoc)
+            if bat_dau < tong_quet and tu_giay <= bat_dau < het
         ]
         ds = []
         if not moc:
@@ -2269,13 +3280,42 @@ class Engine:
         for i, bat_dau in enumerate(moc):
             self._check_cancel()
             out = os.path.join(chunk_dir, f"chunk_{int(bat_dau):07d}.wav")
-            r = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                 "-ss", str(bat_dau), "-t", str(cfg.chunk_s), "-i", media,
-                 "-vn", "-ac", "1", "-ar", "11025", out],
-                capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1024:
+            ky_vong = min(float(cfg.chunk_s), tong_quet - bat_dau)
+            # `-map 0:a:0`: cắt ĐÚNG luồng tiếng đầu tiên — luồng mà `do_dai_am_thanh` đo.
+            # Không chỉ định thì FFmpeg tự chọn luồng "tốt nhất" (nhiều kênh hơn), có thể
+            # là luồng khác với độ dài khác (phản biện vòng 2).
+            lenh = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", str(bat_dau), "-t", str(cfg.chunk_s), "-i", media,
+                    "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "11025", out]
+            ok = False
+            do = None
+            # Thử lại MỘT lần cho lỗi tạm thời (file đang bị khoá, ổ chập chờn). Không thử
+            # lại khi FFmpeg treo: lần sau cũng sẽ treo, chỉ tốn thêm một hạn chờ. WAV mà
+            # không đọc được header cũng là cắt lỗi — trước đây được coi như đủ độ dài.
+            for lan in range(2):
+                r = self._chay_ffmpeg(lenh)
+                if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1024:
+                    do = do_dai_wav(out)
+                    if do is not None:
+                        ok = True
+                        break
+                LOGGER_SCAN.warning(
+                    "event=scan.chunk_failed start=%d attempt=%d rc=%s timed_out=%s err=%s",
+                    int(bat_dau), lan + 1, r.returncode, r.timed_out,
+                    (r.stderr or "").strip()[-200:],
+                )
+                if r.timed_out:
+                    break
+            if ok:
                 ds.append(out)
+                if pv is not None:
+                    thuc = min(do, ky_vong)
+                    pv.do_dai_khuc[os.path.basename(out)] = thuc
+                    if thuc < ky_vong - 1.0:
+                        # Khúc bị cắt ngắn: phần cuối chưa từng được giải mã.
+                        pv.loi_cat.append((bat_dau + thuc, bat_dau + ky_vong))
+            elif pv is not None:
+                pv.loi_cat.append((float(bat_dau), bat_dau + ky_vong))
             self._bao(progress, pct0 + (pct1 - pct0) * (i + 1) / len(moc),
                       f"Đang cắt khúc {i+1}/{len(moc)} (mốc {hhmmss(bat_dau)})...")
         return ds, tong
@@ -2283,8 +3323,10 @@ class Engine:
     def _match_chunks(self, chunks: list, progress: Optional[Callable] = None,
                       pct0: float = 0.60, pct1: float = 0.95,
                       workspace: Optional[str] = None,
-                      hau_to: str = "") -> list:
+                      hau_to: str = "", luot_bu: str = "") -> list:
         """So khớp một nhóm khúc với kho vân tay, trả về danh sách kết quả thô.
+
+        ``luot_bu``: khoá lượt bù tốc độ (``_luot_bu``) khi các khúc là bản đã đổi tốc độ.
 
         VÌ SAO KHÔNG CÒN DÙNG ``--sortbytime``:
         audfprint cắt bớt kết quả THEO THỨ TỰ ĐANG CÓ, và nó cắt SAU khi đã sắp lại:
@@ -2301,6 +3343,8 @@ class Engine:
         là phần yếu nhất — đúng ngữ nghĩa mong muốn. Thứ tự thời gian vẫn được bảo
         đảm vì ``_merge()`` tự sắp theo ``start_s`` ở cuối.
         """
+        # Kho được ghi lại giữa hai lượt khớp của CÙNG một video → dừng, không trộn.
+        self._kiem_kho_khong_doi()
         goc = workspace or self.data_dir
         listfile = os.path.join(goc, f"_ds_khuc{hau_to}.txt")
         with open(listfile, "w", encoding="utf-8") as f:
@@ -2310,12 +3354,26 @@ class Engine:
             os.remove(opfile)
 
         dem = {"n": 0}
+        # Khúc audfprint KHÔNG đọc được: tín hiệu chính là dòng stdout
+        # "wavfile2peaks: Error reading <khúc> skipping" (phản biện TCP-04). Dòng NOMATCH
+        # "0.0 sec" thì KHÔNG đủ: khúc im lặng cũng ghi y hệt (phản biện vòng 2, N1).
+        loi_doc: set = set()
 
         def on_line(dong: str):
-            if "Analyzed #" in dong:
-                dem["n"] += 1
-                self._bao(progress, pct0 + (pct1 - pct0) * dem["n"] / max(1, len(chunks)),
-                          f"Đang so khớp vân tay... khúc {dem['n']}/{len(chunks)}")
+            # ncores > 1: các worker audfprint ghi CHUNG một ống stdout, mỗi `print` là
+            # vài lần ghi riêng nên dòng của nhiều khúc XEN nhau — hai lỗi trên một dòng,
+            # hoặc lỗi chen giữa dòng "Analyzed <khúc khác>". Lấy MỌI khúc đứng ngay sau
+            # cụm "Error reading", không lấy khúc đầu tiên của dòng (phản biện vòng 3).
+            for mk_loi in RE_LOI_DOC_KHUC.finditer(dong):
+                loi_doc.add(mk_loi.group(1))
+            # Với ncores > 1 audfprint in "Analyzed <khúc>" không có "#N".
+            so = dong.count("Analyzed")
+            if so:
+                dem["n"] += so
+                self._bao(progress, pct0 + (pct1 - pct0) * min(1.0, dem["n"] / max(
+                    1, len(chunks))),
+                    f"Đang so khớp vân tay... khúc {min(dem['n'], len(chunks))}/"
+                    f"{len(chunks)}")
 
         tham_so = [
             "--find-time-range", "--exact-count",
@@ -2340,11 +3398,23 @@ class Engine:
         tho = []
         dong_tho = dong_co_matched = 0
         theo_khuc: dict = {}
+        # Khúc mà audfprint THỰC SỰ đã phân tích: mỗi khúc để lại dòng `Matched …` hoặc
+        # `NOMATCH …`. Khúc gửi đi mà vắng mặt (lỗi đọc với --continue-on-error) là
+        # vùng CHƯA được so khớp (audit TCP-04).
+        da_phan_tich: set = set()
+        khong_hash: set = set()
         if os.path.exists(opfile):
             with open(opfile, "r", encoding="utf-8", errors="replace") as f:
                 for dong in f:
                     dong_tho += 1
                     dong = dong.strip()
+                    mk_bat_ky = RE_TEN_KHUC.search(dong)
+                    if mk_bat_ky:
+                        da_phan_tich.add(mk_bat_ky.group(0))
+                        m_no = (RE_NOMATCH_SO_HASH.search(dong)
+                                if dong.startswith("NOMATCH") else None)
+                        if m_no and int(m_no.group(1)) == 0:
+                            khong_hash.add(mk_bat_ky.group(0))
                     if "Matched" not in dong:
                         continue
                     dong_co_matched += 1
@@ -2367,9 +3437,47 @@ class Engine:
                     he_so = giai_ma_he_so(mk.group(2) if mk else None)
                     bat_dau = offset + t_khuc * he_so
                     khop = khop * he_so
+                    # `t_clip` ở trục CLIP GỐC, không nhân hệ số. Trên trục khúc đã
+                    # hiệu chỉnh, clip gốc phát đúng tốc độ nên đầu clip (t_clip = 0)
+                    # nằm ở t_khuc − t_clip, tức `offset + k·(t_khuc − t_clip)` trên
+                    # video = `bat_dau − k·t_clip`. Trừ thẳng `t_clip` (code cũ) lệch
+                    # (1 − k)·t_clip giây — 12 s ở ca audit TCP-05. Với k = 1 y hệt cũ.
                     tho.append({"clip": file_clip, "bat_dau": bat_dau,
                                 "khop": khop, "t_clip": t_clip, "hash": so_hash,
-                                "align": bat_dau - t_clip})
+                                "he_so": he_so,
+                                "align": bat_dau - he_so * t_clip})
+
+        # Lớp phòng thủ thứ hai, theo NỘI DUNG khúc chứ không theo stdout: khúc 0 hash mà
+        # bộ đọc WAV của tool không đọc được, hoặc đọc được mà CÓ TIẾNG RÕ, thì audfprint
+        # chưa từng phân tích nó (lỗi đọc tạm thời lúc đó — bị khoá, FFmpeg con chết…).
+        # Khúc im lặng / gần im lặng vẫn là ĐÃ phân tích — âm tính thật (vòng 2 + vòng 3).
+        theo_ten = {os.path.basename(k): k for k in chunks}
+        for ten in khong_hash - loi_doc:
+            duong = theo_ten.get(ten)
+            if duong and (do_dai_wav(duong) is None or wav_co_tieng(duong)):
+                loi_doc.add(ten)
+        da_phan_tich -= loi_doc
+        pv = getattr(self, "_pham_vi", None)
+        if pv is not None:
+            vang = []
+            for khuc in chunks:
+                ten = os.path.basename(khuc)
+                mk = RE_TEN_KHUC.fullmatch(ten)
+                if not mk:
+                    continue
+                if not mk.group(2):
+                    # Khúc GỐC: tính độ phủ.
+                    if ten not in da_phan_tich:
+                        pv.khong_phan_tich.add(ten)
+                        vang.append(ten)
+                elif ten in da_phan_tich:
+                    pv.bu_toc_do_ok.add((luot_bu, int(mk.group(1))))
+                else:
+                    # Khúc của lượt BÙ TỐC ĐỘ không được phân tích.
+                    pv.loi_bu_toc_do.add((luot_bu, int(mk.group(1))))
+            if vang:
+                LOGGER_SCAN.warning(
+                    "event=scan.chunks_not_analyzed count=%d first=%s", len(vang), vang[0])
 
         # Cộng dồn vào chẩn đoán của lượt quét: hàm này có thể được gọi nhiều lần
         # (đường đi nhanh Top-1 gọi hai lần) nên phải cộng chứ không gán đè.
@@ -2459,12 +3567,18 @@ class Engine:
                 cong_don += (b - a) * mat_do_tot_nhat
             return round(cong_don), do_dai_hop
 
+        def he_so(x: dict) -> float:
+            return round(float(x.get("he_so", 1.0) or 1.0), 5)
+
         gop = []
         for x in loc:
             trung = next(
                 (
                     g for g in gop
                     if g["clip"] == x["clip"]
+                    # Mảnh của hai phép biến đổi tốc độ khác nhau không cùng trục khúc:
+                    # không gộp (audit TCP-05). Lượt thường k = 1 vẫn gộp như cũ.
+                    and g["he_so"] == he_so(x)
                     and abs(g["align"] - x["align"]) <= cfg.dedup_s
                     and any(
                         khoang_cach_interval(cu, x) <= cfg.dedup_s
@@ -2477,6 +3591,7 @@ class Engine:
                 gop.append({
                     "clip": x["clip"],
                     "align": x["align"],
+                    "he_so": he_so(x),
                     "manh": [dict(x)],
                 })
             else:
@@ -2504,16 +3619,21 @@ class Engine:
                         f"Hash ước tính của clip «{ten_clip}» là {hash_uoc}, "
                         f"đã chạm cận trên {gioi_han}; có dấu hiệu đếm trùng."
                     )
+            k = g["he_so"]
+            # Mốc đầu clip gốc trên trục VIDEO: `bat_dau − k·t_clip` (xem parser).
             clip_bat_dau_s = max(
                 0.0,
-                som_nhat["bat_dau"] - som_nhat["t_clip"],
+                som_nhat["bat_dau"] - k * som_nhat["t_clip"],
             )
             ket_qua.append(Match(
                 clip=ten_clip,
                 start_s=clip_bat_dau_s,
                 end_s=end_s,
                 matched_s=do_dai_hop,
-                clip_offset_s=vung_khop_s - clip_bat_dau_s,
+                # "Khớp từ giây thứ mấy CỦA CLIP" đo trên trục clip gốc: đổi khoảng cách
+                # trên video về trục clip bằng cách chia k. Với k = 1 y hệt công thức cũ
+                # (kể cả ca clip bắt đầu trước đầu video và bị kẹp về 0).
+                clip_offset_s=(vung_khop_s - clip_bat_dau_s) / k,
                 hashes=hashes,
                 confidence=danh_gia(hashes),
                 clip_bat_dau_s=clip_bat_dau_s,
@@ -2748,6 +3868,15 @@ class Engine:
         """
         cfg = self.config
         cd = self.chan_doan_quet
+        # Ghi ĐÚNG những khúc đã gửi đi so khớp — đường nhanh Top-1 có thể chỉ gửi khúc
+        # đầu; phạm vi không được lấy theo vùng dự kiến (audit TCP-06).
+        pv = getattr(self, "_pham_vi", None)
+
+        def gui(ds: list) -> list:
+            if pv is not None:
+                pv.da_gui.extend(ds)
+            return ds
+
         du_dieu_kien = (
             cfg.top1_tim_nhanh
             and cfg.top_n == 1
@@ -2755,16 +3884,19 @@ class Engine:
         )
         if not du_dieu_kien:
             cd.duong_di = "quet_toan_bo"
-            return self._match_chunks(chunks, progress, pct0, pct1, workspace=workspace)
+            return self._match_chunks(gui(chunks), progress, pct0, pct1,
+                                      workspace=workspace)
 
         # Chia đôi tiến độ: phần đầu cho vùng ưu tiên, phần sau cho quét bù.
         giua = pct0 + (pct1 - pct0) * 0.35
         self._bao(progress, pct0,
                   "Tìm nhanh 1 kết quả đáng tin — đang kiểm tra phần đầu video...")
-        dau = self._match_chunks(chunks[:1], progress, pct0, giua,
+        dau = self._match_chunks(gui(chunks[:1]), progress, pct0, giua,
                                  workspace=workspace, hau_to="_uu_tien")
         som = self._du_manh_de_dung_som(dau, duration)
         if som is not None:
+            if pv is not None:
+                pv.dung_som = True
             cd.duong_di = "dung_som_vung_dau"
             LOGGER_SCAN.info(
                 "event=scan.top1.early_accept clip=%s hashes=%d matched_s=%.1f ratio=%.1f",
@@ -2779,7 +3911,7 @@ class Engine:
         cd.duong_di = "quet_bu_toan_bo"
         self._bao(progress, giua,
                   "Chưa có bằng chứng đủ mạnh ở phần đầu — đang mở rộng quét toàn bộ video...")
-        con_lai = self._match_chunks(chunks[1:], progress, giua, pct1,
+        con_lai = self._match_chunks(gui(chunks[1:]), progress, giua, pct1,
                                      workspace=workspace, hau_to="_con_lai")
         return dau + con_lai
 
@@ -2903,13 +4035,17 @@ class Engine:
             if not mk:
                 continue
             out = os.path.join(thu_muc, f"chunk_{int(mk.group(1)):07d}_k{ma}.wav")
-            r = subprocess.run(
+            r = self._chay_ffmpeg(
                 ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", khuc,
                  "-vn", "-ac", "1", "-ar", "11025",
-                 "-af", bo_loc_ffmpeg(he_so, ho), out],
-                capture_output=True, text=True, encoding="utf-8", errors="replace")
+                 "-af", bo_loc_ffmpeg(he_so, ho), out])
             if r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 1024:
                 ra.append(out)
+            elif getattr(self, "_pham_vi", None) is not None:
+                # Lượt bù tốc độ thiếu khúc này: âm tính của video chưa được kiểm trọn
+                # theo chính sách đang bật (phản biện TCP-04).
+                self._pham_vi.loi_bu_toc_do.add(
+                    (self._luot_bu(he_so, ho), int(mk.group(1))))
         return ra
 
     def _ke_hoach_toc_do(self, tho: list) -> list:
@@ -3004,9 +4140,10 @@ class Engine:
             khuc_moi = self._bien_doi_khuc(chunks, he_so, ho, workspace)
             if not khuc_moi:
                 continue
+            luot = self._luot_bu(he_so, ho)
             ket = self._match_chunks(khuc_moi, progress, p0, p1,
                                      workspace=workspace,
-                                     hau_to=f"_k{ma_he_so(he_so)}_{ho}")
+                                     hau_to=f"_{luot}", luot_bu=luot)
             for khuc in khuc_moi:
                 with contextlib.suppress(OSError):
                     os.remove(khuc)
@@ -3047,16 +4184,37 @@ class Engine:
         Quét 1 file media dài có sẵn trên đĩa.
         pct_start: mốc % bắt đầu — bằng 0 khi quét file trực tiếp, bằng 0.40 khi
         được gọi sau bước tải YouTube (để thanh tiến độ chạy liền mạch 0 -> 100%).
+
+        Gọi trực tiếp một file = một JOB mới: xoá cờ huỷ đúng một lần rồi chạy trên bản
+        Engine đã ghim kho/cấu hình. Gọi từ bên trong một job (batch, quét YouTube) thì
+        KHÔNG xoá cờ huỷ — yêu cầu Dừng của batch phải còn nguyên (audit TCP-13).
         """
+        if source_type == "file" and not getattr(self, "_la_ban_ghim", False):
+            self.cancel_event.clear()
+        job = self._ban_sao_cho_job()
+        try:
+            return job._scan_media(path, label, ref, source_type, progress,
+                                   luu_lich_su, pct_start)
+        finally:
+            self._nhan_ket_qua_job(job)
+
+    def _scan_media(self, path: str, label: Optional[str] = None, ref: str = "",
+                    source_type: str = "file", progress: Optional[Callable] = None,
+                    luu_lich_su: bool = True, pct_start: float = 0.0) -> ScanResult:
+        """Thân của ``scan_media`` — chạy trên bản Engine đã ghim, không đụng cờ huỷ."""
         self.require(can_db=True)
+        # Mỗi video là một đơn vị nhất quán: chụp chữ ký kho ở đây và kiểm lại trước mỗi
+        # lượt khớp. Giữa hai video của một batch thì kho mới được phép có hiệu lực.
+        self._chu_ky_kho_ghim = self._chu_ky_db()
         # Mốc phần trăm cắt-khúc cũ không còn cố định: quét tăng dần chia dải
         # `pct_start..p_match1` cho từng đoạn, mỗi đoạn tự có phần cắt và phần khớp.
         p_match1 = 0.95
-        if source_type == "file":
-            self.cancel_event.clear()
         ten = label or os.path.basename(path)
         kq = ScanResult(source_name=ten, source_ref=ref or path)
+        self._gan_danh_tinh(kq)
         self.chan_doan_quet = ChanDoanQuet()
+        # Sổ phạm vi THẬT của lượt quét này: khúc nào đã gửi đi khớp, khúc nào lỗi.
+        pv = self._pham_vi = _PhamViQuet()
         try:
             if not os.path.isfile(path):
                 raise RuntimeError(f"Không tìm thấy file: {path}")
@@ -3065,6 +4223,9 @@ class Engine:
                 if not tong:
                     raise RuntimeError(f"Không đọc được thời lượng file: {path}")
                 kq.duration_s = tong
+                tong_am = self.do_dai_am_thanh(path)
+                if tong_am and tong_am < tong - DUNG_SAI_PHU_S:
+                    pv.het_am_thanh = float(tong_am)
                 doan = self._doan_quet_tang_dan(tong)
                 tho: list = []
                 chunks: list = []
@@ -3089,10 +4250,12 @@ class Engine:
                     # đổi được kết luận. Không mất độ phủ vì nếu KHÔNG thấy gì, vòng lặp
                     # vẫn chạy hết video.
                     if len(doan) > 1 and self._du_de_dung_som(tho, tong):
+                        if i < len(doan) - 1:
+                            pv.dung_som = True
                         break
                 if not chunks:
                     raise RuntimeError("Không cắt được khúc nào từ file này.")
-                kq.pham_vi_quet_s = da_quet_den
+                self._chot_pham_vi(kq, tong, da_quet_den)
                 # Không có gì đạt chuẩn thì thử bù tốc độ trước khi kết luận là
                 # không có. Đây là lúc DUY NHẤT lượt quét phụ được chạy, nên video
                 # có kết quả bình thường không tốn thêm giây nào.
@@ -3100,6 +4263,8 @@ class Engine:
                     tho = tho + self._quet_da_toc_do(
                         chunks, tho, progress, p_match1, p_match1, ws
                     )
+            # `_merge`/`_gan_chi_so` đọc tổng hash từ kho: phải là đúng phiên bản đã khớp.
+            self._kiem_kho_khong_doi()
             tat_ca = self._merge(tho)
             if self.canh_bao_gop:
                 kq.note = "\n".join(self.canh_bao_gop)
@@ -3121,8 +4286,35 @@ class Engine:
             # `_gan_chi_so` thì vẫn theo VIDEO THẬT, vì đó là sự thật về video.
             kq.matches, kq.matches_loai = self._chon_loc(
                 tat_ca, kq.pham_vi_quet_s or tong)
-            if kq.quet_mot_phan:
-                tin = (f"Đã dừng sớm sau khi quét {hhmmss(kq.pham_vi_quet_s)}"
+            kq.dat_muc_tieu = self._du_muc_tieu(kq.matches)
+            hong_bu = self._vung_hong_bu_toc_do(pv, tong) if not kq.matches else []
+            if hong_bu:
+                # Không thấy gì mà lượt bù tốc độ lại không chạy trọn: chưa chứng minh được
+                # âm tính theo chính sách đang bật — coi như vùng chưa kiểm (phản biện).
+                kq.vung_loi = hop_khoang(list(kq.vung_loi) + hong_bu)
+                kq.note = "\n".join(x for x in (
+                    kq.note, "Lượt bù tốc độ không chạy trọn: "
+                             f"{len(hong_bu)} vùng chưa được kiểm.") if x)
+            if kq.vung_loi:
+                # Vùng chưa kiểm KHÔNG được biến mất: có bằng chứng thì giữ bằng chứng
+                # và ghi rõ chưa quét trọn; KHÔNG có thì đây chưa phải kết luận âm tính
+                # — báo lỗi để lịch sử không chặn lượt quét lại (audit TCP-04).
+                kq.ly_do_pham_vi = "loi_khuc"
+                if kq.matches:
+                    tin = (f"Chưa quét trọn video: {mo_ta_pham_vi(kq)}. Bằng chứng chỉ "
+                           "nằm trong phần đã so khớp.")
+                else:
+                    kq.status = "error"
+                    tin = (f"Không xử lý được một phần video: {mo_ta_pham_vi(kq)}. Chưa "
+                           "thể kết luận video này không chứa clip gốc — hãy quét lại.")
+                kq.note = "\n".join([x for x in (kq.note, tin) if x])
+                self._bao(progress, p_match1, "⚠️ " + tin)
+            elif kq.quet_mot_phan:
+                if pv.dung_som:
+                    kq.ly_do_pham_vi = "dung_som"
+                da_khop = (tong_do_dai(kq.vung_da_khop) if kq.vung_da_khop is not None
+                           else kq.pham_vi_quet_s)
+                tin = (f"Đã dừng sớm sau khi so khớp {hhmmss(da_khop)}"
                        f"/{hhmmss(tong)} — đã đủ bằng chứng nên không quét tiếp. "
                        "Bằng chứng chỉ nằm trong phần đã quét.")
                 kq.note = "\n".join([x for x in (kq.note, tin) if x])
@@ -3133,22 +4325,81 @@ class Engine:
             self._bao(progress, 1.0, tb + ".")
         except Cancelled:
             kq.status, kq.note = "error", "Đã hủy theo yêu cầu."
+            kq.ly_do_pham_vi = "huy"
         except Exception as e:
             kq.status, kq.note = "error", ytdlp_chung.giai_thich_loi(e)
         finally:
             shutil.rmtree(self.chunk_dir, ignore_errors=True)
             kq.chan_doan = self._chot_chan_doan(kq)
+            self._pham_vi = None
         if luu_lich_su:
             kq.job_id = self.save_job(kq, source_type)
         return kq
 
+    def _chot_pham_vi(self, kq: ScanResult, tong: float, da_quet_den: float) -> None:
+        """Tính phạm vi THẬT đã so khớp từ sổ phạm vi của lượt quét (TCP-04/TCP-06).
+
+        Khúc tính là đã khớp khi đã được GỬI đi so khớp và audfprint có báo về nó; độ
+        dài lấy theo số đo thật của khúc. Vùng lỗi = vùng cắt/khớp lỗi KHÔNG được khúc
+        nào khác phủ. ``pham_vi_quet_s`` = mốc cuối của phần đã khớp — chỉ dùng chia
+        vùng chọn lọc, không dùng để khẳng định độ phủ.
+
+        Không có sổ phạm vi (hàm quét bị thay trong test kiểu cũ) thì giữ cách tính cũ
+        và để phạm vi là "không biết".
+        """
+        pv = getattr(self, "_pham_vi", None)
+        if pv is None or not pv.da_gui:
+            kq.pham_vi_quet_s = da_quet_den
+            return
+        khoang, loi = [], list(pv.loi_cat)
+        for khuc in pv.da_gui:
+            ten = os.path.basename(khuc)
+            mk = RE_TEN_KHUC.fullmatch(ten)
+            if not mk or mk.group(2):
+                continue
+            a = float(int(mk.group(1)))
+            dai = pv.do_dai_khuc.get(ten, min(float(self.config.chunk_s), tong - a))
+            if ten in pv.khong_phan_tich:
+                loi.append((a, a + dai))
+            else:
+                khoang.append((a, min(a + dai, tong)))
+        if pv.het_am_thanh and pv.het_am_thanh < tong:
+            # Sau khi luồng tiếng kết thúc không còn gì để so khớp: đã kiểm, không phải lỗi.
+            khoang.append((float(pv.het_am_thanh), float(tong)))
+        kq.vung_da_khop = hop_khoang(khoang)
+        kq.vung_loi = tru_khoang(loi, kq.vung_da_khop)
+        kq.pham_vi_quet_s = max((b for _, b in kq.vung_da_khop), default=0.0)
+
+    def _du_muc_tieu(self, matches: list) -> bool:
+        """Chính sách chọn lọc đã thoả chưa: đủ Top-N (và đủ clip khác nhau nếu bật)."""
+        n = max(1, int(self.config.top_n))
+        if self.config.uu_tien_clip_khac_nhau:
+            return len({m.clip for m in matches}) >= n
+        return len(matches) >= n
+
     def scan_youtube(self, url: str, progress: Optional[Callable] = None,
                      luu_lich_su: bool = True) -> ScanResult:
-        """Tải audio 1 link YouTube rồi quét."""
+        """Tải audio 1 link YouTube rồi quét.
+
+        Gọi trực tiếp = một JOB mới: xoá cờ huỷ một lần, ghim kho/cấu hình. Bên trong
+        batch (``scan_iter``) thì không xoá cờ — trước đây chính dòng xoá cờ ở đây làm
+        nút Dừng chỉ dừng được video đang chạy, video kế tiếp lại chạy (audit TCP-13).
+        """
+        if not getattr(self, "_la_ban_ghim", False):
+            self.cancel_event.clear()
+        job = self._ban_sao_cho_job()
+        try:
+            return job._scan_youtube(url, progress, luu_lich_su)
+        finally:
+            self._nhan_ket_qua_job(job)
+
+    def _scan_youtube(self, url: str, progress: Optional[Callable] = None,
+                      luu_lich_su: bool = True) -> ScanResult:
+        """Thân của ``scan_youtube`` — chạy trên bản ghim, không đụng cờ huỷ."""
         self.require(can_ytdlp=True, can_db=True)
-        self.cancel_event.clear()
         self.canh_bao_mang = []
         kq = ScanResult(source_name=url, source_ref=url)
+        self._gan_danh_tinh(kq)
         try:
             self._bao(progress, 0.02, "Đang lấy thông tin video...")
             info = self.youtube_info(url)
@@ -3182,6 +4433,11 @@ class Engine:
                 self._bao(progress, 0.40,
                           f"{thieu.capitalize()} trong {hhmmss(gioi_han)} đầu — "
                           "tải nốt phần còn lại để quét trọn...")
+                if not self.config.keep_downloads:
+                    # Bản tải MỘT PHẦN `<id>__p<giây>` đã quét xong: không giữ đệm thì bỏ
+                    # luôn, trước đây nó nằm lại mãi (phản biện vòng 3).
+                    with contextlib.suppress(OSError):
+                        os.remove(f)
                 f = self.download_audio(url, info["id"], progress)
                 r = self.scan_media(f, label=kq.source_name, ref=url,
                                     source_type="youtube", progress=progress,
@@ -3193,11 +4449,18 @@ class Engine:
                 # tiếng, đúng cái hiểu nhầm mà ghi chú đó sinh ra để chặn.
                 r.duration_s = float(info.get("duration") or r.duration_s)
                 r.pham_vi_quet_s = min(r.pham_vi_quet_s or gioi_han, gioi_han)
+                if r.quet_mot_phan and not r.vung_loi:
+                    r.ly_do_pham_vi = "gioi_han_tai"
                 if r.quet_mot_phan:
                     tin = (f"Chỉ TẢI và quét {hhmmss(r.pham_vi_quet_s)} đầu "
                            f"/{hhmmss(r.duration_s)} — đã đủ bằng chứng nên không tải "
                            "tiếp. Bằng chứng chỉ nằm trong phần đã quét.")
                     r.note = "\n".join([x for x in (r.note, tin) if x])
+            # File tải về NGẮN hơn video (yt-dlp bỏ fragment lỗi, file đệm cũ bị cụt): phần
+            # thiếu chưa từng được quét — không được thành "quét trọn" (phản biện TCP-04).
+            if (r.ly_do_pham_vi != "gioi_han_tai" and r.vung_da_khop is not None
+                    and self._thieu_duoi(info.get("duration"), r.duration_s)):
+                r, f = self._xu_ly_tai_thieu(url, info, r, f, progress)
             r.source_ref = url
             r.source_id = info["id"]
             r.channel_name = info["channel"]
@@ -3210,6 +4473,7 @@ class Engine:
             kq = r
         except Cancelled:
             kq.status, kq.note = "error", "Đã hủy theo yêu cầu."
+            kq.ly_do_pham_vi = "huy"
         except Exception as e:
             kq.status, kq.note = "error", ytdlp_chung.giai_thich_loi(
                 e, self.cau_hinh_mang().co_cookie)
@@ -3221,12 +4485,104 @@ class Engine:
             kq.job_id = self.save_job(kq, "youtube")
         return kq
 
+    @staticmethod
+    def _thieu_duoi(dai_that, dai_file) -> bool:
+        """File dài ``dai_file`` có thiếu đuôi so với video dài ``dai_that`` không?"""
+        dai_that, dai_file = float(dai_that or 0), float(dai_file or 0)
+        return dai_that > 0 and dai_file > 0 and dai_that - dai_file > DUNG_SAI_TAI_THIEU_S
+
+    def _bo_ban_dem(self, video_id: str) -> bool:
+        """Bỏ MỌI bản đệm đầy đủ của video. True = không còn bản nào, nên lần tải sau chắc
+        chắn là một bản MỚI chứ không phải bản cũ lấy lại từ đệm."""
+        con_lai = []
+        for p in glob.glob(os.path.join(self.dl_dir, video_id + ".*")):
+            if p.endswith((".part", ".ytdl")):
+                continue
+            try:
+                os.remove(p)
+            except OSError:
+                con_lai.append(p)
+        return not con_lai
+
+    def _xu_ly_tai_thieu(self, url: str, info: dict, r: ScanResult, f: str,
+                         progress: Optional[Callable]) -> tuple:
+        """File tải về ngắn hơn video: trả ``(kết quả, file)`` sau khi đã giải thích được.
+
+        Chỉ một lần tải ĐỘC LẬP thứ hai mới phân biệt được hai nguyên nhân, nên khi chưa có
+        bằng chứng nào thì tải lại ngay MỘT lần (phản biện vòng 2):
+
+        * bản mới ĐỦ dài → lần trước bị đứt: quét lại bằng bản mới;
+        * bản mới ngắn ĐÚNG bằng lần trước (± ``DUNG_SAI_TAI_LAI_S``) → âm thanh YouTube
+          cung cấp thật sự ngắn hơn lengthSeconds: phần sau không có tiếng nào để so
+          khớp (như đuôi hình không tiếng của mp4), ghi rõ vào ghi chú. Trước đây ca này
+          thành lỗi + bỏ đệm + tải lại ở MỌI lượt, không bao giờ dứt;
+        * còn lại (không tải lại được, hoặc lại ngắn với độ dài khác) → phần thiếu là vùng
+          LỖI và bỏ bản đệm để lượt sau tải lại (phản biện TCP-04).
+
+        Đã có bằng chứng thì giữ bằng chứng và ghi rõ là chưa quét trọn — không tải lại cả
+        video dài chỉ để quét nốt phần đuôi.
+        """
+        dai_that = float(info.get("duration") or 0)
+        dai_file = float(r.duration_s or 0)
+        if not r.matches and self._trong_thu_muc_dem(f) and self._bo_ban_dem(info["id"]):
+            self._bao(progress, 0.40,
+                      f"File tải về chỉ dài {hhmmss(dai_file)}/{hhmmss(dai_that)} — tải lại "
+                      "một lần để kiểm...")
+            f_moi, dai_moi = None, 0.0
+            try:
+                f_moi = self.download_audio(url, info["id"], progress)
+                dai_moi = float(self.duration_of(f_moi) or 0)
+            except Cancelled:
+                raise
+            except Exception as e:  # noqa: BLE001 — giữ kết quả lần đầu, báo vùng lỗi
+                LOGGER_SCAN.warning("event=scan.redownload_failed video=%s err=%s",
+                                    info["id"], str(e)[:200])
+            if f_moi and dai_moi > 0 and not self._thieu_duoi(dai_that, dai_moi):
+                r_moi = self.scan_media(f_moi, label=r.source_name, ref=url,
+                                        source_type="youtube", progress=progress,
+                                        luu_lich_su=False, pct_start=0.40)
+                if not self._thieu_duoi(dai_that, r_moi.duration_s):
+                    return r_moi, f_moi
+                r, f, dai_file = r_moi, f_moi, float(r_moi.duration_s or 0)
+            elif f_moi and dai_moi > 0 and abs(dai_moi - dai_file) <= DUNG_SAI_TAI_LAI_S:
+                r.vung_da_khop = hop_khoang(list(r.vung_da_khop or [])
+                                            + [(dai_file, dai_that)])
+                r.duration_s = dai_that
+                # Lý do riêng (dù đã "trọn") để về sau còn tra lại được những video được
+                # nhận theo cách này — ví dụ khi nghi một client cắt cụt cố định (vòng 3).
+                # Lượt đầu đã có vùng lỗi thì lý do đó quan trọng hơn: không ghi đè.
+                if not r.vung_loi:
+                    r.ly_do_pham_vi = "am_thanh_ngan_hon"
+                tin = (f"Âm thanh YouTube cung cấp chỉ dài {hhmmss(dai_file)}/"
+                       f"{hhmmss(dai_that)} — đã tải lại và nhận cùng độ dài, nên phần sau "
+                       "không có tiếng để so khớp.")
+                r.note = "\n".join(x for x in (r.note, tin) if x)
+                return r, f_moi
+            elif f_moi:
+                f = f_moi
+        r.vung_loi = hop_khoang(list(r.vung_loi) + [(dai_file, dai_that)])
+        r.duration_s = dai_that
+        r.ly_do_pham_vi = "tai_thieu"
+        tin = (f"File tải về chỉ dài {hhmmss(dai_file)}/{hhmmss(dai_that)} — phần cuối "
+               "chưa được quét.")
+        if not r.matches:
+            r.status = "error"
+            tin += " Chưa thể kết luận video này không chứa clip gốc — hãy quét lại."
+        r.note = "\n".join(x for x in (r.note, tin) if x)
+        if self._trong_thu_muc_dem(f):
+            # Bỏ bản đệm thiếu để lần quét sau tải lại, không dùng lại file cụt.
+            with contextlib.suppress(OSError):
+                os.remove(f)
+        return r, f
+
     def scan_iter(
         self,
         nguon: Iterable,
         source_type: str = "youtube",
         progress: Optional[Callable] = None,
         on_video: Optional[Callable] = None,
+        *,
+        xoa_co_huy: bool = True,
     ):
         """Quét lần lượt nhiều nguồn, **yield từng ScanResult ngay khi xong**.
 
@@ -3238,25 +4594,42 @@ class Engine:
         đẩy Sheets/ghi UI mà không chặn video kế tiếp. Ngoại lệ trong callback được
         nuốt có chủ đích và ghi log: một lỗi ở tầng giao hàng không được phép làm
         hỏng lượt quét đang chạy tốt.
+
+        Cả batch là MỘT job: ghim kho/cấu hình một lần, cờ huỷ xoá đúng một lần lúc bắt
+        đầu (``xoa_co_huy=False`` khi người gọi đã tự xoá, ví dụ ``ScanJobController``,
+        để một cú bấm Dừng rơi vào khoảng giữa không bị nuốt). Có yêu cầu Dừng thì không
+        nhận video mới; kết quả đã xong vẫn được giữ (audit TCP-13).
         """
         nguon = list(nguon)
         tong = len(nguon)
-        for i, x in enumerate(nguon, 1):
-            def p(pct, msg, i=i):
-                self._bao(progress, (i - 1 + pct) / max(1, tong), f"[{i}/{tong}] {msg}")
+        if xoa_co_huy and not getattr(self, "_la_ban_ghim", False):
+            self.cancel_event.clear()
+        job = self._ban_sao_cho_job()
+        try:
+            for i, x in enumerate(nguon, 1):
+                if self.cancel_event.is_set():
+                    LOGGER_SCAN.info(
+                        "event=scan.batch.stopped before_index=%d total=%d", i, tong)
+                    break
 
-            ket_qua = (
-                self.scan_youtube(x, p) if source_type == "youtube"
-                else self.scan_media(x, progress=p)
-            )
-            if on_video:
-                try:
-                    on_video(i, tong, ket_qua)
-                except Exception:  # noqa: BLE001
-                    LOGGER_SCAN.exception(
-                        "event=scan.on_video_callback_failed index=%d total=%d", i, tong
-                    )
-            yield ket_qua
+                def p(pct, msg, i=i):
+                    self._bao(progress, (i - 1 + pct) / max(1, tong),
+                              f"[{i}/{tong}] {msg}")
+
+                ket_qua = (
+                    job.scan_youtube(x, p) if source_type == "youtube"
+                    else job.scan_media(x, progress=p)
+                )
+                if on_video:
+                    try:
+                        on_video(i, tong, ket_qua)
+                    except Exception:  # noqa: BLE001
+                        LOGGER_SCAN.exception(
+                            "event=scan.on_video_callback_failed index=%d total=%d", i, tong
+                        )
+                yield ket_qua
+        finally:
+            self._nhan_ket_qua_job(job)
 
     def scan_many(self, nguon: Iterable, source_type: str = "youtube",
                   progress: Optional[Callable] = None) -> list:
@@ -3271,14 +4644,34 @@ class Engine:
     # =================================================================
 
     def save_job(self, kq: ScanResult, source_type: str) -> int:
+        if not (kq.kho_id or kq.kho_ten or kq.kho_phien_ban):
+            # Kết quả dựng tay (công cụ, test): gắn kho đang dùng. Lượt quét thật đã
+            # gắn từ đầu lượt nên không đi qua nhánh này.
+            self._gan_danh_tinh(kq)
+        if not kq.chinh_sach:
+            kq.chinh_sach = chu_ky_chinh_sach(self.config)
+
+        def tron(vung):
+            return [[round(float(a), 3), round(float(b), 3)] for a, b in vung]
+
+        pham_vi = json.dumps({
+            "vung_da_khop": None if kq.vung_da_khop is None else tron(kq.vung_da_khop),
+            "vung_loi": tron(kq.vung_loi),
+            "ly_do": kq.ly_do_pham_vi,
+            "pham_vi_quet_s": round(float(kq.pham_vi_quet_s or 0), 3),
+        }, ensure_ascii=False)
         with self._db() as c:
             cur = c.execute(
                 "INSERT INTO jobs(created_at, source_type, source_name, source_ref,"
-                " duration_s, status, n_matches, note, source_id)"
-                " VALUES(?,?,?,?,?,?,?,?,?)",
+                " duration_s, status, n_matches, note, source_id, kho_id, kho_ten,"
+                " kho_phien_ban, chinh_sach, day_du, dat_muc_tieu, pham_vi)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), source_type,
                  kq.source_name, kq.source_ref, kq.duration_s, kq.status,
-                 len(kq.matches), kq.note, kq.source_id))
+                 len(kq.matches), kq.note, kq.source_id, kq.kho_id, kq.kho_ten,
+                 kq.kho_phien_ban, kq.chinh_sach,
+                 1 if (kq.status == "ok" and kq.quet_day_du) else 0,
+                 1 if kq.dat_muc_tieu else 0, pham_vi))
             job_id = cur.lastrowid
             for m in kq.matches:
                 c.execute("INSERT INTO matches(job_id, clip, start_s, end_s, matched_s,"
@@ -3293,14 +4686,35 @@ class Engine:
         return [dict(r) for r in rows]
 
     def ids_da_quet(self, chi_thanh_cong: bool = True) -> set:
-        """Trả về tập source_id đã quét, truy vấn thẳng trong SQLite."""
-        dieu_kien = "source_id IS NOT NULL AND source_id != ''"
+        """Video đã KIỂM XONG với kho đang dùng — Watch được bỏ qua (audit TCP-07).
+
+        Trước đây truy vấn toàn cục: chỉ cần từng "ok" ở BẤT KỲ kho nào là mọi kho bỏ
+        qua video đó, kể cả khi kho kia chưa từng được đối chiếu. Nay, trong cùng
+        ``kho_id`` bền:
+
+        * dương tính (status ok, có kết quả): đã thấy vi phạm — vẫn tính, kể cả sau
+          khi kho được bổ sung (thấy rồi thì vẫn là thấy; không phải "đã tìm hết");
+        * âm tính: chỉ khi đã quét TRỌN video, cùng phiên bản kho và cùng chính sách
+          nhận diện. Kho được bổ sung vân tay hay nới ngưỡng thì phải quét lại.
+
+        Lỗi, huỷ, quét dở không chặn lượt quét lại. Lịch sử cũ (``kho_id`` rỗng) không
+        chặn kho nào. ``chi_thanh_cong=False``: mọi video đã từng thử với kho này.
+        """
+        dt = self._danh_tinh_kho()
+        if not dt["kho_id"]:
+            return set()
         if chi_thanh_cong:
-            dieu_kien += " AND status = 'ok'"
+            sql = ("SELECT DISTINCT source_id FROM jobs WHERE source_id IS NOT NULL"
+                   " AND source_id != '' AND kho_id = ? AND status = 'ok'"
+                   " AND (n_matches > 0 OR (day_du = 1 AND kho_phien_ban != ''"
+                   " AND kho_phien_ban = ? AND chinh_sach = ?))")
+            tham_so = (dt["kho_id"], dt["kho_phien_ban"], chu_ky_chinh_sach(self.config))
+        else:
+            sql = ("SELECT DISTINCT source_id FROM jobs WHERE source_id IS NOT NULL"
+                   " AND source_id != '' AND kho_id = ?")
+            tham_so = (dt["kho_id"],)
         with self._db() as c:
-            rows = c.execute(
-                f"SELECT DISTINCT source_id FROM jobs WHERE {dieu_kien}"
-            ).fetchall()
+            rows = c.execute(sql, tham_so).fetchall()
         return {row["source_id"] for row in rows}
 
     def job_matches(self, job_id: int) -> list:
@@ -3347,7 +4761,8 @@ class Engine:
         luc = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rows = []
         for kq in ket:
-            dau = [luc, kq.source_name, kq.source_ref]
+            # Quét chưa trọn → hậu tố ngay ở cột nguồn (không thêm cột, xem nhan_pham_vi).
+            dau = [luc, (kq.source_name or "") + nhan_pham_vi(kq), kq.source_ref]
             if kq.status != "ok":
                 rows.append(dau + [f"(LỖI: {kq.note})"] + [""] * 12)
             elif not kq.matches:

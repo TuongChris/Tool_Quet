@@ -22,6 +22,7 @@ import time
 import pytest
 
 from fingerprint_progress import FingerprintJobController
+from kho_gia import ma_ghi_kho_cho_process_con
 
 # audfprint giả: chỉ phát structured event, im lặng một khoảng ở giữa, và
 # TUYỆT ĐỐI không in "ingesting #" — đúng như audfprint thật khi ncores > 1.
@@ -57,8 +58,8 @@ for chi_so, duong_dan in enumerate(files):
         process_pid=os.getpid(),
     )
 
-with open(db_file, "wb") as fh:
-    fh.write(b"fake-database")
+# Kho .pklz HỢP LỆ: Engine kiểm kho tạm trước khi công bố (audit TCP-02).
+_ghi_kho_hop_le(db_file, files)
 print("Saved fprints for %d files" % len(files), flush=True)
 '''
 
@@ -76,7 +77,7 @@ def _lap_kho(tmp_path, ten=("một.wav", "có khoảng trắng.wav", "tiếng Vi
 def _gan_audfprint_gia(engine, tmp_path, monkeypatch, im_lang: float, heartbeat: float):
     """Thay đúng dòng lệnh audfprint; giữ nguyên toàn bộ pipeline streaming thật."""
     script = tmp_path / "audfprint_gia.py"
-    script.write_text(AUDFPRINT_GIA, encoding="utf-8")
+    script.write_text(ma_ghi_kho_cho_process_con() + AUDFPRINT_GIA, encoding="utf-8")
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
 
     def build_cmd(sub, *them, db_file):

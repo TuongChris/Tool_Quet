@@ -260,8 +260,10 @@ class ScanJobController:
                 if on_result:
                     on_result(index, tong, ket_qua)
 
+            # Cờ huỷ đã được xoá ĐÚNG MỘT LẦN ở start(); scan_iter không xoá lại để một
+            # cú bấm Dừng rơi vào khoảng giữa start() và lúc thread chạy không bị nuốt.
             for ket_qua in self.engine.scan_iter(
-                nguon, source_type, tien_do, on_video=sau_moi_video
+                nguon, source_type, tien_do, on_video=sau_moi_video, xoa_co_huy=False
             ):
                 with self._lock:
                     self._results.append(ket_qua)

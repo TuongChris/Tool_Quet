@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from channel import ChannelSync
 from clip_metadata import extract_youtube_id, filename_fallback_parts
+from luu_tru import cap_nhat_json
 from publication_date import (
     MUI_GIO_MAC_DINH,
     TRUONG_EPOCH,
@@ -158,6 +159,9 @@ def repair(
     dung_som = False
     loi: list[str] = []
     thay_doi: list[tuple] = []
+    # Trường đã sửa của từng entry — khi ghi chỉ gộp đúng những trường này vào bản
+    # clips_meta.json MỚI NHẤT, không ghi đè cả file bằng bản đọc từ đầu lượt.
+    cap_nhat: dict[str, dict] = {}
     da_xu_ly = 0
 
     for ten, entry in list(meta.items()):
@@ -213,20 +217,32 @@ def repair(
         else:
             khong_doi += 1
 
-        entry["publication_date"] = ket_qua.yyyymmdd
-        entry["publication_date_source"] = ket_qua.source_field or ""
-        entry["upload_date"] = ket_qua.yyyymmdd     # tương thích bản đọc cũ
+        truong = {
+            "publication_date": ket_qua.yyyymmdd,
+            "publication_date_source": ket_qua.source_field or "",
+            "upload_date": ket_qua.yyyymmdd,     # tương thích bản đọc cũ
+        }
         for k in ("timestamp", "release_timestamp"):
             if isinstance(nguon_du_lieu.get(k), (int, float)) and nguon_du_lieu.get(k):
-                entry[k] = nguon_du_lieu[k]
+                truong[k] = nguon_du_lieu[k]
+        entry.update(truong)
+        cap_nhat[ten] = truong
 
-    if apply and (da_doi or khong_doi):
+    if apply and cap_nhat:
         goc = os.path.join(kho, "clips_meta.json")
-        if os.path.isfile(goc):
-            bk = f"{goc}.truoc_ngay_dang_{time.strftime('%Y%m%d_%H%M%S')}"
-            shutil.copy2(goc, bk)
-            print(f"Đã sao lưu -> {bk}")
-        cs.save_meta(meta)      # ghi nguyên tử qua luu_tru.ghi_json_an_toan
+
+        def gop(du_lieu: dict) -> None:
+            # Sao lưu ĐÚNG bản sắp bị sửa, trong lúc đang giữ khoá.
+            if os.path.isfile(goc):
+                bk = f"{goc}.truoc_ngay_dang_{time.strftime('%Y%m%d_%H%M%S')}"
+                shutil.copy2(goc, bk)
+                print(f"Đã sao lưu -> {bk}")
+            for ten_entry, cac_truong in cap_nhat.items():
+                # Entry bị writer khác xoá giữa chừng thì không hồi sinh nó.
+                if isinstance(du_lieu.get(ten_entry), dict):
+                    du_lieu[ten_entry].update(cac_truong)
+
+        cap_nhat_json(goc, gop, mac_dinh={})
 
     return {
         "khong_doi": khong_doi,

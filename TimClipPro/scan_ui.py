@@ -54,6 +54,47 @@ TEN_TRANG_THAI_SHEET = {
 }
 
 
+GOI_Y_VUNG_LOI = "Nguồn có vùng lỗi hoặc file tải về thiếu: quét lại nguồn đó."
+GOI_Y_TOP1 = ("Kết quả Top-1 lấy từ phần đầu video (tìm nhanh): cần quét trọn thì đặt "
+              "Top-N lớn hơn 1, hoặc tắt `top1_tim_nhanh` trong `data/cau_hinh.json`.")
+GOI_Y_TANG_DAN = ("Quét tăng dần đã dừng sớm hoặc chỉ tải phần đầu: tắt «Quét tăng dần "
+                  "cho video rất dài» ở thanh bên → «⚙️ Tham số» → «Mở để tinh chỉnh».")
+
+
+def goi_y_quet_mot_phan(ket_qua: Sequence[Any], cau_hinh: Any = None) -> list:
+    """Lời khuyên cho các nguồn CHƯA quét trọn, theo ĐÚNG lý do (phản biện TCP-06).
+
+    Tắt «Quét tăng dần» không giúp gì cho kết quả Top-1 tìm nhanh trên video ngắn hay cho
+    vùng lỗi. Ngược lại, Top-1 dừng sớm BÊN TRONG một lượt tải một phần / quét tăng dần
+    thì phải nói cả hai: chỉ tắt tìm nhanh, video dài vẫn dừng ở đoạn đầu (phản biện
+    vòng 2).
+    """
+    def duong_di(r) -> str:
+        return getattr(getattr(r, "chan_doan", None), "duong_di", "") or ""
+
+    def do_tang_dan(r) -> bool:
+        ly_do = getattr(r, "ly_do_pham_vi", "") or ""
+        if ly_do == "gioi_han_tai":
+            return True
+        if ly_do != "dung_som":
+            return False
+        if duong_di(r) != "dung_som_vung_dau":
+            return True
+        # Top-1 tìm nhanh đã dừng: quét tăng dần CŨNG góp phần khi video vượt ngưỡng.
+        nguong = float(getattr(cau_hinh, "quet_tang_dan_tu_gio", 0) or 0) * 3600
+        return (bool(getattr(cau_hinh, "quet_tang_dan", False))
+                and float(getattr(r, "duration_s", 0) or 0) > nguong)
+
+    goi_y = []
+    if any(getattr(r, "vung_loi", None) for r in ket_qua):
+        goi_y.append(GOI_Y_VUNG_LOI)
+    if any(duong_di(r) == "dung_som_vung_dau" for r in ket_qua):
+        goi_y.append(GOI_Y_TOP1)
+    if any(do_tang_dan(r) for r in ket_qua):
+        goi_y.append(GOI_Y_TANG_DAN)
+    return goi_y
+
+
 def _mo_ta_sheet(delivery_key: str, trang_thai_sheet: Mapping[str, Any]) -> str:
     if not delivery_key:
         return CHUA_CO

@@ -3,17 +3,30 @@
 
 from __future__ import annotations
 
+import contextlib
+import glob
 import json
 import os
 import re
-import shutil
 import threading
+import time
+import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
+
+from khoa import DangChayRoi, KhoaTienTrinh
 
 
 class LoiDuLieu(Exception):
     """File tồn tại nhưng không đọc được — khác với file chưa tồn tại."""
+
+
+class LoiKhoaDuLieu(TimeoutError):
+    """Chờ quá hạn mà process khác vẫn đang giữ khoá dữ liệu.
+
+    Cố ý KHÔNG kế thừa ``LoiDuLieu``: khoá bận không có nghĩa là file hỏng, và các
+    nơi bắt ``LoiDuLieu`` để "reset về rỗng" không được phản ứng với khoá bận.
+    """
 
 
 # Ký tự Windows CẤM trong tên file. Nguy hiểm nhất là DẤU HAI CHẤM: nó không ném lỗi
@@ -56,16 +69,127 @@ def ten_file_hop_le(ten: str, mac_dinh: str = "khong_ten",
     return sach
 
 
-_KHOA_THEO_DUONG_DAN: dict[str, threading.RLock] = {}
+# =====================================================================
+#  Khoá dữ liệu GIỮA CÁC PROCESS (audit TCP-03)
+#
+#  `threading.RLock` cũ chỉ có hiệu lực trong MỘT process: giao diện, Watch, đồng bộ
+#  kênh và các công cụ sửa metadata chạy ở những process khác nhau, và hai process
+#  từng dùng chung một file `.tmp` — writer A báo "ok" mà file chứa dữ liệu của B.
+#
+#  Khoá là KHOÁ HỆ ĐIỀU HÀNH (tái dùng `KhoaTienTrinh`) trên MỘT file mỗi THƯ MỤC,
+#  không phải mỗi file JSON: bản ghi chẩn đoán có tên duy nhất, khoá theo file sẽ đẻ
+#  ra một file `.lock` cho mỗi bản ghi và tích luỹ mãi. Mọi giao dịch JSON trong cùng
+#  thư mục vì thế chạy tuần tự — chúng chỉ vài mili giây nên không đáng kể.
+#
+#  `RLock` vẫn giữ để cùng một thread vào lại được (đường phục hồi từ `.bak` ghi lại
+#  file ngay bên trong lúc đọc), và để các thread trong cùng process không giành nhau
+#  khoá OS.
+#
+#  Thứ tự khoá toàn dự án: `data/tool.lock` → khoá JSON của `data/` → khoá JSON khác.
+#  Không lồng khoá JSON của hai thư mục khác nhau, không giữ khoá khi gọi mạng.
+# =====================================================================
+
+TEN_FILE_KHOA = ".timclip.lock"
+HAN_CHO_KHOA_S = 60.0
+
+
+class _KhoaThuMuc:
+    def __init__(self) -> None:
+        self.rlock = threading.RLock()
+        self.do_sau = 0
+        self.khoa_os: KhoaTienTrinh | None = None
+
+
+_KHOA_THEO_THU_MUC: dict[str, _KhoaThuMuc] = {}
 _KHOA_DANH_SACH = threading.Lock()
 
 
-def _lay_khoa(path: str) -> threading.RLock:
-    duong_dan = os.path.abspath(path)
+def _khoa_cua(thu_muc: str) -> _KhoaThuMuc:
+    khoa = os.path.normcase(os.path.abspath(thu_muc))
     with _KHOA_DANH_SACH:
-        if duong_dan not in _KHOA_THEO_DUONG_DAN:
-            _KHOA_THEO_DUONG_DAN[duong_dan] = threading.RLock()
-        return _KHOA_THEO_DUONG_DAN[duong_dan]
+        if khoa not in _KHOA_THEO_THU_MUC:
+            _KHOA_THEO_THU_MUC[khoa] = _KhoaThuMuc()
+        return _KHOA_THEO_THU_MUC[khoa]
+
+
+def _giu_khoa_os(duong_dan_khoa: str, ten: str, han_cho_s: float) -> KhoaTienTrinh:
+    """Chờ có hạn cho tới khi giành được khoá OS; quá hạn thì nêu rõ ai đang giữ."""
+    het_han = time.monotonic() + max(0.0, han_cho_s)
+    cho = 0.01
+    while True:
+        khoa = KhoaTienTrinh(duong_dan_khoa, ten)
+        try:
+            khoa.__enter__()
+            return khoa
+        except DangChayRoi:
+            if time.monotonic() >= het_han:
+                raise LoiKhoaDuLieu(
+                    f"Dữ liệu đang được process khác ghi quá {han_cho_s:.0f} giây "
+                    f"({duong_dan_khoa}). {khoa.thong_tin_chu_khoa}"
+                ) from None
+            time.sleep(cho)
+            cho = min(0.2, cho * 2)
+
+
+@contextlib.contextmanager
+def khoa_json(path: str, han_cho_s: float = HAN_CHO_KHOA_S):
+    """Giữ khoá ghi cho thư mục chứa ``path`` — loại trừ cả thread lẫn process."""
+    thu_muc = os.path.dirname(os.path.abspath(path))
+    os.makedirs(thu_muc, exist_ok=True)
+    k = _khoa_cua(thu_muc)
+    if not k.rlock.acquire(timeout=max(0.0, han_cho_s)):
+        raise LoiKhoaDuLieu(
+            f"Dữ liệu trong {thu_muc} đang được một luồng khác của chính tool ghi "
+            f"quá {han_cho_s:.0f} giây."
+        )
+    try:
+        if k.do_sau == 0:
+            k.khoa_os = _giu_khoa_os(
+                os.path.join(thu_muc, TEN_FILE_KHOA),
+                f"ghi dữ liệu {os.path.basename(path)}",
+                han_cho_s,
+            )
+        k.do_sau += 1
+        try:
+            yield
+        finally:
+            k.do_sau -= 1
+            if k.do_sau == 0 and k.khoa_os is not None:
+                khoa_os, k.khoa_os = k.khoa_os, None
+                khoa_os.__exit__(None, None, None)
+    finally:
+        k.rlock.release()
+
+
+def _json_doc_duoc(path: str) -> bool:
+    try:
+        _doc_json(path)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _don_file_tam_mo_coi(duong_dan: str) -> None:
+    """Xoá file tạm của writer đã chết. CHỈ gọi khi đang giữ khoá của thư mục:
+    lúc đó không writer nào khác có thể đang ghi dở file tạm của đường dẫn này."""
+    for cu in glob.glob(glob.escape(duong_dan) + "*.tmp"):
+        with contextlib.suppress(OSError):
+            os.remove(cu)
+
+
+def _thay_the(src: str, dst: str, so_lan: int = 10) -> None:
+    """``os.replace`` có thử lại: trên Windows reader khác đang mở file đích làm
+    replace hỏng tạm thời (WinError 5/32). Hết lượt thì ném lỗi gốc."""
+    cho = 0.05
+    for lan in range(so_lan):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if lan == so_lan - 1:
+                raise
+            time.sleep(cho)
+            cho = min(0.5, cho * 2)
 
 
 def ghi_json_an_toan(
@@ -73,30 +197,72 @@ def ghi_json_an_toan(
     du_lieu: Any,
     giu_ban_sao: bool = True,
 ) -> None:
-    """Ghi JSON nguyên tử: thành công trọn vẹn hoặc file cũ còn nguyên."""
-    duong_dan = os.path.abspath(path)
-    thu_muc = os.path.dirname(duong_dan)
-    file_tam = duong_dan + ".tmp"
-    file_bak = duong_dan + ".bak"
-    os.makedirs(thu_muc, exist_ok=True)
+    """Ghi JSON nguyên tử: thành công trọn vẹn hoặc file cũ còn nguyên.
 
-    with _lay_khoa(duong_dan):
+    File tạm mang tên DUY NHẤT cho mỗi lần ghi, cùng thư mục với file đích. Bản sao
+    ``.bak`` chỉ được làm mới từ file chính ĐỌC ĐƯỢC — file chính đang hỏng thì giữ
+    nguyên ``.bak`` cũ, không thay bản sao tốt bằng rác.
+    """
+    duong_dan = os.path.abspath(path)
+    file_bak = duong_dan + ".bak"
+    with khoa_json(duong_dan):
+        _don_file_tam_mo_coi(duong_dan)
+        file_tam = f"{duong_dan}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
         try:
-            if giu_ban_sao and os.path.isfile(duong_dan):
-                shutil.copyfile(duong_dan, file_bak)
+            if giu_ban_sao and os.path.isfile(duong_dan) and _json_doc_duoc(duong_dan):
+                file_bak_tam = f"{file_bak}.{uuid.uuid4().hex[:8]}.tmp"
+                try:
+                    with open(duong_dan, "rb") as nguon, open(file_bak_tam, "wb") as dich:
+                        dich.write(nguon.read())
+                        dich.flush()
+                        os.fsync(dich.fileno())
+                    _thay_the(file_bak_tam, file_bak)
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.remove(file_bak_tam)
 
             with open(file_tam, "w", encoding="utf-8") as f:
                 json.dump(du_lieu, f, ensure_ascii=False, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(file_tam, duong_dan)
+            _thay_the(file_tam, duong_dan)
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 if os.path.exists(file_tam):
                     os.remove(file_tam)
-            except OSError:
-                pass
             raise
+
+
+def cap_nhat_json(
+    path: str,
+    ham_sua: Callable[[Any], Any],
+    mac_dinh: Any = None,
+    *,
+    giu_ban_sao: bool = True,
+    han_cho_s: float = HAN_CHO_KHOA_S,
+) -> Any:
+    """Giao dịch đọc-sửa-ghi: đọc bản MỚI NHẤT, sửa, ghi — dưới cùng một khoá.
+
+    Chỉ làm file tạm duy nhất thì chưa chữa được MẤT CẬP NHẬT: hai process cùng đọc
+    bản cũ, mỗi bên thêm một entry, bên ghi sau xoá mất entry của bên kia. Ở đây
+    ``ham_sua`` nhận dữ liệu vừa đọc trong lúc giữ khoá và SỬA TẠI CHỖ. Giá trị trả
+    về của ``ham_sua`` chỉ được chuyển lại cho người gọi, không bao giờ được ghi thay
+    cho dữ liệu. ``ham_sua`` ném lỗi thì không ghi gì; không đổi gì thì cũng không ghi.
+
+    ``mac_dinh`` dùng khi file chưa tồn tại (được sao chép sâu, không bị sửa).
+    """
+    duong_dan = os.path.abspath(path)
+    with khoa_json(duong_dan, han_cho_s=han_cho_s):
+        du_lieu = doc_json_an_toan(duong_dan, None)
+        if du_lieu is None:
+            du_lieu = json.loads(json.dumps({} if mac_dinh is None else mac_dinh))
+            truoc = None
+        else:
+            truoc = json.dumps(du_lieu, sort_keys=True, ensure_ascii=False)
+        ket_qua = ham_sua(du_lieu)
+        if truoc is None or json.dumps(du_lieu, sort_keys=True, ensure_ascii=False) != truoc:
+            ghi_json_an_toan(duong_dan, du_lieu, giu_ban_sao=giu_ban_sao)
+        return ket_qua
 
 
 def _doc_json(path: str) -> Any:
@@ -126,7 +292,7 @@ def doc_json_an_toan(
     duong_dan = os.path.abspath(path)
     file_bak = duong_dan + ".bak"
 
-    with _lay_khoa(duong_dan):
+    with khoa_json(duong_dan):
         if not os.path.exists(duong_dan):
             return mac_dinh
 
@@ -139,6 +305,9 @@ def doc_json_an_toan(
                 except Exception:
                     pass
                 else:
+                    # Giữ lại bản hỏng để còn điều tra, rồi mới phục hồi từ bản sao.
+                    with contextlib.suppress(OSError):
+                        os.replace(duong_dan, _duong_dan_file_hong(duong_dan))
                     ghi_json_an_toan(
                         duong_dan,
                         du_lieu_bak,

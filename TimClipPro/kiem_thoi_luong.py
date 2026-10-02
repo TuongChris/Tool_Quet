@@ -33,7 +33,7 @@ import os
 import subprocess
 import sys
 
-from luu_tru import doc_json_an_toan, ghi_json_an_toan
+from luu_tru import cap_nhat_json, doc_json_an_toan
 
 TRUONG = "duration_media"
 
@@ -83,6 +83,8 @@ def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
     tk = {"tong": len(meta), "co_duration": 0, "co_media": 0, "thieu_file": 0,
           "do_duoc": 0, "doi_hien_thi": 0, "da_ghi": 0, "do_lai": 0}
     doi = []
+    # Chỉ trường đo được của từng entry; lúc ghi gộp vào bản MỚI NHẤT của file.
+    cap_nhat: dict[str, float] = {}
     for ten, muc in meta.items():
         if not isinstance(muc, dict):
             continue
@@ -113,6 +115,7 @@ def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
             doi.append((ten, cu, media))
         if sua:
             muc[TRUONG] = round(media, 3)
+            cap_nhat[ten] = muc[TRUONG]
             tk["da_ghi"] += 1
 
     print(f"\n### {ten_kho}   ({thu_muc})")
@@ -132,7 +135,13 @@ def kiem_mot_kho(ten_kho: str, thu_muc: str, sua: bool, that_su: bool,
               f"{ten[:44]}")
 
     if sua and that_su and tk["da_ghi"]:
-        ghi_json_an_toan(meta_path, meta)   # tự tạo .bak
+        def gop(du_lieu: dict) -> None:
+            for ten_entry, gia_tri in cap_nhat.items():
+                # Entry bị writer khác xoá giữa chừng thì không hồi sinh nó.
+                if isinstance(du_lieu.get(ten_entry), dict):
+                    du_lieu[ten_entry][TRUONG] = gia_tri
+
+        cap_nhat_json(meta_path, gop, mac_dinh={})   # giao dịch, tự tạo .bak
         print(f"  ĐÃ GHI {tk['da_ghi']} mục vào {meta_path} (bản sao: .bak)")
     elif sua and tk["da_ghi"]:
         print(f"  [thử] sẽ ghi {tk['da_ghi']} mục — thêm --that-su để ghi thật")

@@ -466,7 +466,10 @@ def test_chay_giam_sat_quy_doi_tien_do_tong(engine, monkeypatch, tmp_path):
     ]
 
 
-def test_kho_khong_ton_tai_van_tiep_tuc_quet(engine, monkeypatch, tmp_path):
+def test_kho_khong_ton_tai_thi_dung_truoc_khi_quet(engine, monkeypatch, tmp_path):
+    # Bản trước của test này tên `..._van_tiep_tuc_quet` và khẳng định `quet_moi == 1`
+    # — tức khoá đúng hành vi lỗi audit TCP-08: kho yêu cầu không mở được mà vẫn quét
+    # bằng kho đang chọn. Kỳ vọng đã đảo theo brief §11: dừng trước liệt kê/quét/xuất.
     video = SimpleNamespace(id="x1", title="Một", url="u1")
     monkeypatch.setattr(
         engine,
@@ -477,12 +480,12 @@ def test_kho_khong_ton_tai_van_tiep_tuc_quet(engine, monkeypatch, tmp_path):
     monkeypatch.setattr(
         engine,
         "scan_youtube",
-        lambda url, progress=None: ScanResult(source_name=url),
+        lambda url, progress=None: pytest.fail("Không được quét bằng kho khác"),
     )
     monkeypatch.setattr(
         engine,
         "export_csv_ngang",
-        lambda ket: str(tmp_path / "ket-qua.csv"),
+        lambda ket: pytest.fail("Không được xuất CSV"),
     )
     wl = WatchList(
         muc=[MucTheoDoi("kenh", "kenh-1")],
@@ -495,7 +498,7 @@ def test_kho_khong_ton_tai_van_tiep_tuc_quet(engine, monkeypatch, tmp_path):
         lister=lambda url, limit: [video],
     )
 
-    assert bao_cao.quet_moi == 1
+    assert bao_cao.quet_moi == 0
     assert any("Kho sai" in dong and "không tồn tại" in dong for dong in bao_cao.loi)
 
 
@@ -595,10 +598,13 @@ def test_chay_lai_lan_hai_khong_quet_trung(engine, monkeypatch, tmp_path):
 
     def scan_gia(url_quet, progress=None):
         cac_lan_quet.append(url_quet)
+        # Âm tính chỉ tính là đã kiểm xong khi đã quét TRỌN video (audit TCP-07).
         ket_qua = ScanResult(
             source_name="Video theo dõi",
             source_ref=url_quet,
             source_id=video_id,
+            duration_s=300.0,
+            vung_da_khop=[(0.0, 300.0)],
         )
         engine.save_job(ket_qua, "youtube")
         return ket_qua

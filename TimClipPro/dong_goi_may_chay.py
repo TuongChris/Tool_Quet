@@ -38,7 +38,7 @@ import os
 import sys
 import zipfile
 
-from dong_goi import GOC, la_file_nhay_cam, liet_ke_source
+from dong_goi import GOC, kiem_zip_doc_lap, la_duong_dan_nhay_cam, liet_ke_source
 from luu_tru import doc_json_an_toan
 
 try:
@@ -131,7 +131,7 @@ def gom_thanh_phan(ten_kho: list, kem_ffmpeg: bool,
             canh_bao.append("Không thấy bin/ffmpeg.exe — máy đích sẽ tự tải khi cài.")
 
     # Chốt an toàn: không file nhạy cảm nào được lọt vào, dù đến từ nguồn nào.
-    lot = [t for _, t in muc if la_file_nhay_cam(os.path.basename(t))]
+    lot = [t for _, t in muc if la_duong_dan_nhay_cam(t)]
     if lot:
         raise RuntimeError(f"Phát hiện file nhạy cảm trong danh sách: {lot}")
 
@@ -175,8 +175,11 @@ def noi_dung_sinh_them(ten_kho: list, goc: str = GOC) -> dict:
         if not k or not os.path.isfile(os.path.join(data_dir, k.get("db") or "")):
             continue
         m = {"ten": ten, "thu_muc": "", "db": k["db"]}
-        if "shifts" in k:
-            m["shifts"] = k["shifts"]
+        # `id`/`revision`: định danh bền và phiên bản của kho đi theo gói, để lịch sử quét
+        # ở máy phụ gắn đúng kho thay vì suy từ tên (audit TCP-07).
+        for khoa in ("shifts", "id", "revision"):
+            if khoa in k:
+                m[khoa] = k[khoa]
         danh_sach.append(m)
 
     ra = {
@@ -222,8 +225,8 @@ def tao_goi(duong_dan_ra: str, ten_kho: list, kem_ffmpeg: bool = True,
                 pass
             raise
 
-    with zipfile.ZipFile(duong_dan_ra) as z:
-        xau = [n for n in z.namelist() if la_file_nhay_cam(os.path.basename(n))]
+    # Hậu kiểm trên byte thật trong ZIP bằng bộ kiểm riêng, không gọi lại bộ lọc.
+    xau = kiem_zip_doc_lap(duong_dan_ra)
     if xau:
         os.remove(duong_dan_ra)
         raise RuntimeError(f"Zip có file cấm: {xau}")

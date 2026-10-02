@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from clip_metadata import ClipMetadataResolver
-from engine import Engine, hhmmss
+from engine import Engine, hhmmss, nhan_pham_vi
 from publication_date import format_publication_date
 
 
@@ -83,7 +83,9 @@ def dung_dong_ngang(
         kq.channel_name or "",
         kq.channel_id or "",
         kq.source_ref or "",
-        f"(LỖI: {kq.note})" if loi else (kq.source_name or ""),
+        # Quét chưa trọn (dừng sớm, chỉ tải phần đầu, khúc lỗi) phải hiện ngay trên
+        # dòng báo cáo — cột này vốn đã mang trạng thái "(LỖI: …)", không thêm cột mới.
+        f"(LỖI: {kq.note})" if loi else (kq.source_name or "") + nhan_pham_vi(kq),
         hhmmss(kq.duration_s),
         dinh_dang_ngay(kq.upload_date),
     ]

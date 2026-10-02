@@ -196,16 +196,28 @@ def test_tra_title_theo_khoa_metadata_chu_khong_theo_ten_file(tmp_path):
 def test_tieu_de_chua_ngoac_vuong_11_ky_tu_van_lay_duoc_ten_tu_metadata(tmp_path):
     """«[Compilation]», «[Official_MV]», «[4K-REMASTER]»… đều dài đúng 11 ký tự.
 
-    ``clip_metadata._ids_from_value`` quét toàn chuỗi nên mục metadata trông như có
-    hai mã video và bị từ chối. Không có Mức 2 thì đúng những video đó lên Sheet
-    bằng tên file đã làm sạch, dù clips_meta.json có sẵn tên đúng.
+    Trước audit TCP-12, ``clip_metadata._ids_from_value`` quét toàn chuỗi nên mục
+    metadata trông như có hai mã video; Mức 2 cứu được tên nhưng vẫn phải gắn cảnh báo
+    mâu thuẫn danh tính GIẢ (bản trước của test này khoá đúng cảnh báo đó). Nay mã
+    video chỉ đọc ở hậu tố ``[ID].đuôi`` nên đây là khớp chính xác, không cảnh báo.
     """
     title = "SML Movie: Jeffy [Compilation] Best Of"
     ten_file = "20240101 - SML Movie_ Jeffy [Compilation] Best Of [gRZah-YY0FM].opus"
     thu_muc = _kho(tmp_path, [ten_file], {ten_file: _meta("gRZah-YY0FM", title)})
     kq = liet_ke_kho("SML", thu_muc)
     assert kq.dong[0].ten_video == title          # còn nguyên dấu HAI CHẤM
-    assert kq.dong[0].chinh_xac is False          # vẫn nhắc người dùng đối chiếu
+    assert kq.dong[0].chinh_xac is True
+    assert kq.dong[0].ghi_chu == ""
+
+
+def test_mau_thuan_ma_video_that_van_lay_ten_nhung_nhac_doi_chieu(tmp_path):
+    """Mức 2 vẫn cần cho mâu thuẫn THẬT: metadata ghi mã khác hậu tố tên file."""
+    title = "SML Movie: Jeffy Best Of"
+    ten_file = "20240101 - SML Movie_ Jeffy Best Of [gRZah-YY0FM].opus"
+    thu_muc = _kho(tmp_path, [ten_file], {ten_file: _meta("BBBBBBBBBBB", title)})
+    kq = liet_ke_kho("SML", thu_muc)
+    assert kq.dong[0].ten_video == title
+    assert kq.dong[0].chinh_xac is False
     assert kq.dong[0].ghi_chu == dsv.GHI_CHU_MAU_THUAN_DANH_TINH
     # Và KHÔNG được vu cho dữ liệu lành lặn là sai kiểu / bị bỏ qua.
     assert not any("sai kiểu" in cb for cb in kq.canh_bao)

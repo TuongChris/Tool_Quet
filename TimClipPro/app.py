@@ -19,13 +19,15 @@ import streamlit as st
 
 import bang_ngang
 import danh_sach_video
+import lich_su
 from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
 from clip_metadata import configure_metadata_logging
 import ytdlp_chung
-from engine import Engine, ScanResult, hhmmss, o_bang_tinh_an_toan
+from engine import Engine, ScanResult, hhmmss, mo_ta_pham_vi, o_bang_tinh_an_toan
 from fingerprint_progress import FingerprintJobController
+from khoa import DangChayRoi
 from scan_jobs import ScanJobController, ScanLaunchConfig
-from scan_ui import build_scan_status_dataframe
+from scan_ui import build_scan_status_dataframe, goi_y_quet_mot_phan
 from sheet_delivery import SheetDelivery, SheetDeliveryWorker, khoa_giao_hang
 from channel import ChannelSync
 from sheets import SheetsExporter
@@ -393,18 +395,20 @@ def bang_ket_qua(results: list[ScanResult]) -> None:
     # Quét tăng dần dừng sớm khi đã đủ bằng chứng. PHẢI nói ra: `note` chỉ được hiển
     # thị khi nguồn bị LỖI, nên nếu không báo ở đây thì người dùng tưởng đã quét trọn
     # video — và sẽ hiểu sai cột «Vùng» lẫn số đoạn tìm được.
-    mot_phan = [r for r in results if getattr(r, "quet_mot_phan", False)]
+    mot_phan = [r for r in results
+                if r.status == "ok" and getattr(r, "quet_mot_phan", False)]
     if mot_phan:
+        # Lời khuyên theo ĐÚNG lý do (phản biện TCP-06 + vòng 2) — xem goi_y_quet_mot_phan.
+        goi_y = goi_y_quet_mot_phan(mot_phan, eng.config)
         st.info(
-            "ℹ️ **Đã dừng sớm ở {} nguồn** vì tìm thấy đủ bằng chứng — chưa quét hết "
-            "video.\n\n{}\n\nBằng chứng chỉ nằm trong phần đã quét, nên số đoạn tìm "
-            "được và cột «Vùng» phản ánh phần đó, không phải cả video. Muốn quét trọn "
-            "thì tắt «Quét tăng dần cho video rất dài» ở thanh bên → «⚙️ Tham số» "
-            "→ «Mở để tinh chỉnh».".format(
+            "ℹ️ **Chưa quét trọn {} nguồn**.\n\n{}\n\nBằng chứng chỉ nằm trong phần "
+            "đã so khớp, nên số đoạn tìm được và cột «Vùng» phản ánh phần đó, không phải "
+            "cả video.{}".format(
                 len(mot_phan),
                 "\n".join(
-                    f"- {r.source_name[:60]}: quét {hhmmss(r.pham_vi_quet_s)}"
-                    f"/{hhmmss(r.duration_s)}" for r in mot_phan[:8])))
+                    f"- {r.source_name[:60]}: {mo_ta_pham_vi(r)}"
+                    for r in mot_phan[:8]),
+                "".join(f"\n\n{x}" for x in goi_y)))
     rows = eng.to_rows(results)
     st.dataframe(df_ket_qua(rows), width="stretch", hide_index=True)
     df_csv = pd.DataFrame(
@@ -482,9 +486,13 @@ with st.sidebar:
     if khos:
         tens = [k["ten"] for k in khos]
         hien_tai = eng.kho_dang_dung if eng.kho_dang_dung in tens else tens[0]
+        # Job đang chạy đã GHIM kho lúc bắt đầu nên đổi kho không làm hỏng job, nhưng
+        # vẫn khoá ô này cho khỏi hiểu nhầm là job đã chuyển sang kho mới (TCP-01).
         chon = st.selectbox("Chọn kho để quét", tens, index=tens.index(hien_tai),
-                            label_visibility="collapsed")
-        if chon != eng.kho_dang_dung:
+                            label_visibility="collapsed", disabled=job["running"])
+        if job["running"]:
+            st.caption("Đang có tác vụ chạy — đổi kho được sau khi tác vụ xong.")
+        if chon != eng.kho_dang_dung and not job["running"]:
             eng.use_kho(chon)
             st.rerun()
     else:
@@ -847,6 +855,15 @@ if not job["running"] and (job["results"] or job["error"]):
                   f"bỏ qua {r['bo_qua']} video đã có. Thư mục: `{r['thu_muc']}`")
         if r["loi"]:
             st.warning("Một số video lỗi:\n\n- " + "\n- ".join(r["loi"][:10]))
+        if r.get("nghi_hong"):
+            st.warning(
+                f"Phát hiện {len(r['nghi_hong'])} file audio nghi hỏng/nén dở trong kho "
+                "— đã đưa vào danh sách tải lại. Bản cũ chỉ được chuyển vào thư mục "
+                "`_hong` sau khi tải lại thành công, không bị xoá:\n\n- "
+                + "\n- ".join(r["nghi_hong"][:10]))
+        if r.get("da_doi_soat"):
+            st.info(f"Đã bổ sung metadata tại chỗ cho {r['da_doi_soat']} file có sẵn "
+                    "trên đĩa (không gọi lại YouTube).")
         st.info("Bước tiếp theo: sang tab «Kho clip gốc» bấm «Bổ sung clip mới vào kho» "
                 "để tạo vân tay cho các video vừa tải.")
     elif job["kind"] == "db":
@@ -1021,7 +1038,8 @@ with tab0:
     st.divider()
     st.markdown("#### 🔧 Bị mất mạng giữa chừng? Xử lý ở đây")
     st.caption("Không cần tải lại từ đầu. Hệ thống đối chiếu file THỰC TẾ trên đĩa "
-               "(đọc mã ID trong tên file) nên không bao giờ tải trùng.")
+               "(đọc mã ID trong tên file; file chưa xác nhận được kiểm bằng ffprobe) "
+               "nên không tải trùng, và file nén dở sẽ được tải lại.")
     cc1, cc2 = st.columns(2)
     with cc1:
         if st.button("🔍 Kiểm tra còn thiếu video nào", width="stretch",
@@ -1033,6 +1051,11 @@ with tab0:
                     r = cs.kiem_tra_thieu(kenh_url.strip(), gioi_han or None)
                     st.success(f"Kênh có {r['tong_kenh']} video — đã có **{r['co_roi']}**, "
                                f"còn thiếu **{len(r['thieu'])}**.")
+                    if r.get("nghi_hong"):
+                        st.warning(
+                            f"{len(r['nghi_hong'])} file nghi hỏng/nén dở được tính là còn "
+                            "thiếu (đồng bộ sẽ tải lại):\n\n- "
+                            + "\n- ".join(r["nghi_hong"][:10]))
                     if r["thieu"]:
                         st.dataframe(pd.DataFrame([{
                             "Ngày đăng": v.upload_date, "Tiêu đề": v.title,
@@ -1108,10 +1131,15 @@ with tab1:
         )
         if xoa != "— chọn —" and st.button(
             f"🗑️ Xoá kho «{xoa}»",
-            disabled=not xac_nhan_xoa_kho,
+            disabled=not xac_nhan_xoa_kho or job["running"],
         ):
-            eng.delete_kho(xoa)
-            st.rerun()
+            try:
+                eng.delete_kho(xoa)
+            except DangChayRoi as e:
+                # Build/Watch/sửa metadata đang giữ khoá kho: không xoá gì cả.
+                st.error(f"Chưa xoá được kho «{xoa}» vì đang có tác vụ khác dùng kho. {e}")
+            else:
+                st.rerun()
 
     st.divider()
     st.markdown(f"#### Nạp clip vào kho đang dùng: **{eng.kho_dang_dung or '(chưa có kho)'}**")
@@ -1473,16 +1501,24 @@ with tab5:
     if not jobs:
         st.info("Chưa có lần quét nào.")
     else:
+        # Kho và phạm vi của từng lần quét (audit TCP-07): lịch sử cũ không biết kho
+        # nên ghi rõ "chưa rõ — cần rà soát", không đoán là kho đang dùng.
         st.dataframe(pd.DataFrame([{
             "ID": j["id"], "Thời điểm": j["created_at"], "Loại": j["source_type"],
             "Nguồn": j["source_name"], "Thời lượng": hhmmss(j["duration_s"] or 0),
             "Kết quả": j["n_matches"], "Trạng thái": j["status"],
+            "Kho": lich_su.mo_ta_kho(j), "Phạm vi": lich_su.mo_ta_pham_vi(j),
         } for j in jobs]), width="stretch", hide_index=True)
 
         chon = st.selectbox("Xem chi tiết lần quét số",
                             [j["id"] for j in jobs],
                             format_func=lambda i: f"#{i} — " +
                             next(j["source_name"] for j in jobs if j["id"] == i))
+        job_chon = next(j for j in jobs if j["id"] == chon)
+        pham_vi_chon = lich_su.mo_ta_pham_vi(job_chon)
+        if pham_vi_chon != "Trọn video":
+            st.warning(f"Kho: {lich_su.mo_ta_kho(job_chon)} · Phạm vi: {pham_vi_chon}. "
+                       "Kết quả bên dưới chỉ nói về phần đã quét.")
         ms = eng.job_matches(chon)
         if ms:
             df = pd.DataFrame([{
@@ -1490,6 +1526,7 @@ with tab5:
                 "Đến": hhmmss(m["end_s"]), "Đoạn khớp (giây)": round(m["matched_s"]),
                 "Khớp từ giây thứ (của clip)": round(m["clip_offset_s"]),
                 "Số hash": m["hashes"], "Đánh giá": m["confidence"],
+                "Phạm vi quét": pham_vi_chon,
             } for m in ms])
             st.dataframe(df, width="stretch", hide_index=True)
             st.download_button("⬇️ Tải CSV lần quét này",

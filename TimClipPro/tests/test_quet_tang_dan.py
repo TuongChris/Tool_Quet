@@ -77,11 +77,15 @@ def test_cut_chunks_giu_nguyen_luoi_moc_khi_cat_tung_doan(tmp_path, monkeypatch)
 
         class R:
             returncode = 0
+            cancelled = False
+            timed_out = False
+            stdout = stderr = ly_do = ""
         return R()
 
-    import subprocess
+    import engine as engine_module
 
-    monkeypatch.setattr(subprocess, "run", ffmpeg_gia)
+    # Mọi lời gọi FFmpeg của engine đi qua `chay_lenh_media` (có huỷ + hạn im lặng).
+    monkeypatch.setattr(engine_module, "chay_lenh_media", ffmpeg_gia)
     tron, _ = e._cut_chunks("phim.mp4", workspace=str(tmp_path))
     moc_tron = list(goi)
 

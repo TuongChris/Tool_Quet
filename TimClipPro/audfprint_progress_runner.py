@@ -318,9 +318,48 @@ def instrumented_multiproc_add(analyzer, hash_tab, filename_iter, report, ncores
             pr[core].join(timeout=60)
     finally:
         for process in pr:
-            if process.is_alive():
-                process.terminate()
+            dung_worker_va_cay_con(process)
         shutil.rmtree(thu_muc, ignore_errors=True)
+
+
+def dung_worker_va_cay_con(process, cho_s: float = 5.0) -> None:
+    """Dừng một worker CÙNG mọi hậu duệ của nó (audit TCP-14).
+
+    ``Process.terminate()`` chỉ dừng đúng worker: FFmpeg mà worker đang chạy sẽ sống
+    tiếp, giữ file và CPU. Lấy danh sách cây con khi worker CÒN SỐNG (psutil chỉ thấy
+    được cây khi cha còn đó), dừng chúng trước, rồi mới tới worker; mọi bước đều có
+    hạn chờ. Không giết theo tên, chỉ đúng các PID thuộc cây của worker này.
+    """
+    if process.pid is None:
+        return
+    if not process.is_alive():
+        process.join(0)
+        return
+    try:
+        import psutil
+
+        con = psutil.Process(process.pid).children(recursive=True)
+    except Exception:  # noqa: BLE001 - không đọc được cây thì vẫn phải dừng worker
+        con = []
+    for p in reversed(con):
+        try:
+            p.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    process.terminate()
+    process.join(cho_s)
+    if process.is_alive():
+        process.kill()
+        process.join(cho_s)
+    if con:
+        import psutil
+
+        _, con_song = psutil.wait_procs(con, timeout=cho_s)
+        for p in con_song:
+            try:
+                p.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _install_single_core_instrumentation(audfprint_analyze) -> None:
@@ -377,6 +416,9 @@ def cai_dat_instrumentation(audfprint, audfprint_analyze) -> None:
     cai_dat_theo_doi_giai_ma()
 
 
+_NHOM_CUA_RUNNER = None
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     if len(argv) < 3:
@@ -386,6 +428,17 @@ def main(argv: list[str] | None = None) -> int:
     vendor_dir = os.path.dirname(vendor_script)
     if vendor_dir not in sys.path:
         sys.path.insert(0, vendor_dir)
+
+    # Runner tự vào một Job Object riêng: chết vì bất kỳ lý do gì thì worker và FFmpeg
+    # do nó sinh ra cũng chết theo, không thành process mồ côi (audit TCP-14).
+    global _NHOM_CUA_RUNNER
+    try:
+        from process_runner import NhomTienTrinh
+
+        _NHOM_CUA_RUNNER = NhomTienTrinh()
+        _NHOM_CUA_RUNNER.gan_chinh_minh()
+    except Exception:  # noqa: BLE001 - lớp bảo vệ thêm, không được làm hỏng build
+        _NHOM_CUA_RUNNER = None
 
     import audfprint
     import audfprint_analyze

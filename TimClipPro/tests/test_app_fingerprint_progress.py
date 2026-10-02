@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from kho_gia import ma_ghi_kho_cho_process_con
+
 APP_PY = Path(__file__).resolve().parents[1] / "app.py"
 
 AUDFPRINT_GIA = '''
@@ -39,8 +41,8 @@ for duong_dan in files:
         )
         time.sleep(0.45)
 
-with open(db_file, "wb") as fh:
-    fh.write(b"fake-database")
+# Kho .pklz HỢP LỆ: Engine kiểm kho tạm trước khi công bố (audit TCP-02).
+_ghi_kho_hop_le(db_file, files)
 print("Saved fprints for %d files" % len(files), flush=True)
 '''
 
@@ -90,7 +92,7 @@ def test_man_hinh_tien_do_co_so_lieu_that_khi_job_dang_chay(
     monkeypatch.setenv("TIMCLIP_OUTPUT_DIR", str(tmp_path / "ketqua"))
 
     script = tmp_path / "audfprint_gia.py"
-    script.write_text(AUDFPRINT_GIA, encoding="utf-8")
+    script.write_text(ma_ghi_kho_cho_process_con() + AUDFPRINT_GIA, encoding="utf-8")
 
     at = AppTest.from_file(str(APP_PY), default_timeout=120).run()
     assert not at.exception

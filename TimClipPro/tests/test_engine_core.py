@@ -117,13 +117,18 @@ def test_merge_chi_tra_ten_file_clip(engine):
     assert ket_qua[0].clip == "clip-goc.opus"
 
 
+# Từ audit TCP-07, âm tính chỉ tính là "đã kiểm xong" khi biết đã quét TRỌN video
+# với kho đang dùng — nên kết quả "thành công" trong các test dưới mang phạm vi trọn.
+TRON = {"duration_s": 300.0, "vung_da_khop": [(0.0, 300.0)]}
+
+
 def test_ids_da_quet_loc_dung(engine):
     engine.save_job(
         ScanResult(source_name="A lỗi", source_id="a", status="error"),
         "youtube",
     )
     engine.save_job(
-        ScanResult(source_name="A thành công", source_id="a"),
+        ScanResult(source_name="A thành công", source_id="a", **TRON),
         "youtube",
     )
     engine.save_job(
@@ -136,9 +141,9 @@ def test_ids_da_quet_loc_dung(engine):
 
 
 def test_ids_da_quet_bo_source_id_rong(engine):
-    engine.save_job(ScanResult(source_name="Rỗng", source_id=""), "youtube")
-    engine.save_job(ScanResult(source_name="None", source_id=None), "youtube")
-    engine.save_job(ScanResult(source_name="Hợp lệ", source_id="abc"), "youtube")
+    engine.save_job(ScanResult(source_name="Rỗng", source_id="", **TRON), "youtube")
+    engine.save_job(ScanResult(source_name="None", source_id=None, **TRON), "youtube")
+    engine.save_job(ScanResult(source_name="Hợp lệ", source_id="abc", **TRON), "youtube")
 
     assert engine.ids_da_quet() == {"abc"}
 

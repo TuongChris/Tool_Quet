@@ -34,12 +34,23 @@ token.json
 **/*[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]*.json
 **/*[Ss][Ee][Cc][Rr][Ee][Tt]*.json
 **/*[Tt][Oo][Kk][Ee][Nn]*.json
+# Cookie YouTube và thư mục khoá ở mọi cấp (audit TCP-11)
+cookies.txt
+**/*[Cc][Oo][Oo][Kk][Ii][Ee]*.txt
+**/credentials/
+**/secrets/
+*.p12
+*.pfx
 
 # User data, caches, reports and logs
 data/
 ketqua/
 *.log
 watchlist.json
+clips_meta.json
+downloaded.txt
+khos.json
+cau_hinh.json
 watchlist.local.json
 watchlist.local.*.json
 session.log

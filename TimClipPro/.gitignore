@@ -9,6 +9,15 @@ cau_hinh.json
 watchlist.json
 cookies.txt
 *.cookies.txt
+# Mọi biến thể tên cookie (YouTube_cookies.txt, www.youtube.com_cookies.txt...) và
+# thư mục/file khoá — audit TCP-11 cho thấy `*.cookies.txt` không bắt được chúng.
+*cookie*.txt
+credentials/
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Du lieu lon / sinh ra khi chay
 data/
@@ -40,3 +49,6 @@ tests/__pycache__/
 *.log
 watchlist.local.json
 watchlist.local.*.json
+
+# File khoa lien tien trinh cua luu_tru.khoa_json (moi thu muc co file JSON mot file)
+.timclip.lock

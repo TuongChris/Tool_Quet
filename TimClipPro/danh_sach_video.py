@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from channel import AUDIO_EXT
+from channel import AUDIO_EXT, THU_MUC_HONG, THU_MUC_TAM
 from clip_metadata import (
     ClipMetadataResolver,
     ResolvedClipMetadata,
@@ -253,8 +253,12 @@ def _duyet_file(thu_muc: str, ten_kho: str) -> tuple[list[str], int]:
     duoi = "." + AUDIO_EXT
     files: list[str] = []
     so_media_khac = 0
+    # Thư mục làm việc của đồng bộ kênh (bản đang nén, file hỏng đã cách ly) không phải
+    # clip của kho — giống `liet_ke_media(..., bo_thu_muc_lam_viec=True)` khi tạo vân tay.
+    bo_qua = {THU_MUC_TAM.lower(), THU_MUC_HONG.lower()}
     try:
-        for goc, _thu_muc_con, ten_files in os.walk(thu_muc):
+        for goc, thu_muc_con, ten_files in os.walk(thu_muc):
+            thu_muc_con[:] = [d for d in thu_muc_con if d.lower() not in bo_qua]
             for f in ten_files:
                 thap = f.lower()
                 if thap.endswith(duoi):
@@ -279,15 +283,13 @@ def _ten_hien_thi(
     fallback["title"]``, tức ``r.title`` bị pha tên file đã làm sạch khi mục gốc có
     title rỗng.
 
-    Mức 2 cứu ca resolver TỪ CHỐI dù khoá khớp y hệt tên file. Nguyên nhân thật:
-    ``clip_metadata._ids_from_value`` quét ``[11 ký tự]`` trên TOÀN chuỗi, nên một
-    tiêu đề chứa ``[Compilation]``, ``[Official_MV]``, ``[4K-REMASTER]``… (đều đúng
-    11 ký tự) làm mục metadata trông như có hai mã video và bị gắn
-    ``conflicting_ids_in_entry``. Không có mức này thì đúng những video đó bị đẩy
-    lên Sheet bằng tên file đã làm sạch — mất dấu câu, cắt 80 ký tự — trong khi
-    clips_meta.json có sẵn tên đúng. Khoá khớp y hệt là bằng chứng mạnh nhất về
-    «title này thuộc file này», nên dùng title đó; nhưng vẫn ``chinh_xac=False``
-    vì mâu thuẫn ``id`` có thể là mâu thuẫn THẬT, và người dùng cần được biết.
+    Mức 2 cứu ca resolver TỪ CHỐI dù khoá khớp y hệt tên file. Trước audit TCP-12,
+    ca hay gặp nhất là mâu thuẫn GIẢ: ``clip_metadata._ids_from_value`` từng quét
+    ``[11 ký tự]`` trên TOÀN chuỗi nên tiêu đề chứa ``[Compilation]``,
+    ``[Official_MV]``… bị coi là mã thứ hai. Nay mã chỉ đọc ở hậu tố ``[ID].đuôi``,
+    nên mức này chỉ còn gặp mâu thuẫn THẬT (``id``/URL trong metadata khác mã ở hậu tố
+    tên file). Khoá khớp y hệt vẫn là bằng chứng mạnh nhất về «title này thuộc file
+    này», nên dùng title đó; nhưng ``chinh_xac=False`` để người dùng đối chiếu.
 
     Mức 2-3 CỐ Ý không dùng ``r.title``: với ``status="ambiguous"`` và
     ``basename_fallback``, ``r.title`` là NGUYÊN tên file kèm tiền tố ngày và đuôi
