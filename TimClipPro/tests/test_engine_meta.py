@@ -175,11 +175,21 @@ def test_scan_youtube_gan_metadata_vao_ket_qua_scan_media(engine, monkeypatch):
     }
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
     monkeypatch.setattr(engine, "youtube_info", lambda url: info)
-    monkeypatch.setattr(engine, "download_audio", lambda *args: "audio.opus")
+    monkeypatch.setattr(
+        engine,
+        "download_audio",
+        lambda url, video_id, progress=None, gioi_han_giay=None: "audio.opus",
+    )
+    # Kết quả quét mang dữ liệu mà CHỈ lượt quét sinh ra (đoạn khớp, số đạt ngưỡng,
+    # thời lượng đo được): kết quả dựng sẵn trước khi tải không thể có chúng, nên trả
+    # nhầm đối tượng đó (quên `kq = r`) là test phải đỏ — metadata và status "ok" mặc
+    # định của nó không đủ để phân biệt.
+    doan = M(clip="goc.opus", start=12.0, hashes=6000)
     monkeypatch.setattr(
         engine,
         "scan_media",
-        lambda *args, **kwargs: ScanResult(source_name="Video"),
+        lambda *args, **kwargs: ScanResult(source_name="Video", duration_s=100.0,
+                                           matches=[doan], so_dat_nguong=1),
     )
 
     ket_qua = engine.scan_youtube(
@@ -187,6 +197,12 @@ def test_scan_youtube_gan_metadata_vao_ket_qua_scan_media(engine, monkeypatch):
         luu_lich_su=False,
     )
 
+    # Phải đi hết đường quét THÀNH CÔNG: nhánh except cũng giữ metadata, nên
+    # chỉ kiểm metadata thì test vẫn xanh khi hàm giả nổ TypeError.
+    assert ket_qua.status == "ok", ket_qua.note
+    assert [(m.clip, m.start_s, m.hashes) for m in ket_qua.matches] == [("goc.opus", 12.0, 6000)]
+    assert ket_qua.so_dat_nguong == 1
+    assert ket_qua.duration_s == 100.0
     assert ket_qua.source_id == "abc123"
     assert ket_qua.channel_name == "Tên kênh"
     assert ket_qua.channel_id == "UC123"
@@ -207,11 +223,11 @@ def test_scan_youtube_giu_metadata_khi_buoc_sau_nem_loi(engine, monkeypatch):
     }
     monkeypatch.setattr(engine, "require", lambda **kwargs: None)
     monkeypatch.setattr(engine, "youtube_info", lambda url: info)
-    monkeypatch.setattr(
-        engine,
-        "download_audio",
-        lambda *args: (_ for _ in ()).throw(RuntimeError("không tải được")),
-    )
+
+    def tai_hong(url, video_id, progress=None, gioi_han_giay=None):
+        raise RuntimeError("không tải được")
+
+    monkeypatch.setattr(engine, "download_audio", tai_hong)
 
     ket_qua = engine.scan_youtube(
         "https://youtu.be/abc123",
@@ -219,6 +235,8 @@ def test_scan_youtube_giu_metadata_khi_buoc_sau_nem_loi(engine, monkeypatch):
     )
 
     assert ket_qua.status == "error"
+    # Lỗi phải đến từ CHÍNH hàm giả, không phải TypeError do lệch chữ ký.
+    assert "không tải được" in ket_qua.note
     assert ket_qua.channel_name == "Tên kênh"
     assert ket_qua.channel_id == "UC123"
     assert ket_qua.channel_url == "https://youtube.com/channel/UC123"
