@@ -3728,6 +3728,18 @@ class Engine:
         except Exception:  # noqa: BLE001 — chẩn đoán không được phép làm hỏng lượt quét
             return {}
 
+    @staticmethod
+    def _nhan_vung(start_s: float, duration: float) -> str:
+        """Nhãn Đầu/Giữa/Cuối của mốc ``start_s`` trong video dài ``duration`` giây.
+
+        p < 1/3 → «Đầu», p < 2/3 → «Giữa», còn lại «Cuối» (điểm ranh giới thuộc vùng SAU).
+        Thời lượng không dương thì không có vị trí để nói: trả chuỗi rỗng.
+        """
+        if not duration or duration <= 0:
+            return ""
+        p = start_s / duration
+        return "Đầu" if p < 1 / 3 else ("Giữa" if p < 2 / 3 else "Cuối")
+
     def _gan_chi_so(self, ds: list, duration: float) -> None:
         """Tính tỷ lệ vân tay khớp (%) và vùng vị trí cho từng kết quả."""
         tong_hash = self._tong_hash_kho()
@@ -3735,8 +3747,19 @@ class Engine:
             goc = tong_hash.get(m.clip, 0)
             m.ty_le = min(100.0, round(100.0 * m.hashes / goc, 1)) if goc else 0.0
             if duration:
-                p = m.start_s / duration
-                m.vung = "Đầu" if p < 1 / 3 else ("Giữa" if p < 2 / 3 else "Cuối")
+                m.vung = self._nhan_vung(m.start_s, duration)
+
+    def _dan_lai_nhan_vung(self, r: ScanResult) -> None:
+        """`duration_s` vừa đổi từ độ dài FILE sang độ dài VIDEO thật: dán lại nhãn vùng.
+
+        `_gan_chi_so` đã dán theo file đang xử lý, còn báo cáo đọc `duration_s`. Dán cho MỌI
+        ứng viên — cả đoạn bị loại và tập đạt chuẩn trước Top-N — để một kết quả không mang
+        hai trục thời gian (CLAUDE.md mục 13: đổi trường phái sinh thì rà mọi thứ tính từ nó).
+        """
+        if not r.duration_s:
+            return
+        for m in {id(x): x for x in (*r.matches, *r.matches_loai, *r.ung_vien_dat)}.values():
+            m.vung = self._nhan_vung(m.start_s, r.duration_s)
 
     def _chon_loc(self, ds: list, duration: float) -> tuple:
         """
@@ -4644,6 +4667,9 @@ class Engine:
                 # đây — nếu không, báo cáo và lịch sử im lặng như thể đã quét cả 66
                 # tiếng, đúng cái hiểu nhầm mà ghi chú đó sinh ra để chặn.
                 r.duration_s = float(info.get("duration") or r.duration_s)
+                # Nhãn Đầu/Giữa/Cuối cũng tính từ thời lượng: `_gan_chi_so` đã dán theo
+                # FILE, nên giờ thứ 1 của video 66 tiếng mang nhãn «Giữa» (1/3 của 3 tiếng).
+                self._dan_lai_nhan_vung(r)
                 r.pham_vi_quet_s = min(r.pham_vi_quet_s or gioi_han, gioi_han)
                 if r.quet_mot_phan and not r.vung_loi:
                     r.ly_do_pham_vi = "gioi_han_tai"
@@ -4768,6 +4794,7 @@ class Engine:
                 r.vung_da_khop = hop_khoang(list(r.vung_da_khop or [])
                                             + [(dai_file, dai_that)])
                 r.duration_s = dai_that
+                self._dan_lai_nhan_vung(r)
                 # Lý do riêng (dù đã "trọn") để về sau còn tra lại được những video được
                 # nhận theo cách này — ví dụ khi nghi một client cắt cụt cố định (vòng 3).
                 # Lượt đầu đã có vùng lỗi thì lý do đó quan trọng hơn: không ghi đè.
@@ -4782,6 +4809,7 @@ class Engine:
                 f = f_moi
         r.vung_loi = hop_khoang(list(r.vung_loi) + [(dai_file, dai_that)])
         r.duration_s = dai_that
+        self._dan_lai_nhan_vung(r)
         r.ly_do_pham_vi = "tai_thieu"
         tin = (f"File tải về chỉ dài {hhmmss(dai_file)}/{hhmmss(dai_that)} — phần cuối "
                "chưa được quét.")
