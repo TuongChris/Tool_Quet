@@ -10,6 +10,52 @@
 
 ---
 
+## 0. Cập nhật 2026-10-02 — vòng hardening sau audit độc lập `4b7e5bd`
+
+> Đọc mục này trước. Phần còn lại của file mô tả hiện trạng 2026-09-07; những gì mục này nói
+> khác đi là bản mới hơn.
+
+- **Baseline:** `4b7e5bd` (nhánh `sua-watchdog-van-tay`), trùng revision audit. Baseline test
+  trên interpreter của app: 955 passed + 1 skipped; slow 5 passed.
+- **Nơi làm:** worktree `…\ToolQuet\Tool_Quet_hardening`, nhánh `hardening-sau-audit`.
+  **Chưa commit, chưa push.** Thư mục chạy thật `Tool_Quet\TimClipPro` không bị sửa.
+- **Đã xong:** G1–G10, cả 16 mục TCP-01…TCP-16 `FIXED_AND_VERIFIED` trên Windows native. Chi tiết:
+  `docs/HARDENING_FIX_MATRIX.md` (từng mục, test, rủi ro), `docs/HARDENING_PLAN.md` (quyết định),
+  `docs/HARDENING_VALIDATION_REPORT.md` (bằng chứng), `docs/DATA_MIGRATION_AND_RECOVERY.md`.
+- **Module mới:** `process_runner.NhomTienTrinh`/`chay_lenh_media` (Job Object, timeout/huỷ FFmpeg),
+  `luu_tru.cap_nhat_json`/`khoa_json` (giao dịch JSON liên tiến trình), `lich_su.py` (lược đồ
+  `lichsu.db` có phiên bản), sổ phạm vi quét trong `engine.py`, `ChannelSync.kiem_tep_tren_dia`.
+- **Bất biến mới (đừng phá):** job chạy trên bản Engine ghim kho/cấu hình; kho tạm phải qua
+  `_kiem_kho_tam` mới được thay kho; mọi đọc-sửa-ghi JSON đi qua `cap_nhat_json`; một lượt quét
+  chỉ "trọn" khi hợp vùng đã khớp phủ hết video; mốc khi bù tốc độ là `O + k·(t_khúc − t_clip)`;
+  lịch sử chỉ chặn quét lại trong cùng `kho_id`; `clips_meta.json` là nguồn chuẩn metadata;
+  mã video trong tên file chỉ ở hậu tố `[ID].đuôi`; đồng bộ kênh nén vào staging rồi mới công bố.
+- **Vòng phản biện 2 (đọc trước khi sửa phạm vi quét):** khúc audfprint lỗi đọc CHỈ nhận qua dòng
+  stdout `Error reading` (+ khúc 0 hash mà WAV không đọc được). `NOMATCH … 0.0 sec` KHÔNG phải lỗi
+  — khúc im lặng cũng ghi vậy (audfprint lấy "độ dài" từ mốc hash cuối); vòng 1 từng hiểu sai và
+  biến video tắt tiếng thành lỗi vĩnh viễn. Test giả của audfprint phải mô phỏng đúng
+  `audfprint_analyze.py`/`audfprint_match.py` và có đối chứng THẬT (`-m slow`). Các bất biến thêm:
+  sổ bù tốc độ theo (lượt, mốc); độ dài tham chiếu của đồng bộ kênh chỉ từ nguồn bên ngoài (không
+  `duration_media`); thiếu đuôi khi tải → tải lại MỘT lần để phân biệt tải đứt/âm thanh ngắn thật;
+  sổ kho từng hỏng (`khos.json.hong.*`) → không tự dựng «Kho mặc định»; «Bổ sung» so với
+  `moc_build`, gỡ clip đã vào `_hong/`, giữ clip vắng không rõ lý do. Bảng đầy đủ: ma trận, mục
+  *Vòng phản biện 2*.
+- **Vòng phản biện 3:** với ncores > 1 các worker audfprint ghi CHUNG stdout nên dòng xen nhau —
+  mọi bộ đọc stdout của audfprint phải neo vào cụm từ (`RE_LOI_DOC_KHUC`, `finditer`), không lấy
+  "khúc đầu tiên của dòng". Khúc 0 hash mà có tiếng rõ (độ lệch chuẩn > −50 dBFS — đo quanh trung
+  bình, lệch DC hằng số là im lặng) = chưa phân tích. Độ dài
+  luồng tiếng chỉ tin khi file có đúng một luồng tiếng (`channel.doc_moc_het_tieng`). Sổ kho hỏng
+  hoặc mất-còn-`.bak` → `SoKhoHong` chặn mọi quét/build. «Bổ sung» chỉ gỡ clip đã cách ly khi bản
+  thay thế cùng mã đã có vân tay. Lần tải lại kiểm chứng của đồng bộ kênh vào thư mục mới. Bảng:
+  ma trận, mục *Vòng phản biện 3*.
+- **Lệnh kiểm (đã chạy thật):** `kiemtra.bat` với `KIEMTRA_PY` trỏ interpreter có pytest → mã
+  thoát 0; `python -m pytest -q` (nhanh) và `python -m pytest -m slow` (cần `bin\` trong PATH).
+  CLI báo bận bằng mã thoát 2.
+- **Đang chờ người dùng duyệt:** đưa code vào thư mục chạy thật (lần mở đầu tự nâng cấp
+  `lichsu.db`, có sao lưu); quy trình ở `DATA_MIGRATION_AND_RECOVERY.md` mục 8.
+- **Việc tiếp theo:** nghiệm thu vận hành có kiểm soát trên máy thật (một Watch nhỏ, một lần đồng
+  bộ kênh, một build `add`), rồi mới thiết kế "nguồn chung cả lô"/multi-client.
+
 ## Mục lục
 
 1. [Repository state](#1-repository-state)

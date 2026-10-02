@@ -89,6 +89,15 @@ Get-Content ".\data\tool.lock"
 Get-Process -Id <PID>
 ```
 
+Từ vòng hardening 4b7e5bd, mỗi thư mục có file JSON được ghi (`data\`, thư mục kho) có thêm
+`.timclip.lock`: khoá liên tiến trình cho đọc-sửa-ghi `khos.json`, `clips_meta.json`,
+`downloaded.txt`, snapshot. Chờ tối đa 60 giây rồi báo bận kèm PID chủ khoá; không xoá file này
+khi PID còn sống. Thứ tự lấy khoá toàn dự án: `tool.lock` → khoá `khos.json` → khoá JSON khác.
+
+Lệnh `cli.py` (kể cả `watch` mà `GiamSat.bat` gọi) gặp khoá đang bị lượt khác giữ thì in «ĐANG BẬN …»
+ra stderr và thoát mã **2** (lỗi thật là 1). Script lịch muốn bỏ qua lượt bận thì kiểm
+`%ERRORLEVEL% == 2`.
+
 ## Backup và phục hồi
 
 Đợi mọi job dừng rồi backup:
@@ -113,6 +122,27 @@ Thành phần quan trọng:
 Khi JSON chính hỏng, lớp storage tự thử `.bak` và giữ bản lỗi dưới `.hong.*`. Không sửa cả
 file chính lẫn backup cùng lúc.
 
+Riêng `khos.json` hỏng mà KHÔNG có `.bak` (bản hỏng nằm ở `data\khos.json.hong.*`), hoặc `khos.json`
+bị MẤT mà còn `khos.json.bak`: thanh bên/CLI nêu rõ, tool không tự dựng «Kho mặc định» từ
+`data\db.pklz`, không ghi đè `.bak`, và chặn quét, tạo/bổ sung kho lẫn Watch (không đối chiếu hay ghi
+nhầm kho). Ca mất-còn-`.bak`: tool chép ngay một bản cố định `data\khos.json.bak.giu_<thời điểm>`
+không bao giờ bị ghi đè. Khôi phục khi app đã dừng: sửa bản hỏng, chép `khos.json.bak` (hoặc bản
+`.giu_*`) thành `khos.json`, hoặc lấy `khos.json` từ backup về `data\`; chỉ khi chắc chắn muốn dùng
+`db.pklz` làm «Kho mặc định» thì chuyển các file `khos.json.hong.*` / `khos.json.bak` ra chỗ khác rồi
+mở lại app.
+
+`lichsu.db` có lược đồ phiên bản (v1 từ vòng hardening). Lần nâng cấp tự động để lại
+`data\lichsu.db.v0_<thời điểm>.bak`. Kiểm/khôi phục bằng `lich_su.py` — xem
+`docs/DATA_MIGRATION_AND_RECOVERY.md`:
+
+```powershell
+& ".\.venv\Scripts\python.exe" lich_su.py --kiem .\data\lichsu.db
+& ".\.venv\Scripts\python.exe" lich_su.py --khoi-phuc <ban_sao.bak> .\data\lichsu_khoi_phuc.db
+```
+
+Thư mục kho có thể có `_hong\`: file audio nghi hỏng đã được đồng bộ kênh THAY bằng bản tải lại.
+Không có gì tự xoá; đối chiếu rồi tự dọn.
+
 ## Quy trình dựng/cập nhật kho
 
 ```powershell
@@ -123,6 +153,20 @@ file chính lẫn backup cùng lúc.
 `taodb` có thể thay file vân tay đang dùng; backup `data\` trước. Không đặt file `.pklz` tải
 từ nguồn lạ vào `data\`. Nếu shifts của kho và config lệch, tạo lại kho có kiểm soát thay vì
 trộn fingerprint khác tham số.
+
+Từ vòng hardening: kho tạm phải qua kiểm tra mới được thay kho đang dùng (0 hash, mất clip cũ →
+từ chối, kho cũ giữ nguyên). `themclip` («Bổ sung») cũng LÀM MỚI vân tay của clip có file bị thay
+sau khi lần tạo kho trước BẮT ĐẦU — ví dụ sau khi đồng bộ kênh tải lại một file nén dở — và GỠ vân
+tay của clip đã bị đồng bộ kênh chuyển vào `_hong\` khi bản thay thế cùng mã video đã có vân tay
+(bản thay thế hỏng/chưa có thì giữ vân tay cũ và cảnh báo). Clip vắng mà không có bản trong `_hong\`
+(ổ chưa gắn, file chưa tải về…) được GIỮ vân tay và chỉ cảnh báo; muốn gỡ hẳn thì `taodb`.
+
+Đồng bộ kênh: mỗi kho chỉ chạy một lượt tại một thời điểm (lượt thứ hai báo bận). Lượt đầu tiên
+sau khi cập nhật kiểm mọi file `.opus` cũ bằng ffprobe một lần ("Kiểm file trên đĩa i/n", Dừng
+được), đóng dấu xác nhận vào `clips_meta.json`; các lượt sau không kiểm lại. File nghi hỏng được
+tải lại, bản cũ giữ trong `_hong\`. Nguồn tải về ngắn hơn lengthSeconds bất thường thì được tải lại
+một lần ngay; hai lần cùng độ dài nghĩa là âm thanh YouTube ngắn thật — file được nhận, dấu xác nhận
+ghi `am_thanh_ngan_hon_youtube`, không tải lại ở các lượt sau.
 
 ## Quy trình quét
 
@@ -140,6 +184,22 @@ YouTube:
 
 Kiểm báo cáo trong `ketqua\` và job trong tab Lịch sử. Exporter không ghi đè: nếu tên tồn
 tại, file mới nhận hậu tố `_2`, `_3`, ... Cell có prefix công thức được xuất dưới dạng text.
+
+Phạm vi quét (vòng hardening): lượt quét chưa so khớp TRỌN video (dừng sớm vì đủ bằng chứng, chỉ
+tải phần đầu, có vùng lỗi) mang hậu tố `[QUÉT MỘT PHẦN — …]` ở ô tên video vi phạm trên CSV/Sheet
+(không thêm cột), dòng phạm vi trong hồ sơ Markdown và cột Phạm vi ở tab Lịch sử. Vùng không xử lý
+được mà không có bằng chứng thì lượt quét là **lỗi** (quét lại), không phải "0 kết quả". Khúc im
+lặng (video bị tắt tiếng) là âm tính bình thường, không phải lỗi. File YouTube tải về thiếu đuôi
+hơn 5 s mà chưa có bằng chứng thì tool tải lại một lần trong cùng lượt: ngắn đúng như lần trước
+nghĩa là âm thanh YouTube ngắn thật (ghi chú nêu rõ, phần sau coi là không có tiếng).
+
+Watch chỉ bỏ qua video đã kiểm XONG với đúng kho đang dùng (cùng phiên bản kho, cùng tham số nhận
+diện cho kết quả âm tính). Kho ghi trong watchlist không mở được thì cả lượt dừng trước khi quét.
+Quét lại chủ động, không xoá lịch sử:
+
+```powershell
+& ".\.venv\Scripts\python.exe" cli.py watch --log --sheet "<link Sheet>" --quet-lai
+```
 
 ## Khi một lượt quét trả về 0 đoạn
 
@@ -319,7 +379,9 @@ log và archive. Credential chỉ mount read-only khi cần.
 ## Hạn chế vận hành đang mở
 
 - yt-dlp có retry hữu hạn và timeout 30 giây; Google API vẫn phụ thuộc timeout của SDK.
-- Process-tree cancellation đã test cho fingerprint với process giả root + child; các flow khác và database rất lớn chưa soak-test.
+- Mọi tiến trình con chạy qua `process_runner` (audfprint, FFmpeg, FFprobe) nằm trong Windows Job
+  Object: huỷ/timeout dừng cả cây, kể cả cháu mồ côi. FFprobe có trần 120 s; FFmpeg dừng khi im
+  lặng (không tiến độ) 300 s. Database rất lớn chưa soak-test.
 - Scan tương tác chưa dùng job temp directory riêng/lock chung.
 - GUI có structured technical log riêng cho fingerprint; scan/channel chưa dùng chung facade.
 - Docker build cần nghiệm thu lại trên máy có daemon.
