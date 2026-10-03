@@ -108,6 +108,9 @@ CHO_PHEP_EPOCH = {
     # app.py: hiển thị đồng hồ của màn hình tiến độ ("Cập nhật gần nhất HH:MM:SS").
     # Đây là giờ treo tường của máy đang chạy, đúng ngữ nghĩa, không phải ngày đăng.
     "app.py",
+    # truy_cap_youtube.py: thời điểm SỬA FILE cookie trên máy này (chẩn đoán cookie cũ hay
+    # mới) — giờ treo tường của máy, không phải ngày đăng video.
+    "truy_cap_youtube.py",
 }
 CHO_PHEP_TIMEDELTA_DAYS = {
     # nhat_ky.py: cửa sổ giữ log N ngày, không liên quan ngày đăng video.

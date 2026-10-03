@@ -8,6 +8,8 @@ import sys
 from datetime import datetime, timedelta
 from typing import IO, Optional
 
+from truy_cap_youtube import che_bi_mat as _che_chung
+
 
 # Các dòng yt-dlp in THẲNG ra sys.stderr (không qua logger nên cờ `quiet` không chặn
 # được) mà nội dung chính là bí mật. Điển hình:
@@ -27,17 +29,19 @@ THAY_THE = "[đã ẩn: dòng này chứa nội dung cookie]"
 def che_bi_mat(noi_dung: str) -> str:
     """Thay các dòng chứa bí mật bằng ghi chú, giữ nguyên phần còn lại.
 
-    Cắt theo từng dòng chứ không bỏ cả khối, để thông tin chẩn đoán khác không mất.
+    Cắt theo từng dòng chứ không bỏ cả khối, để thông tin chẩn đoán khác không mất. Sau đó che
+    thêm header Cookie/Authorization, token và tham số nhạy cảm trong URL bằng đúng bộ luật
+    của ``truy_cap_youtube.che_bi_mat`` — lỗi yt-dlp có thể mang URL đã ký của googlevideo.
     """
-    if not any(t in noi_dung for t in TIEN_TO_CAN_CHE):
-        return noi_dung
-    ra = []
-    for dong in noi_dung.splitlines(keepends=True):
-        if any(t in dong for t in TIEN_TO_CAN_CHE):
-            ra.append(THAY_THE + ("\n" if dong.endswith("\n") else ""))
-        else:
-            ra.append(dong)
-    return "".join(ra)
+    if any(t in noi_dung for t in TIEN_TO_CAN_CHE):
+        ra = []
+        for dong in noi_dung.splitlines(keepends=True):
+            if any(t in dong for t in TIEN_TO_CAN_CHE):
+                ra.append(THAY_THE + ("\n" if dong.endswith("\n") else ""))
+            else:
+                ra.append(dong)
+        noi_dung = "".join(ra)
+    return _che_chung(noi_dung)
 
 
 class _GhiSongSong:

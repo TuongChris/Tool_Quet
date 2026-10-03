@@ -22,11 +22,27 @@ ghi thẳng ra đĩa dạng thô.
 from __future__ import annotations
 
 import io
+import logging
 import os
-import re
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
+
+# Văn bản lỗi yt-dlp và cách hiểu chúng sống ở `truy_cap_youtube` (module thuần, tầng dưới cùng);
+# các tên dưới đây giữ ở đây vì mã cũ và test tham chiếu qua `ytdlp_chung.*`.
+from truy_cap_youtube import (  # noqa: F401 — tái xuất
+    DAU_CHI_TIET,
+    MOC_CAT_HUONG_DAN,
+    NGAN_SACH,
+    RE_MA_MAU,
+    LoiTruyCapYouTube,
+    che_bi_mat,
+    doc_cau_truc_cookie,
+    go_ma_mau,
+    tim_loi_truy_cap,
+)
+
+LOGGER = logging.getLogger("youtube.ytdlp")
 
 # Thứ tự "player client" thử khi tải. YouTube chặn từng client một cách ĐỘC LẬP và
 # đổi theo thời gian, nên phải có đường lui thay vì khoá cứng một cái. Chuỗi rỗng
@@ -51,15 +67,9 @@ PLAYER_CLIENTS_MAC_DINH = ["", "android", "tv", "ios", "web_safari"]
 # thật của yt-dlp. Đo trên yt-dlp 2026.07.04.
 CLIENT_KHONG_COOKIE_DU_PHONG = frozenset({"android", "android_vr", "ios", "tv_simply"})
 
-# yt-dlp tô màu thông báo lỗi bằng escape ANSI. Giao diện Streamlit không hiểu chúng
-# nên người dùng thấy rác kiểu "[0;31mERROR:[0m". Vẫn dọn ở đây dù đã đặt `no_color`
-# vì lỗi có thể tới từ tiến trình con hoặc từ bản ghi cũ trong lịch sử.
-RE_MA_MAU = re.compile(r"\x1b?\[[0-9;]*m")
-
-# Đuôi hướng dẫn của yt-dlp ("Use --cookies-from-browser ... See https://...") dài
-# gần 300 ký tự và vô nghĩa với người dùng không phải lập trình viên; câu tiếng Việt
-# bên dưới đã nói đủ ý. Cắt từ chỗ đầu tiên trong các mốc này trở đi.
-MOC_CAT_HUONG_DAN = (" Use --cookies", " See  https://", " See https://")
+# Mã màu ANSI (`RE_MA_MAU`, `go_ma_mau`) và đuôi hướng dẫn của yt-dlp (`MOC_CAT_HUONG_DAN`):
+# xem `truy_cap_youtube` — vẫn dọn dù đã đặt `no_color` vì lỗi có thể tới từ tiến trình con
+# hoặc từ bản ghi cũ trong lịch sử.
 
 CHU_THICH = {
     "cookie_chet": ("Cookie YouTube đã hết hiệu lực nên YouTube không trả về âm thanh "
@@ -76,11 +86,6 @@ CHU_THICH = {
 }
 
 
-def go_ma_mau(s: Any) -> str:
-    """Bỏ escape ANSI khỏi thông báo lỗi trước khi đưa lên giao diện."""
-    return RE_MA_MAU.sub("", str(s)).strip()
-
-
 def giai_thich_loi(loi: Any, co_cookie: bool = False) -> str:
     """Diễn giải lỗi yt-dlp thành câu tiếng Việt nói rõ ai phải làm gì.
 
@@ -90,8 +95,16 @@ def giai_thich_loi(loi: Any, co_cookie: bool = False) -> str:
     Hàm này **luỹ đẳng**: gọi lại trên chuỗi đã diễn giải không nhân đôi chú thích.
     Cần vậy vì lỗi đi qua nhiều lớp (helper gói lại rồi báo cáo ghi ra) — bản đầu đã
     dán chú thích hai lần vào cùng một dòng.
+
+    Lỗi đã được ``truy_cap_youtube`` phân loại thì trả nguyên câu của nó. Kết quả luôn đã che
+    bí mật (cookie, header, token trong URL) vì nó đi thẳng vào lịch sử, CSV và nhật ký.
     """
-    tin = go_ma_mau(loi)
+    da_phan_loai = tim_loi_truy_cap(loi)
+    if da_phan_loai is not None and not isinstance(loi, LoiTruyCapYouTube):
+        loi = LoiTruyCapYouTube(da_phan_loai)
+    tin = che_bi_mat(go_ma_mau(loi))
+    if DAU_CHI_TIET in tin:
+        return tin
     for moc in MOC_CAT_HUONG_DAN:
         vi_tri = tin.find(moc)
         if vi_tri > 0:
@@ -114,7 +127,9 @@ def giai_thich_loi(loi: Any, co_cookie: bool = False) -> str:
         return dan("bot")
     if "confirm your age" in thap or "age-restricted" in thap:
         return dan("tuoi")
-    if "video is not available" in thap or "private video" in thap or "removed" in thap:
+    # "Video unavailable" là chữ ký THẬT của video bị gỡ (Tier 2, Job 43/130).
+    if ("video is not available" in thap or "video unavailable" in thap
+            or "private video" in thap or "removed" in thap):
         return dan("go")
     return tin
 
@@ -224,31 +239,35 @@ def kiem_tra_file_cookie(duong_dan: str) -> None:
             f"Không đọc được file cookie «{os.path.basename(duong_dan)}»: {e.strerror}."
         ) from None
 
-    dong_hong = []
-    co_ban_ghi = False
-    for so, dong in enumerate(noi_dung.splitlines(), start=1):
-        tho = dong.strip()
-        if not tho or tho.startswith("#"):
-            continue
-        # Netscape: đúng 7 trường phân tách bằng TAB. yt-dlp chấp nhận cả tiền tố
-        # "#HttpOnly_" ở cột đầu, nhưng số trường thì không đổi.
-        if len(dong.rstrip("\n").split("\t")) != 7:
-            dong_hong.append(so)
-        else:
-            co_ban_ghi = True
-
-    if dong_hong:
-        vi_du = ", ".join(str(x) for x in dong_hong[:5])
-        them = f" (và {len(dong_hong) - 5} dòng nữa)" if len(dong_hong) > 5 else ""
+    # Kiểm ĐÚNG luật nạp của yt-dlp (`truy_cap_youtube.doc_cau_truc_cookie`): dòng `#HttpOnly_`
+    # là bản ghi thật (yt-dlp bóc tiền tố rồi kiểm — dòng hỏng bị IN NGUYÊN VĂN ra stderr), mỗi
+    # bản ghi đúng 7 trường TAB với hạn dùng là số, và dòng 1 phải là tiêu đề Netscape.
+    ct = doc_cau_truc_cookie(noi_dung)
+    ten = os.path.basename(duong_dan)
+    if ct.dinh_dang == "html":
         raise LoiFileCookie(
-            f"File cookie «{os.path.basename(duong_dan)}» sai định dạng Netscape ở "
+            f"File cookie «{ten}» là một trang HTML (thường do lưu nhầm trang web), không phải "
+            "file cookie. Hãy xuất lại bằng tiện ích trình duyệt.")
+    if ct.dinh_dang == "json":
+        raise LoiFileCookie(
+            f"File cookie «{ten}» ở dạng JSON; yt-dlp cần định dạng Netscape (cookies.txt). "
+            "Hãy xuất lại bằng tiện ích «Get cookies.txt».")
+    if ct.dong_hong:
+        vi_du = ", ".join(str(x) for x in ct.dong_hong[:5])
+        them = f" (và {len(ct.dong_hong) - 5} dòng nữa)" if len(ct.dong_hong) > 5 else ""
+        raise LoiFileCookie(
+            f"File cookie «{ten}» sai định dạng Netscape ở "
             f"dòng {vi_du}{them}. Nguyên nhân hay gặp: mở bằng Notepad rồi lưu lại làm "
             "TAB biến thành dấu cách. Hãy xuất lại bằng tiện ích trình duyệt, đừng sửa tay."
         )
-    if not co_ban_ghi:
+    if not ct.so_ban_ghi:
         raise LoiFileCookie(
-            f"File cookie «{os.path.basename(duong_dan)}» không có bản ghi cookie nào."
+            f"File cookie «{ten}» không có bản ghi cookie nào."
         )
+    if not ct.co_tieu_de:
+        raise LoiFileCookie(
+            f"File cookie «{ten}» thiếu dòng tiêu đề «# Netscape HTTP Cookie File» ở dòng 1 — "
+            "yt-dlp sẽ từ chối cả file. Hãy xuất lại bằng tiện ích trình duyệt, đừng sửa tay.")
     _CACHE_COOKIE[khoa] = True
 
 
@@ -336,11 +355,15 @@ class CauHinhMang:
     def player_clients(self, clients: list) -> list:
         return sap_xep_player_clients(clients, self.co_cookie)
 
-    def tuy_chon(self, **them: Any) -> dict:
+    def tuy_chon(self, thao_tac: str = "", **them: Any) -> dict:
         """Dict tuỳ chọn yt-dlp: phần dùng chung + phần riêng của nơi gọi.
 
         ``no_color`` để yt-dlp không nhét escape ANSI vào thông báo lỗi ngay từ đầu —
         chữa tận gốc thay vì chỉ dọn lúc hiển thị.
+
+        ``thao_tac`` ("metadata" | "listing" | "download"): số lần yt-dlp tự thử lại bên trong và
+        thời gian nghỉ giữa chúng lấy từ MỘT bảng (``truy_cap_youtube.NGAN_SACH``) thay vì mỗi nơi
+        gọi chép tay ``retries=10``. Bỏ trống = như cũ (để mặc định của yt-dlp).
         """
         opts: dict = {
             "quiet": True,
@@ -348,6 +371,8 @@ class CauHinhMang:
             "no_color": True,
             "socket_timeout": self.network_timeout_s,
         }
+        if thao_tac in NGAN_SACH:
+            opts.update(NGAN_SACH[thao_tac].tuy_chon_yt_dlp())
         if self.sleep_requests_s > 0:
             # Khoá DUY NHẤT giãn nhịp ở khâu TRÍCH XUẤT — đúng chỗ bot-check đánh.
             # `sleep_interval`/`max_sleep_interval` chỉ có tác dụng ở khâu tải.
@@ -367,6 +392,46 @@ class CauHinhMang:
             opts["cookiesfrombrowser"] = tu_trinh_duyet
         opts.update(them)
         return opts
+
+
+class BoGhiYtdlp:
+    """``logger`` cho yt-dlp: gom cảnh báo/lỗi ĐÃ CHE BÍ MẬT để phân loại.
+
+    Cần vì hai chỗ yt-dlp nói điều quan trọng mà tool không nghe thấy:
+
+    * ``ignoreerrors=True`` (liệt kê kênh) nuốt lỗi và trả ``None`` — chỉ để lại câu lỗi trên
+      stderr, nên bị chặn/429 thành "kênh không có video nào";
+    * ``no_warnings=True`` giấu cảnh báo "The provided YouTube account cookies are no longer
+      valid" (yt_dlp/extractor/youtube/_base.py:819-827) — bằng chứng duy nhất là YouTube đã từ
+      chối phiên cookie.
+
+    Có ``logger`` thì yt-dlp gửi mọi thông báo vào đây thay vì in thẳng ra stderr; ta che bí mật
+    trước khi ghi log. Dòng cookie hỏng do ``write_string`` in thẳng thì KHÔNG qua đây — cổng
+    ``kiem_tra_file_cookie`` chặn từ đầu nguồn, ``nhat_ky.che_bi_mat`` che ở đầu ra.
+    """
+
+    def __init__(self, phien: Any = None):
+        self.phien = phien
+        self.loi: list = []
+        self.canh_bao: list = []
+
+    def debug(self, msg: Any) -> None:
+        pass
+
+    def info(self, msg: Any) -> None:
+        pass
+
+    def warning(self, msg: Any) -> None:
+        sach = che_bi_mat(go_ma_mau(msg))[:400]
+        self.canh_bao.append(sach)
+        if "cookies are no longer valid" in sach.lower() and self.phien is not None:
+            self.phien.ghi_cookie_khong_hop_le()
+        LOGGER.info("event=ytdlp.warning msg=%s", sach)
+
+    def error(self, msg: Any) -> None:
+        sach = che_bi_mat(go_ma_mau(msg))[:400]
+        self.loi.append(sach)
+        LOGGER.warning("event=ytdlp.error msg=%s", sach)
 
 
 # Dấu hiệu cookie đã hết hiệu lực. Đo thật 18/08/2026 trên 8 link + 2 video đối chứng:
@@ -469,6 +534,7 @@ def thu_tung_client(
     truoc_khi_thu_lai: Optional[Callable[[], None]] = None,
     khi_thanh_cong: Optional[Callable[[str, list], None]] = None,
     bo_nho: Optional["NhoClientTotNhat"] = None,
+    dung_ngay: Optional[Callable[[BaseException], bool]] = None,
 ) -> Any:
     """Chạy ``chay(opts)`` lần lượt với từng player client cho tới khi có cái được.
 
@@ -487,6 +553,10 @@ def thu_tung_client(
 
     ``khi_thanh_cong(ten_client, da_thu)``: để bên gọi ghi log client nào CỨU được —
     thông tin quan trọng nhất khi YouTube đổi chính sách chặn.
+
+    ``dung_ngay(loi)``: True = đổi client cũng vô ích, dừng ngay (bot-check chặn theo địa chỉ
+    mạng ở khâu trích xuất cho MỌI client — CLAUDE.md mục 6c; video bị gỡ; 429). Không truyền =
+    thử hết danh sách như cũ. 403 ở khâu tải thì vẫn đổi client (mục 6).
     """
     loi_cuoi: Optional[BaseException] = None
     da_thu: list = []
@@ -508,6 +578,8 @@ def thu_tung_client(
             da_thu.append(ten)
             if khi_that_bai:
                 khi_that_bai(ten, e)
+            if dung_ngay is not None and dung_ngay(e):
+                break
         else:
             if bo_nho is not None:
                 bo_nho.ghi_nhan(client)
@@ -516,5 +588,5 @@ def thu_tung_client(
             return ket_qua
     raise RuntimeError(
         "Không tải được audio. Đã thử: " + ", ".join(da_thu)
-        + ". Lỗi cuối: " + go_ma_mau(loi_cuoi)
+        + ". Lỗi cuối: " + che_bi_mat(go_ma_mau(loi_cuoi))
     ) from loi_cuoi
