@@ -3753,12 +3753,12 @@ class Engine:
         """`duration_s` vừa đổi từ độ dài FILE sang độ dài VIDEO thật: dán lại nhãn vùng.
 
         `_gan_chi_so` đã dán theo file đang xử lý, còn báo cáo đọc `duration_s`. Dán cho MỌI
-        ứng viên — cả đoạn bị loại — để một kết quả không mang hai trục thời gian (CLAUDE.md
-        mục 13: đổi trường phái sinh thì rà mọi thứ tính từ nó).
+        ứng viên — cả đoạn bị loại và tập đạt chuẩn trước Top-N — để một kết quả không mang
+        hai trục thời gian (CLAUDE.md mục 13: đổi trường phái sinh thì rà mọi thứ tính từ nó).
         """
         if not r.duration_s:
             return
-        for m in (*r.matches, *r.matches_loai):
+        for m in {id(x): x for x in (*r.matches, *r.matches_loai, *r.ung_vien_dat)}.values():
             m.vung = self._nhan_vung(m.start_s, r.duration_s)
 
     def _chon_loc(self, ds: list, duration: float) -> tuple:

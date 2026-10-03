@@ -74,7 +74,7 @@
     "matched_s": 80.0,
     "start_s": 300.0,
     "ty_le": 5.3,
-    "vung": "Giữa",
+    "vung": "Đầu",
     "vung_khop_s": 300.0
    },
    {
@@ -87,7 +87,7 @@
     "matched_s": 80.0,
     "start_s": 450.0,
     "ty_le": 6.4,
-    "vung": "Giữa",
+    "vung": "Đầu",
     "vung_khop_s": 450.0
    },
    {
@@ -100,7 +100,7 @@
     "matched_s": 80.0,
     "start_s": 600.0,
     "ty_le": 6.4,
-    "vung": "Cuối",
+    "vung": "Đầu",
     "vung_khop_s": 600.0
    }
   ],

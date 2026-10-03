@@ -14,6 +14,14 @@ SAU).
 giả ở ranh giới tải/quét file như `test_phan_bien_vong_hai.py`. `scan_media` giả trả đúng thứ
 bản thật trả cho một FILE: `duration_s` là độ dài file, và nhãn vùng do CHÍNH `_gan_chi_so`
 dán theo độ dài file đó (`_scan_media` gọi `_gan_chi_so(tat_ca, tong)`, `tong` = độ dài file).
+
+Chế độ «một video gốc chung cho cả lô» thêm `ScanResult.ung_vien_dat` — cửa sổ thứ ba lên CÙNG
+các ứng viên (tập đạt chuẩn trước khi cắt Top-N, đầu vào của chế độ đó). Ba cửa sổ `matches`,
+`matches_loai`, `ung_vien_dat` phải mang cùng một trục thời gian. Trên đường quét hiện nay
+`ung_vien_dat` dùng chung đối tượng `Match` với hai danh sách kia (`_scan_media` lấy cả ba từ
+cùng `tat_ca`), nên test đầu–cuối không phân biệt được «dán lại cả `ung_vien_dat`» với «chỉ dán
+`matches`/`matches_loai`». Thiết kế chế độ đó cố ý không dựa vào điều ngầm này
+(`docs/COMMON_ORIGINAL_DESIGN.md`, QĐ1), nên hợp đồng của `_dan_lai_nhan_vung` có test riêng.
 """
 
 import os
@@ -22,9 +30,12 @@ from pathlib import Path
 import pytest
 
 from conftest import M
-from engine import Engine, Match, ScanResult
+from engine import Engine, Match, ScanObjective, ScanResult
+from golden_quet import KICH_BAN, Dat, KichBan, chay
 
 _B = "B [bbbbbbbbbbb].opus"
+_C = "C [ccccccccccc].opus"
+_D = "D [ddddddddddd].opus"
 _ID = "abcdefghijk"
 
 
@@ -166,3 +177,106 @@ def test_bang_ket_qua_giao_dien_hien_nhan_vung_theo_video_that(tmp_path, monkeyp
     assert not at.exception
     bang = next(d.value for d in at.dataframe if "Vùng" in d.value.columns)
     assert list(bang["Vùng"]) == ["Đầu"] * 5
+
+
+# ---------------------------------------------------------------------------------------
+#  `ung_vien_dat` (chế độ một video gốc chung) — cửa sổ thứ ba, cùng trục với matches
+# ---------------------------------------------------------------------------------------
+
+def _m(clip, start, nhan_theo_file):
+    m = Match(clip=clip, start_s=start, end_s=start + 60, matched_s=60.0,
+              clip_offset_s=0.0, hashes=900, confidence="Cao")
+    m.vung = nhan_theo_file
+    return m
+
+
+def test_dan_lai_nhan_vung_phu_ung_vien_dat_khong_dung_chung_doi_tuong(tmp_path):
+    """Hợp đồng: `_dan_lai_nhan_vung` dán lại CẢ BA cửa sổ, kể cả khi `ung_vien_dat` giữ đối
+    tượng KHÔNG nằm trong `matches`/`matches_loai` — bản chép của cùng một ứng viên, hoặc ứng
+    viên đạt chuẩn mà nơi tiêu thụ đã cắt khỏi `matches_loai`. Đối tượng dùng chung (có mặt ở
+    hai cửa sổ) vẫn ra đúng nhãn. Nhãn ban đầu theo FILE 1500 s; kỳ vọng VIẾT TAY theo VIDEO
+    3000 s. Bỏ `ung_vien_dat` khỏi vòng dán lại thì test này đỏ."""
+    e = Engine(root=str(tmp_path), data_dir=str(tmp_path / "data"),
+               out_dir=str(tmp_path / "out"))
+    chon = _m(_B, 700.0, "Giữa")        # file 700/1500 = 0,47 | video 700/3000 = 0,23 → Đầu
+    ban_chep = _m(_B, 700.0, "Giữa")    # CÙNG ứng viên đó, đối tượng khác
+    chi_o_dat = _m(_C, 1400.0, "Cuối")  # file 0,93 | video 0,47 → Giữa
+    loai = _m(_D, 1100.0, "Cuối")       # file 0,73 | video 0,37 → Giữa
+    r = ScanResult(source_name="Video", duration_s=3000.0)
+    r.matches, r.matches_loai = [chon], [loai]
+    r.ung_vien_dat = [ban_chep, chi_o_dat, chon]
+    e._dan_lai_nhan_vung(r)
+    assert [m.vung for m in r.matches] == ["Đầu"]
+    assert [m.vung for m in r.matches_loai] == ["Giữa"]
+    assert [m.vung for m in r.ung_vien_dat] == ["Đầu", "Giữa", "Đầu"]
+
+
+# Engine THẬT qua harness golden (chỉ giả FFmpeg/audfprint/yt-dlp). Video 3000 s, file tải về
+# 1500 s. Nhãn VIẾT TAY theo video thật (p = giây bắt đầu / 3000); trong ngoặc là nhãn SAI nếu
+# tính theo file 1500 s:
+#   B ở 600 s, dài 120 s  — đạt chuẩn → «Đầu»  0,20  («Giữa» 0,40)
+#   C ở 1100 s, dài 120 s — đạt chuẩn → «Giữa» 0,37  («Cuối» 0,73)
+#   D ở 800 s, dài 10 s   — bị loại   → «Đầu»  0,27  («Giữa» 0,53)
+_DAT_BA_CUA_SO = (Dat(_B, 600, 120), Dat(_C, 1100, 120), Dat(_D, 800, 10))
+_NHAN_THEO_VIDEO = {_B: "Đầu", _C: "Giữa", _D: "Đầu"}
+
+
+def _kb_file_ngan(ten):
+    return KichBan(ten, "youtube", 3000,
+                   {"top_n": 1, "quet_tang_dan": False, "quet_da_toc_do": False},
+                   _DAT_BA_CUA_SO, tai=(1500, 1500))
+
+
+def _ba_cua_so_cung_mot_truc(kq):
+    """Cùng một ứng viên, nhìn qua cửa sổ nào cũng mang nhãn theo VIDEO THẬT."""
+    dat = {m.clip for m in kq.ung_vien_dat}
+    assert dat == {_B, _C}, "B và C đạt chuẩn, D bị loại"
+    assert len(kq.matches) == 1 and kq.matches[0].clip in dat          # top_n = 1
+    assert {m.clip for m in kq.matches_loai} == {_D} | (dat - {kq.matches[0].clip})
+    for ten, cua_so in (("matches", kq.matches), ("matches_loai", kq.matches_loai),
+                        ("ung_vien_dat", kq.ung_vien_dat)):
+        assert [m.vung for m in cua_so] == [_NHAN_THEO_VIDEO[m.clip] for m in cua_so], ten
+    nhan = {(m.clip, m.start_s): m.vung for m in (*kq.matches, *kq.matches_loai)}
+    assert all(nhan[(m.clip, m.start_s)] == m.vung for m in kq.ung_vien_dat)
+
+
+def test_tai_thieu_duoi_ba_cua_so_cung_mot_truc(tmp_path, monkeypatch):
+    """Chế độ cũ: đã có bằng chứng nên không tải lại; đuôi thành vùng lỗi và `duration_s` đổi
+    về 3000 s trong `_xu_ly_tai_thieu`. Đoạn được chọn, đoạn đạt chuẩn không được chọn, đoạn
+    bị loại và tập đạt chuẩn trước Top-N cùng một trục; cột «Vùng» của báo cáo theo đó."""
+    kq, e, *_ = chay(_kb_file_ngan("ba_cua_so_tai_thieu"), tmp_path, monkeypatch)
+    assert kq.ly_do_pham_vi == "tai_thieu" and kq.duration_s == 3000.0
+    _ba_cua_so_cung_mot_truc(kq)
+    assert _vung_bao_cao(e, kq) == _NHAN_THEO_VIDEO[kq.matches[0].clip]
+
+
+def test_che_do_thu_thap_am_thanh_ngan_hon_ba_cua_so_cung_mot_truc(tmp_path, monkeypatch):
+    """Chế độ thu thập (video mốc của lô nguồn chung) luôn tải lại file ngắn, kể cả khi đã có
+    bằng chứng; bản tải lại ngắn ĐÚNG như cũ → âm thanh YouTube ngắn hơn video thật,
+    `duration_s` đổi về 3000 s. Tập đạt chuẩn — đầu vào của chế độ nguồn chung — phải cùng
+    trục với `matches`."""
+    kq, e, *_ = chay(_kb_file_ngan("ba_cua_so_thu_thap"), tmp_path, monkeypatch,
+                     muc_tieu=ScanObjective("collect"), luu_lich_su=False)
+    assert kq.ly_do_pham_vi == "am_thanh_ngan_hon" and kq.duration_s == 3000.0
+    _ba_cua_so_cung_mot_truc(kq)
+    assert _vung_bao_cao(e, kq) == _NHAN_THEO_VIDEO[kq.matches[0].clip]
+
+
+@pytest.mark.parametrize("muc_tieu", [None, ScanObjective("verify", nhom_can_du=({_D},))],
+                         ids=["che_do_cu", "xac_minh_dich_D"])
+def test_tai_mot_phan_ung_vien_dat_theo_video_that(tmp_path, monkeypatch, muc_tieu):
+    """Tải một phần (chỗ đổi `duration_s` trong `_scan_youtube`): chỉ tải 720 s đầu của video
+    3000 s; mọi đoạn đạt chuẩn ở 10–600 s là «Đầu» theo video thật (theo file 720 s thì
+    300/450/600 s là Giữa/Giữa/Cuối). Chế độ xác minh đích D thấy D trong phần đã tải nên
+    cũng không tải nốt — tập đạt chuẩn của nó là thứ bộ điều phối lô đọc."""
+    kb = next(k for k in KICH_BAN if k.ten == "yt_top5_nam_doan_ba_clip_trong_phan_tai_dau")
+    kq, *_ = chay(kb, tmp_path, monkeypatch, muc_tieu=muc_tieu, luu_lich_su=False)
+    assert kq.quet_mot_phan and kq.duration_s == 3000.0
+    if muc_tieu is None:
+        assert len(kq.ung_vien_dat) == 5
+    else:
+        assert muc_tieu.da_dat(kq.ung_vien_dat)
+    # Có đoạn mà nhãn theo FILE sẽ khác (≥ 720/3 s) — kiểm này không rỗng nghĩa.
+    assert any(m.start_s >= 240.0 for m in kq.ung_vien_dat)
+    for cua_so in (kq.matches, kq.matches_loai, kq.ung_vien_dat):
+        assert all(m.vung == "Đầu" for m in cua_so)
