@@ -25,7 +25,20 @@ from dung_lai import YeuCauDung
 from khoa import DangChayRoi
 from engine import (Engine, SoKhoHong, liet_ke_media, mo_ta_pham_vi,
                     thu_muc_data_mac_dinh)
+from truy_cap_youtube import LoiTruyCapYouTube
 from ytdlp_chung import CauHinhMang
+
+# Mã thoát cho lịch chạy (Task Scheduler, GiamSat.bat, ChayMayPhu.bat chuyển nguyên mã ra):
+# 0 xong · 1 lỗi · 2 bận (tool.lock) · 3 YouTube CHẶN truy cập (bot-check, 429, cookie hỏng,
+# đăng nhập/403 lặp lại) — chạy lại sau khi nghỉ/sửa cookie, không phải lỗi tool.
+MA_THOAT_YOUTUBE_CHAN = 3
+
+
+def _thoat_neu_youtube_chan(thong_bao: str) -> None:
+    """In lý do (đã che bí mật) và thoát mã 3 nếu lượt vừa rồi bị YouTube chặn."""
+    if thong_bao:
+        print(f"\nYOUTUBE CHẶN TRUY CẬP: {thong_bao}", file=sys.stderr)
+        raise SystemExit(MA_THOAT_YOUTUBE_CHAN)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -104,6 +117,7 @@ def _chay_lenh_watch(a, eng: Engine) -> None:
         # lệnh CLI khác (phản biện vòng 3).
         print("\nĐANG BẬN: " + "; ".join(bc.loi), file=sys.stderr)
         raise SystemExit(2)
+    _thoat_neu_youtube_chan(getattr(bc, "chan_youtube", ""))
     if bc.loi:
         raise SystemExit(1)
 
@@ -122,6 +136,14 @@ def main():
         # Sổ đăng ký kho hỏng/mất: cần người khôi phục — báo gọn, không traceback.
         print(f"\nLỖI SỔ ĐĂNG KÝ KHO: {e}", file=sys.stderr)
         raise SystemExit(1) from None
+    except LoiTruyCapYouTube as e:
+        # Lỗi vận hành ĐÃ PHÂN LOẠI (liệt kê kênh bị chặn, link không phải video…): câu tiếng
+        # Việt, không traceback. Bị chặn truy cập → mã 3; còn lại (link sai, video gỡ) → mã 1.
+        if e.that_bai.la_loi_truy_cap:
+            print(f"\nYOUTUBE CHẶN TRUY CẬP: {e}", file=sys.stderr)
+            raise SystemExit(MA_THOAT_YOUTUBE_CHAN) from None
+        print(f"\nLỖI YOUTUBE: {e}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def _main():
@@ -139,6 +161,7 @@ def _main():
             "vametak",
             "dondep",
             "dung",
+            "youtube-doctor",
         ],
     )
     ap.add_argument("muc", nargs="*", help="Thư mục / link / đường dẫn file")
@@ -185,7 +208,21 @@ def _main():
         action="store_true",
         help="Ghi song song console và file nhật ký cho lệnh watch",
     )
+    ap.add_argument(
+        "--network",
+        metavar="URL",
+        default="",
+        help=("youtube-doctor: hỏi thông tin ĐÚNG MỘT video công khai để kiểm cookie/mạng "
+              "(mặc định KHÔNG gọi mạng)"),
+    )
     a = ap.parse_args()
+
+    if a.lenh == "youtube-doctor":
+        # Chẩn đoán chỉ đọc: KHÔNG dựng Engine (khỏi nạp kho, khỏi giành tool.lock), không gọi
+        # Google; chỉ gọi YouTube khi người dùng tự đưa --network.
+        import youtube_doctor
+
+        raise SystemExit(youtube_doctor.chay(thu_muc_data_mac_dinh(), url_mang=a.network))
 
     if a.lenh == "dung":
         file_dung = _file_dung_mac_dinh()
@@ -200,10 +237,11 @@ def _main():
             ap.error("Lệnh vameta cần --kho trỏ tới thư mục kho clip gốc.")
         # Lệnh này cố tình KHÔNG dựng Engine (xem test_cli_watch), nhưng vẫn gọi
         # mạng một lượt mỗi video nên vẫn cần cookie và nhịp tải đã cấu hình.
-        ket_qua = ChannelSync(
+        cs_meta = ChannelSync(
             a.kho,
             cau_hinh_mang=CauHinhMang.tu_file_cau_hinh(thu_muc_data_mac_dinh()),
-        ).va_metadata(in_tien_do)
+        )
+        ket_qua = cs_meta.va_metadata(in_tien_do)
         print(
             f"\nXONG: đã vá {ket_qua['da_va']}/{ket_qua['tong']} mục metadata, "
             f"bỏ qua {ket_qua['bo_qua']} mục đã đủ, "
@@ -211,6 +249,8 @@ def _main():
         )
         if ket_qua["loi"]:
             print("Lỗi:", *ket_qua["loi"], sep="\n  - ")
+        phien_meta = getattr(cs_meta, "phien", None)
+        _thoat_neu_youtube_chan(phien_meta.thong_bao_dung() if phien_meta is not None else "")
         return
 
     eng = Engine()
@@ -229,6 +269,7 @@ def _main():
         )
         if ket_qua["loi"]:
             print("Lỗi:", *ket_qua["loi"][:20], sep="\n  - ")
+        _thoat_neu_youtube_chan(ket_qua.get("chan_youtube", ""))
         return
 
     if a.lenh == "dondep":
@@ -293,6 +334,7 @@ def _main():
                   *r["nghi_hong"][:10], sep="\n  - ")
         if r.get("da_doi_soat"):
             print(f"Đã bổ sung metadata tại chỗ cho {r['da_doi_soat']} file có sẵn trên đĩa.")
+        _thoat_neu_youtube_chan(r.get("chan_youtube", ""))
         print("Tiếp theo: python cli.py themclip \"%s\"" % a.kho)
         return
 
@@ -361,6 +403,13 @@ def _main():
             print(f"   • {m.clip} | {m.start_hhmmss} → {m.end_hhmmss} "
                   f"| {m.hashes} hash ({m.confidence})")
     print("\n===> Báo cáo CSV:", eng.export_csv(ket))
+    phien = getattr(eng, "phien_youtube_cuoi", None)
+    if a.lenh == "youtube" and phien is not None:
+        so = phien.tom_tat()
+        print(f"===> Truy cập YouTube: {so['youtube_operations']} thao tác, "
+              f"{so['metadata_requests']} lần lấy thông tin, {so['download_attempts']} lượt tải, "
+              f"{so['retries']} lần thử lại, {so['skipped_by_breaker']} video chưa quét.")
+        _thoat_neu_youtube_chan(phien.thong_bao_dung())
 
 
 if __name__ == "__main__":

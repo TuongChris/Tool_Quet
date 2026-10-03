@@ -23,6 +23,7 @@ import danh_sach_video
 import lich_su
 from cau_hinh import GIA_TRI_GIAO_DIEN_MAC_DINH
 from clip_metadata import configure_metadata_logging
+import truy_cap_youtube
 import ytdlp_chung
 from common_original_jobs import TEN_PHA as TEN_PHA_NGUON_CHUNG
 from common_original_jobs import CommonOriginalJobController, xuat_csv
@@ -36,7 +37,9 @@ from scan_ui import (
     build_scan_status_dataframe,
     csv_nguon_chung,
     df_nguon_chung,
+    dong_trang_thai_youtube,
     goi_y_quet_mot_phan,
+    thong_bao_youtube_chan,
 )
 from sheet_delivery import SheetDelivery, SheetDeliveryWorker, khoa_giao_hang
 from channel import ChannelSync
@@ -724,6 +727,15 @@ with st.sidebar:
             "⚠️ Cookie là chìa khoá vào tài khoản của bạn — đừng chia sẻ file đó, "
             "và nên dùng tài khoản phụ. Cookie có thể hết hạn sau vài tuần."
         )
+        # Chỉ số đếm và trạng thái — không bao giờ hiện giá trị hay tên cookie, không gọi mạng.
+        st.markdown("**Trạng thái YouTube**")
+        for muc_tt, cau_tt in dong_trang_thai_youtube(
+                truy_cap_youtube.chan_doan_cookie(
+                    c.ytdlp_cookiefile, cookies_browser=c.ytdlp_cookies_browser),
+                getattr(eng, "phien_youtube_cuoi", None)):
+            getattr(st, muc_tt)(cau_tt)
+        st.caption("Kiểm sâu hơn (một request tới YouTube): `python cli.py youtube-doctor "
+                   "--network <link video công khai>`.")
 
     st.divider()
     st.subheader("📊 Google Sheets")
@@ -1054,6 +1066,11 @@ if not job["running"] and (job["results"] or job["error"]):
         tong_match = sum(len(x.matches) for x in res)
         tong_loai = sum(len(getattr(x, "matches_loai", [])) for x in res)
         loi = [x for x in res if x.status != "ok"]
+        # Batch bị dừng vì YouTube chặn (bot-check, 429…): nói to, trước mọi thứ khác — các
+        # video «Chưa quét» KHÔNG phải âm tính và không được tính là đã quét.
+        bi_chan = thong_bao_youtube_chan(res)
+        if bi_chan:
+            st.error("🚫 " + bi_chan)
 
         # Không có kết quả thì PHẢI nói mất ở tầng nào. Trước đây chỗ này chỉ nói
         # "không tìm thấy" và khuyên hạ ngưỡng xuống 60% của kết quả mạnh nhất —

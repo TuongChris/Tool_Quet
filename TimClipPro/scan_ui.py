@@ -33,12 +33,63 @@ from typing import Any, Mapping, Optional, Sequence
 
 import pandas as pd
 
+import truy_cap_youtube as _tc
 from common_original import (
     COT_SO_NGUON_CHUNG,
     HEADER_NGUON_CHUNG,
     TEN_TRANG_THAI_CAP,
     dong_bao_cao,
 )
+
+
+def dong_trang_thai_youtube(cd: Any, phien: Any = None) -> list:
+    """Các dòng ``(mức, câu)`` cho mục «Trạng thái YouTube» ở thanh bên.
+
+    ``mức`` ∈ success/info/warning/error. ``cd``: ``truy_cap_youtube.ChanDoanCookie`` (chỉ số
+    đếm — không giá trị, không tên cookie). ``phien``: phiên YouTube của lượt chạy gần nhất
+    (``Engine.phien_youtube_cuoi``) hoặc ``None``. Không đọc file, không gọi mạng.
+    """
+    ra: list = []
+    if phien is not None and getattr(phien, "mo", False) is True:
+        ra.append(("error", phien.thong_bao_dung()))
+    elif phien is not None and getattr(phien, "cookie_bi_tu_choi", False):
+        ra.append(("warning", "Cookie cấu hình không được YouTube chấp nhận ở lượt gần nhất — "
+                              "tool đã tự chạy lại không cookie. Hãy xuất lại file cookie, hoặc "
+                              "xoá trống ô cookie."))
+    elif phien is not None and phien.tom_tat().get("youtube_operations"):
+        ra.append(("success", "Lượt gần nhất: truy cập YouTube bình thường."))
+    if not cd.cau_hinh:
+        ra.append(("info", "Cookie: chưa cấu hình."))
+    elif cd.trang_thai == _tc.COOKIE_TU_TRINH_DUYET:
+        ra.append(("info", "Cookie lấy từ trình duyệt (bạn tự cấu hình) — tool không mở profile "
+                           "trình duyệt để kiểm."))
+    elif cd.trang_thai == _tc.COOKIE_KHONG_TON_TAI:
+        ra.append(("warning", "Không thấy file cookie ở đường dẫn đã nhập."))
+    elif cd.trang_thai == _tc.COOKIE_FILE_STRUCTURALLY_VALID:
+        ra.append(("success",
+                   f"File cookie đúng cấu trúc: {cd.so_ban_ghi} bản ghi "
+                   f"({cd.so_ban_ghi_youtube} của YouTube, {cd.so_het_han} đã hết hạn), "
+                   f"{'có' if cd.co_cookie_dang_nhap else 'KHÔNG có'} cookie đăng nhập. Đúng cấu "
+                   "trúc chưa chắc YouTube còn chấp nhận phiên — chỉ lượt quét mới biết."))
+    else:
+        dong = ", ".join(str(x) for x in cd.dong_hong_dau)
+        ra.append(("error",
+                   f"File cookie sai cấu trúc (định dạng {cd.dinh_dang or '?'}, "
+                   f"{cd.so_dong_hong} dòng hỏng{f' ở dòng {dong}' if dong else ''}"
+                   f"{'' if cd.co_tieu_de else ', thiếu dòng tiêu đề Netscape'}) — yt-dlp sẽ "
+                   "từ chối; hãy xuất lại bằng tiện ích trình duyệt."))
+    return ra
+
+
+def thong_bao_youtube_chan(ket_qua: Sequence[Any]) -> str:
+    """Lý do cầu dao YouTube đã mở trong batch (rỗng nếu không): lấy từ chính kết quả "chưa
+    quét" để không phụ thuộc trạng thái engine sau này."""
+    for x in ket_qua:
+        f = getattr(x, "loi_truy_cap", None)
+        if getattr(f, "category", "") == _tc.BLOCKED_BY_BREAKER:
+            cau = getattr(f, "human_message_vi", "") or ""
+            return cau.split("Chưa quét — ", 1)[-1]
+    return ""
 
 # Ký hiệu "chưa có dữ liệu". Dùng chung để UI và test không lệch nhau.
 CHUA_CO = "—"
