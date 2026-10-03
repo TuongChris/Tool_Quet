@@ -704,7 +704,10 @@ class ChannelSync:
         """
         import yt_dlp
 
-        if "/@" in url and "/videos" not in url and "/playlist" not in url:
+        # `/channel/UC…` thiếu `/videos` làm yt-dlp trả các TAB (Videos/Shorts/Live) mang id KÊNH
+        # thay vì danh sách video (Tier 2) — cùng luật đã áp cho link `@tên`.
+        if (("/@" in url or "/channel/" in url) and "/videos" not in url
+                and "/playlist" not in url):
             url = url.rstrip("/") + "/videos"
 
         goc = cau_hinh_mang or CauHinhMang()
