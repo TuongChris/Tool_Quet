@@ -20,6 +20,8 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
    (tải kênh)   (Google Sheets)  (thư viện MIT, ĐỪNG SỬA)
         ↘        ↙
       ytdlp_chung.py        ← MỌI tuỳ chọn yt-dlp đi qua đây, không có ngoại lệ
+            ↓
+      truy_cap_youtube.py   ← MỌI lỗi YouTube được phân loại ở đây; cầu dao + thử lại hữu hạn
 ```
 
 **Quy tắc:**
@@ -32,6 +34,9 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 5. **Không bao giờ dựng dict tuỳ chọn `yt_dlp.YoutubeDL` bằng tay.** Luôn đi qua
    `ytdlp_chung.CauHinhMang.tuy_chon()`. Ba lần trong một ngày (mục 6, 6b, 6c) cùng một
    lỗi chỉ được vá ở một trong hai đường tải vì tuỳ chọn bị chép tay ở nhiều chỗ.
+6. **Mọi thao tác mạng YouTube chạy qua `PhienYouTube.chay()` của LƯỢT đang chạy** (mục 17).
+   Không tự viết vòng thử lại hay `time.sleep`, không `if "bot" in str(e)` ở nơi gọi — hiểu lỗi
+   chỉ ở `truy_cap_youtube.phan_loai_loi`. Vòng lặp nhiều video hỏi `phien.mo` trước mỗi việc mạng.
 
 ## File và vai trò
 
@@ -40,6 +45,8 @@ app.py (Streamlit UI)   cli.py (dòng lệnh)   ← lớp giao diện, thay đư
 | `engine.py` | Lõi: cắt khúc, fingerprint, so khớp, gộp trùng, SQLite, xuất CSV | Thêm/đổi logic xử lý |
 | `channel.py` | Đồng bộ kênh YouTube → kho audio nén + `clips_meta.json` | Đổi cách tải/nén/đặt tên |
 | `ytdlp_chung.py` | Tuỳ chọn yt-dlp dùng chung: cookie, giãn nhịp, đường lui player client, diễn giải lỗi | Đổi bất cứ thứ gì liên quan yt-dlp |
+| `truy_cap_youtube.py` | THUẦN: phân loại lỗi YouTube, che bí mật, chẩn đoán cookie, bảng thử lại, `PhienYouTube` (cầu dao + số đo) | Đổi cách hiểu một lỗi YouTube / ngưỡng dừng |
+| `youtube_doctor.py` | `cli.py youtube-doctor`: chẩn đoán chỉ đọc (mạng chỉ khi `--network`) | Thêm mục chẩn đoán |
 | `cap_nhat.py` | Tự cập nhật từ GitHub theo tag phiên bản | Đổi cách phát hành / triển khai |
 | `sheets.py` | Đẩy kết quả lên Google Sheets (gspread + service account) | Đổi cách ghi báo cáo |
 | `danh_sach_video.py` | Liệt kê tên video thật của một kho (chỉ đọc, offline) rồi ghi đè lên trang tính riêng | Đổi cách kiểm kê kho / cột danh sách |
@@ -632,6 +639,26 @@ video 66 tiếng mang nhãn «Giữa» (1/3 của file 3 tiếng) trong cột «
 sau cả ba chỗ đổi. → **Đổi `duration_s` ở đâu thì gọi `_dan_lai_nhan_vung` ngay sau đó.**
 Ranh giới 1/3–2/3 nay có test riêng (`tests/test_nhan_vung.py`); trước đó đổi 2/3 thành 3/4
 mà cả bộ test vẫn xanh.
+
+**17. Bị YouTube chặn thì DỪNG, đừng đâm tiếp vào tường (03/10/2026).** Chi tiết:
+`docs/YOUTUBE_ACCESS_RELIABILITY.md`. Trước bản này, mọi vòng lặp nhiều video (batch quét, Watch,
+lô nguồn chung, đồng bộ kênh, vá metadata) chạy tiếp tới hết khi YouTube đòi xác minh bot, và mỗi
+video còn thử đủ 5 player client — một lần bị chặn thành hàng chục request nữa, đúng thứ làm bị
+chặn nặng thêm (mục 6c). Lỗi chỉ được hiểu bằng vài phép so chuỗi; `Video unavailable` (chữ ký
+thật của video bị gỡ ở Tier 2) không được nhận ra; liệt kê kênh nuốt lỗi thành "kênh rỗng".
+→ **Một lượt chạy = một `PhienYouTube`**: phân loại lỗi (11 loại), thử lại CHỈ lỗi mạng tạm thời
+  và HTTP 429 theo bảng `NGAN_SACH` (nghỉ huỷ được), cầu dao mở theo `NGUONG_MO` (bot 1, 429 1,
+  cookie hỏng 1, đăng nhập 3, 403 3, mạng 3) — mở là không gửi request nào nữa trong lượt đó.
+→ **Lỗi truy cập không bao giờ là âm tính**: `status="error"` + `ScanResult.loi_truy_cap`; video
+  bị bỏ qua không vào lịch sử; lô nguồn chung CHƯA KẾT LUẬN; Watch không đẩy dòng lỗi YouTube lên
+  Sheets; CLI thoát mã 3.
+→ **403 không tự thành "cookie hỏng"**, `Video unavailable` không thành bot: đừng suy đoán mạnh
+  hơn bằng chứng. 403 ở khâu tải vẫn đổi client (mục 6); bot/đăng nhập/429/video gỡ thì không.
+→ **Khâu tải không có vòng thử lại ngoài**: chạy lại cả danh sách client sẽ đụng `.part` của client
+  khác (`don_file_do_dang`). yt-dlp tự nối tiếp bên trong, nay có nghỉ có trần.
+→ **Cổng cookie kiểm đúng luật nạp của yt-dlp**: dòng `#HttpOnly_` là bản ghi (dòng hỏng bị yt-dlp
+  in nguyên văn ra stderr), dòng 1 phải là tiêu đề Netscape. Cấu trúc đúng ≠ YouTube chấp nhận
+  phiên; chỉ request thật mới biết (`cli.py youtube-doctor --network URL`).
 
 ## Quy trình Spec-Driven (Claude lập kế hoạch → Codex viết code)
 
