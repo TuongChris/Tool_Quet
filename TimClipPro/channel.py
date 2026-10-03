@@ -34,8 +34,17 @@ from khoa import KhoaTienTrinh
 from luu_tru import cap_nhat_json, doc_json_an_toan, ghi_json_an_toan, khoa_json
 from process_runner import IM_LANG_FFMPEG_S, TRAN_FFPROBE_S, chay_lenh_media
 from publication_date import resolve_publication_date
+from truy_cap_youtube import (
+    INVALID_INPUT,
+    LoiTruyCapYouTube,
+    PhienYouTube,
+    YoutubeAccessFailure,
+    la_muc_khong_phai_video,
+    ma_tu_url,
+)
 from ytdlp_chung import (
     PLAYER_CLIENTS_MAC_DINH,
+    BoGhiYtdlp,
     CauHinhMang,
     NhoClientTotNhat,
     chay_kem_duong_lui_cookie,
@@ -307,7 +316,8 @@ class ChannelSync:
 
     def __init__(self, dest: str, network_timeout_s: Optional[int] = None,
                  player_clients: Optional[list] = None,
-                 cau_hinh_mang: Optional[CauHinhMang] = None):
+                 cau_hinh_mang: Optional[CauHinhMang] = None,
+                 phien_youtube: Optional[PhienYouTube] = None):
         # Mặc định là None chứ KHÔNG phải NETWORK_TIMEOUT_S: nếu để giá trị cứng thì
         # mọi lượt khởi tạo đều ghi đè timeout mà người dùng đã đặt trong cau_hinh.json
         # lên 30 giây, và không cách nào phân biệt "người gọi chỉ định 30" với
@@ -349,6 +359,9 @@ class ChannelSync:
         # Đồng bộ kênh chạy hàng trăm video liên tiếp nên đây là chỗ khoản tiết
         # kiệm lớn nhất: nhớ client tải được, khỏi 403 lại cho từng video.
         self.nho_client = NhoClientTotNhat()
+        # Một đối tượng = một lượt (một nút bấm, một lệnh CLI): một cầu dao. YouTube chặn ở video
+        # đầu thì không gửi thêm request nào cho hàng trăm video còn lại.
+        self.phien = phien_youtube or PhienYouTube()
 
     # ---------- metadata ----------
 
@@ -496,7 +509,7 @@ class ChannelSync:
             def fetcher(video_id: str) -> dict:
                 info = ChannelSync.lay_info_video(
                     video_id, self.network_timeout_s,
-                    cau_hinh_mang=self.cau_hinh_mang)
+                    cau_hinh_mang=self.cau_hinh_mang, phien_youtube=self.phien)
                 return {
                     # Dùng chung cách rút ngày với list_channel/sync để ba đường
                     # không hiểu khác nhau (kể cả trường hợp chỉ có timestamp).
@@ -545,6 +558,13 @@ class ChannelSync:
         try:
             for i, (ten_file, thong_tin) in enumerate(can_va, start=1):
                 video_id = thong_tin.get("id") or ""
+                if self.phien.mo:
+                    # Một request mỗi clip, liên tiếp — đúng kiểu bị coi là bot. Cầu dao mở thì
+                    # dừng; clip còn lại giữ nguyên, lần sau chạy tiếp từ chỗ dở. Trạng thái
+                    # chặn đọc ở `self.phien` (CLI `vameta` thoát mã 3).
+                    loi.append(f"{self.phien.thong_bao_dung()} Còn {tong_can_va - i + 1} mục "
+                               "chưa vá.")
+                    break
                 try:
                     if not video_id:
                         raise RuntimeError("Thiếu ID video.")
@@ -570,6 +590,8 @@ class ChannelSync:
                     # không tin nhầm cái tên đã bị làm sạch là tên thật YouTube.
                     if lay_title and ten_file in moi_seed:
                         doi(ten_file, thong_tin, "title", "")
+                    if video_id:
+                        self.phien.ghi_loi(e, "metadata", video_id)
                     loi.append(f"{ten_file}: {giai_thich_loi(e)}")
                 if progress:
                     progress(
@@ -621,15 +643,30 @@ class ChannelSync:
         video_id: str,
         network_timeout_s: int = NETWORK_TIMEOUT_S,
         cau_hinh_mang: Optional[CauHinhMang] = None,
+        *,
+        phien_youtube: Optional[PhienYouTube] = None,
     ) -> dict:
-        """Trích xuất ĐẦY ĐỦ một video (có upload_date/duration). Không tải file."""
+        """Trích xuất ĐẦY ĐỦ một video (có upload_date/duration). Không tải file.
+
+        ``phien_youtube``: phiên của LƯỢT đang chạy (cầu dao + số đo dùng chung cả lượt). Không
+        truyền thì vẫn được phân loại lỗi và thử lại hữu hạn, nhưng cầu dao chỉ sống một lần gọi.
+        Lỗi ném ra là ``LoiTruyCapYouTube`` đã phân loại.
+        """
         import yt_dlp
 
         goc = cau_hinh_mang or CauHinhMang()
-        opts = replace(goc, network_timeout_s=network_timeout_s).tuy_chon(
-            skip_download=True, noplaylist=True)
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(f"https://youtu.be/{video_id}", download=False) or {}
+        cau_hinh = replace(goc, network_timeout_s=network_timeout_s)
+        phien = phien_youtube or PhienYouTube()
+        bo_ghi = BoGhiYtdlp(phien)
+
+        def lay() -> dict:
+            opts = cau_hinh.tuy_chon("metadata", skip_download=True, noplaylist=True,
+                                     logger=bo_ghi)
+            phien.dem_yeu_cau("metadata")
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(f"https://youtu.be/{video_id}", download=False) or {}
+
+        return phien.chay("metadata", lay, video_id=video_id)
 
     @staticmethod
     def list_channel(
@@ -640,6 +677,7 @@ class ChannelSync:
         chi_tiet: Optional[Callable[[str], dict]] = None,
         progress: Optional[Callable] = None,
         cau_hinh_mang: Optional[CauHinhMang] = None,
+        phien_youtube: Optional[PhienYouTube] = None,
     ) -> list:
         """
         Lấy danh sách video của kênh mà CHƯA tải gì.
@@ -659,23 +697,45 @@ class ChannelSync:
         trong lượt tải, không tốn thêm request nào.
 
         ``chi_tiet``: hàm ``(video_id) -> dict`` để test offline.
+
+        ``phien_youtube``: phiên của lượt đang chạy (cầu dao + số đo). Bị chặn/429/mạng hỏng thì
+        ném ``LoiTruyCapYouTube`` đã phân loại — KHÔNG trả danh sách rỗng như thể kênh không có
+        video. Link kênh mà yt-dlp trả về các TAB thay vì video thì báo rõ, không coi tab là video.
         """
         import yt_dlp
 
         if "/@" in url and "/videos" not in url and "/playlist" not in url:
             url = url.rstrip("/") + "/videos"
 
-        opts = (cau_hinh_mang or CauHinhMang()).tuy_chon(
-            extract_flat="in_playlist", ignoreerrors=True, skip_download=True)
-        if limit:
-            opts["playlistend"] = limit
+        goc = cau_hinh_mang or CauHinhMang()
+        phien = phien_youtube or PhienYouTube()
+        bo_ghi = BoGhiYtdlp(phien)
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        def liet_ke() -> dict:
+            opts = goc.tuy_chon("listing", extract_flat="in_playlist", ignoreerrors=True,
+                                skip_download=True, logger=bo_ghi)
+            if limit:
+                opts["playlistend"] = limit
+            phien.dem_yeu_cau("listing")
+            bo_ghi.loi.clear()
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            if not info and bo_ghi.loi:
+                # `ignoreerrors` đã nuốt lỗi và trả None: lấy lại câu lỗi thật để phân loại —
+                # trước đây thành "kênh không có video nào" (đổ lỗi cho link).
+                raise RuntimeError(bo_ghi.loi[-1])
+            return info or {}
 
-        ds = []
+        info = phien.chay("listing", liet_ke)
+
+        ds, khong_phai_video = [], 0
         for e in (info or {}).get("entries", []) or []:
             if not e or not e.get("id"):
+                continue
+            if la_muc_khong_phai_video(e):
+                # Tab/playlist con, không phải video (Tier 2: `/channel/UC…` thiếu `/videos`
+                # trả về tab Videos/Shorts/Live mang id KÊNH) — không bao giờ đem đi quét.
+                khong_phai_video += 1
                 continue
             ds.append(VideoInfo(
                 id=e["id"],
@@ -684,6 +744,14 @@ class ChannelSync:
                 duration=float(e.get("duration") or 0),
                 url=e.get("url") or f"https://www.youtube.com/watch?v={e['id']}",
             ))
+        if khong_phai_video and not ds:
+            raise LoiTruyCapYouTube(YoutubeAccessFailure(
+                category=INVALID_INPUT, operation="listing",
+                human_message_vi=(
+                    "Link kênh trả về các TAB (Videos/Shorts/Live) thay vì danh sách video — "
+                    "hãy dùng link dạng https://www.youtube.com/@tên, hoặc thêm /videos vào cuối "
+                    "link /channel/UC…. Chưa có video nào được lấy từ link này."),
+                technical_summary=f"{khong_phai_video} mục không phải mã video (id kênh/tab)."))
 
         if not lay_ngay_dang:
             return ds
@@ -694,23 +762,26 @@ class ChannelSync:
         # cookie và mất nhịp người dùng đặt, ngay tại nơi cần chúng nhất.
         # `chi_tiet` do người gọi truyền vào giữ nguyên chữ ký (video_id) -> dict.
         def _lay_mac_dinh(video_id: str) -> dict:
-            goc = cau_hinh_mang or CauHinhMang()
             return ChannelSync.lay_info_video(
-                video_id, goc.network_timeout_s, cau_hinh_mang=goc)
+                video_id, goc.network_timeout_s, cau_hinh_mang=goc, phien_youtube=phien)
 
-        lay = chi_tiet or _lay_mac_dinh
+        lay_chi_tiet = chi_tiet or _lay_mac_dinh
         con_thieu = [i for i, v in enumerate(ds) if not v.upload_date]
         for thu_tu, i in enumerate(con_thieu, start=1):
+            if phien.mo:
+                # Cầu dao mở: không hỏi thêm. Mục còn lại giữ ngày rỗng (hiện là thiếu, không bịa).
+                break
             if progress:
                 progress(
                     thu_tu / len(con_thieu),
                     f"[{thu_tu}/{len(con_thieu)}] Lấy ngày đăng: {ds[i].title[:50]}",
                 )
             try:
-                ds[i] = bo_sung_video_info(ds[i], lay(ds[i].id))
-            except Exception:  # noqa: BLE001
+                ds[i] = bo_sung_video_info(ds[i], lay_chi_tiet(ds[i].id))
+            except Exception as e:  # noqa: BLE001
                 # Một video bị xoá/riêng tư không được làm hỏng cả danh sách; mục đó
-                # giữ ngày rỗng và sẽ hiện là thiếu chứ không bị bịa.
+                # giữ ngày rỗng và sẽ hiện là thiếu chứ không bị bịa. Bị CHẶN thì cầu dao mở.
+                phien.ghi_loi(e, "metadata", ds[i].id)
                 continue
         return ds
 
@@ -740,7 +811,11 @@ class ChannelSync:
         """
         import yt_dlp
 
+        phien = self.phien
+        bo_ghi = BoGhiYtdlp(phien)
+
         def chay(rieng: dict):
+            phien.dem_yeu_cau("download")
             with yt_dlp.YoutubeDL(rieng) as ydl:
                 return ydl.extract_info(url, download=True)
 
@@ -763,13 +838,23 @@ class ChannelSync:
         def tai_voi(cau_hinh):
             return thu_tung_client(
                 cau_hinh.player_clients(self.player_clients), chay,
-                cau_hinh.tuy_chon(**rieng), truoc_khi_thu_lai=don_file_do_dang,
-                bo_nho=self.nho_client)
+                cau_hinh.tuy_chon("download", logger=bo_ghi, **rieng),
+                truoc_khi_thu_lai=don_file_do_dang, bo_nho=self.nho_client,
+                khi_that_bai=lambda _ten, _loi: phien.ghi_doi_client(),
+                # Bị nghi là bot/đòi đăng nhập/429/video gỡ: đổi client cũng vô ích (mục 6c).
+                dung_ngay=phien.nen_dung_doi_client)
 
         # Cookie hết hiệu lực làm YouTube chỉ trả storyboard nên MỌI client đều hỏng;
         # đường lui cookie phải bọc NGOÀI đường lui client. Đường quét (engine.py) làm
-        # y hệt — hai đường dùng chung `chay_kem_duong_lui_cookie`.
-        return chay_kem_duong_lui_cookie(self.cau_hinh_mang, tai_voi)
+        # y hệt — hai đường dùng chung `chay_kem_duong_lui_cookie`. Ngoài cùng là phiên:
+        # cầu dao mở thì không gửi request; lỗi được phân loại và ghi vào cầu dao.
+        return phien.chay(
+            "download",
+            lambda: chay_kem_duong_lui_cookie(self.cau_hinh_mang, tai_voi,
+                                              khi_bo_cookie=phien.ghi_lui_cookie),
+            video_id=ma_tu_url(url),
+            cancel_event=getattr(self, "_huy_luot_sync", None), loi_huy=DaHuyDongBo,
+            bo_qua=(DaHuyDongBo,))
 
     @staticmethod
     def kiem_file_audio(path: str, tham_chieu_s: float = 0.0) -> tuple:
@@ -909,7 +994,8 @@ class ChannelSync:
             info = self._tai_thu_tung_client(v.url, dict(
                 format="ba/b",
                 outtmpl=os.path.join(thu_muc, "%(id)s.%(ext)s"),
-                noplaylist=True, continuedl=True, retries=10, fragment_retries=10,
+                # Số lần yt-dlp tự thử lại + nghỉ giữa chúng: bảng NGAN_SACH["download"].
+                noplaylist=True, continuedl=True,
             ))
             tho = [os.path.join(thu_muc, f) for f in os.listdir(thu_muc)
                    if f.startswith(vid + ".") and not f.endswith((".part", ".ytdl"))
@@ -1025,7 +1111,10 @@ class ChannelSync:
         ds, da_gap = [], set()
         # Danh sách phát có thể lặp CÙNG một video: tải hai lần thì lần sau từng cách ly
         # nhầm bản tốt của lần trước.
-        for v in self.list_channel(url, limit, cau_hinh_mang=self.cau_hinh_mang) or []:
+        # Bị chặn/429/mạng hỏng thì `list_channel` ném lỗi ĐÃ PHÂN LOẠI — không còn rơi xuống
+        # câu "Kiểm tra lại link kênh" bên dưới (câu đó chỉ đúng khi YouTube trả danh sách rỗng).
+        for v in self.list_channel(url, limit, cau_hinh_mang=self.cau_hinh_mang,
+                                   phien_youtube=self.phien) or []:
             if v.id not in da_gap:
                 da_gap.add(v.id)
                 ds.append(v)
@@ -1039,7 +1128,8 @@ class ChannelSync:
         self._ngan_hon_youtube = set()
         loi: list = []
         kq = {"tong": len(ds), "moi": 0, "bo_qua": 0, "loi": loi, "thu_muc": self.dest,
-              "da_huy": False, "nghi_hong": [], "da_cach_ly": [], "da_doi_soat": 0}
+              "da_huy": False, "nghi_hong": [], "da_cach_ly": [], "da_doi_soat": 0,
+              "chan_youtube": "", "youtube": {}}
         # Cờ huỷ của CẢ lượt sync, để lệnh nén FFmpeg đang chạy cũng dừng được.
         self._huy_luot_sync = _CoHuyTuHam(cancel_check)
         try:
@@ -1084,6 +1174,12 @@ class ChannelSync:
             for i, v in enumerate(can_tai):
                 if cancel_check and cancel_check():
                     kq["da_huy"] = True
+                    break
+                if self.phien.mo:
+                    # YouTube đã chặn (bot-check, 429, 403 lặp lại…): không tải tiếp hàng trăm
+                    # video còn lại. Kho giữ nguyên; lần đồng bộ sau tải tiếp phần còn thiếu.
+                    kq["chan_youtube"] = self.phien.thong_bao_dung()
+                    loi.append(f"{kq['chan_youtube']} Còn {len(can_tai) - i} video chưa tải.")
                     break
                 bao(0.02 + 0.96 * i / max(1, len(can_tai)),
                     f"[{i+1}/{len(can_tai)}] {v.title[:60]}")
@@ -1130,10 +1226,15 @@ class ChannelSync:
                 except Exception as e:  # noqa: BLE001
                     # giai_thich_loi: bỏ mã màu ANSI của yt-dlp (Streamlit hiện ra rác)
                     # và nói rõ trường hợp nào là YouTube chặn chứ không phải tool hỏng.
+                    self.phien.ghi_loi(e, "download", v.id)
                     loi.append(f"{v.title[:40]}: "
                                f"{giai_thich_loi(e, self.cau_hinh_mang.co_cookie)}")
+            if self.phien.mo and not kq["chan_youtube"]:
+                # Cầu dao mở ở chính video cuối cùng: vẫn phải nói rõ cho người dùng.
+                kq["chan_youtube"] = self.phien.thong_bao_dung()
         finally:
             kq["da_cach_ly"] = list(self._da_cach_ly)
+            kq["youtube"] = self.phien.tom_tat()
             # Chỉ dọn thư mục tạm CỦA LƯỢT NÀY.
             shutil.rmtree(self.tmp_dir, ignore_errors=True)
             with contextlib.suppress(OSError):
@@ -1369,7 +1470,8 @@ class ChannelSync:
         Đối chiếu kênh YouTube với thư mục kho: còn thiếu đúng những video nào.
         Không tải gì cả — chỉ đọc danh sách.
         """
-        ds = self.list_channel(url, limit, cau_hinh_mang=self.cau_hinh_mang)
+        ds = self.list_channel(url, limit, cau_hinh_mang=self.cau_hinh_mang,
+                               phien_youtube=self.phien)
         tren_dia = self.quet_id_tren_dia()
         # File nghi hỏng tính là CÒN THIẾU — lượt đồng bộ sẽ tải lại nó (audit TCP-10).
         tep = self.kiem_tep_tren_dia({v.id: v.duration for v in ds})

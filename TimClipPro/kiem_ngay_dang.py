@@ -28,10 +28,12 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass, field
+from typing import Optional
 
 from channel import ChannelSync
 from clip_metadata import extract_youtube_id, filename_fallback_parts
 from luu_tru import cap_nhat_json
+from truy_cap_youtube import PhienYouTube, che_bi_mat
 from publication_date import (
     MUI_GIO_MAC_DINH,
     TRUONG_EPOCH,
@@ -129,8 +131,21 @@ def in_audit(kho: str, tk: ThongKe, mui_gio: str) -> None:
         )
 
 
-def _fetcher_mac_dinh(video_id: str, timeout: int = 30) -> dict:
-    return ChannelSync.lay_info_video(video_id, timeout)
+def _cau_hinh_mang_mac_dinh():
+    """Cookie + nhịp tải người dùng đã đặt trong ``data/cau_hinh.json`` (CLAUDE.md mục 9: tham
+    số mạng có giá trị mặc định là bẫy — thiếu thì lặng lẽ mất cookie và mất nhịp)."""
+    from engine import thu_muc_data_mac_dinh
+    from ytdlp_chung import CauHinhMang
+
+    return CauHinhMang.tu_file_cau_hinh(thu_muc_data_mac_dinh())
+
+
+def _fetcher_mac_dinh(video_id: str, timeout: Optional[int] = None, *,
+                      phien_youtube: Optional[PhienYouTube] = None) -> dict:
+    cau_hinh = _cau_hinh_mang_mac_dinh()
+    return ChannelSync.lay_info_video(
+        video_id, int(timeout or cau_hinh.network_timeout_s), cau_hinh_mang=cau_hinh,
+        phien_youtube=phien_youtube)
 
 
 def repair(
@@ -152,7 +167,15 @@ def repair(
     tục được từ chỗ dở.
     """
     cs, meta = _doc_meta(kho)
-    fetcher = fetcher or _fetcher_mac_dinh
+    # Một lượt sửa = một phiên YouTube: bị nghi là bot/429 ở clip đầu thì dừng NGAY — trước đây
+    # phải đợi đủ ``dung_sau_n_loi`` (25) request hỏng liên tiếp mới dừng.
+    phien = PhienYouTube()
+    if fetcher is None:
+        cau_hinh = _cau_hinh_mang_mac_dinh()
+
+        def fetcher(video_id: str) -> dict:
+            return ChannelSync.lay_info_video(video_id, cau_hinh.network_timeout_s,
+                                              cau_hinh_mang=cau_hinh, phien_youtube=phien)
 
     khong_doi = da_doi = bo_qua = that_bai = 0
     loi_lien_tiep = 0
@@ -182,6 +205,9 @@ def repair(
             if not video_id:
                 bo_qua += 1
                 continue
+            if phien.mo:
+                dung_som = True
+                break
             da_xu_ly += 1
             if nghi_giay > 0 and da_xu_ly > 1:
                 time.sleep(nghi_giay)
@@ -192,11 +218,13 @@ def repair(
             except Exception as e:  # noqa: BLE001
                 that_bai += 1
                 loi_lien_tiep += 1
-                loi.append(f"{ten}: {type(e).__name__}: {str(e)[:160]}")
+                phien.ghi_loi(e, "metadata", video_id)
+                loi.append(f"{ten}: {type(e).__name__}: {che_bi_mat(str(e))[:160]}")
                 if loi_lien_tiep >= dung_sau_n_loi:
                     dung_som = True
                     break
                 continue
+            phien.ghi_thanh_cong("metadata")
             loi_lien_tiep = 0
         else:
             da_xu_ly += 1
@@ -254,6 +282,8 @@ def repair(
         "da_ghi": bool(apply),
         "dung_som": dung_som,
         "con_lai": max(0, len(meta) - da_xu_ly),
+        "chan_youtube": phien.thong_bao_dung(),
+        "youtube": phien.tom_tat(),
     }
 
 
@@ -318,7 +348,10 @@ def main() -> int:
     print(f"Bỏ qua:     {kq['bo_qua']}")
     print(f"Thất bại:   {kq['that_bai']}")
     print(f"Đã ghi:     {kq['da_ghi']}")
-    if kq["dung_som"]:
+    if kq.get("chan_youtube"):
+        print(f"\nDỪNG SỚM: {kq['chan_youtube']} Còn {kq['con_lai']} clip chưa xử lý; chạy lại "
+              "đúng lệnh này sau đó — clip đã sửa sẽ được bỏ qua.")
+    elif kq["dung_som"]:
         print(
             f"\nDỪNG SỚM: quá nhiều lỗi liên tiếp — nhiều khả năng YouTube đang chặn "
             f"chống bot. Còn {kq['con_lai']} clip chưa xử lý.\n"
