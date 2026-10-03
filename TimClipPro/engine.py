@@ -45,6 +45,7 @@ from typing import Callable, Iterable, Optional
 
 import channel
 import cau_hinh
+import truy_cap_youtube
 import ytdlp_chung
 import dossier
 import lich_su
@@ -423,6 +424,11 @@ class ScanResult:
     # với ứng viên đạt mà không được chọn. Chỉ sống trong bộ nhớ: không vào lịch sử, không vào
     # báo cáo 16/34 cột, không đổi phép so sánh `==`.
     ung_vien_dat: list = field(default_factory=list, repr=False, compare=False)
+    # Lỗi truy cập YouTube ĐÃ PHÂN LOẠI (`truy_cap_youtube.YoutubeAccessFailure`) khi lượt này
+    # hỏng vì YouTube/mạng/cookie, hoặc bị cầu dao bỏ qua; ``None`` = không phải lỗi YouTube.
+    # Lỗi truy cập KHÔNG BAO GIỜ là "không tìm thấy": status luôn "error". Chỉ sống trong bộ
+    # nhớ (Watch dựa vào nó để không đẩy dòng lỗi lên Sheets) — không vào lịch sử hay báo cáo.
+    loi_truy_cap: Optional[object] = field(default=None, repr=False, compare=False)
 
     @property
     def quet_day_du(self) -> bool:
@@ -935,6 +941,11 @@ class Engine:
         # Nhớ client vừa tải được, để không trả giá 403 cho TỪNG video khi thứ tự
         # mong muốn đang bị YouTube chặn. Tự quên sau 30 phút để dò lại.
         self.nho_client = ytdlp_chung.NhoClientTotNhat()
+        # Phiên YouTube (cầu dao + số đo) của LƯỢT đang chạy. Engine gốc không giữ phiên lâu
+        # dài — mở rồi là dừng hẳn lượt đó; bản ghim cho một job tự tạo phiên của job
+        # (`phien_youtube_hien_tai`), Watch mở một phiên cho cả lượt (`mo_phien_youtube`).
+        self._phien_youtube: Optional[truy_cap_youtube.PhienYouTube] = None
+        self.phien_youtube_cuoi: Optional[truy_cap_youtube.PhienYouTube] = None
         self.chan_doan_quet = ChanDoanQuet()
         self.cau_hinh_da_luu: dict = {}
 
@@ -1336,6 +1347,8 @@ class Engine:
         self.chan_doan_quet = job.chan_doan_quet
         self.canh_bao_gop = job.canh_bao_gop
         self.canh_bao_mang = job.canh_bao_mang
+        # Bảng điều khiển/CLI đọc lại trạng thái YouTube của lượt vừa xong (bị chặn? số đo).
+        self.phien_youtube_cuoi = getattr(job, "_phien_youtube", None)
 
     @contextlib.contextmanager
     def phien_job(self):
@@ -1350,6 +1363,37 @@ class Engine:
             yield job
         finally:
             self._nhan_ket_qua_job(job)
+
+    def phien_youtube_hien_tai(self) -> "truy_cap_youtube.PhienYouTube":
+        """Phiên YouTube (cầu dao + số đo) của lượt đang chạy.
+
+        Bản ghim cho một job tạo phiên LẦN ĐẦU cần tới và giữ nó tới hết job — mọi video trong
+        batch dùng chung một cầu dao. Lượt chạy đang mở (`mo_phien_youtube`, ví dụ Watch) thì
+        bản ghim dùng chung phiên đó qua `copy.copy`. Engine gốc không có lượt nào đang mở:
+        trả một phiên dùng một lần (vẫn phân loại + thử lại hữu hạn), KHÔNG giữ lại — cầu dao
+        mở ở lượt trước không được chặn lượt sau.
+        """
+        if self._phien_youtube is not None:
+            return self._phien_youtube
+        phien = truy_cap_youtube.PhienYouTube()
+        if getattr(self, "_la_ban_ghim", False):
+            self._phien_youtube = phien
+        return phien
+
+    @contextlib.contextmanager
+    def mo_phien_youtube(self):
+        """Một phiên YouTube cho CẢ một lượt gồm nhiều job lẻ (Watch: mỗi video một
+        ``scan_youtube``). Hết lượt thì đóng; lượt sau bắt đầu với cầu dao đóng."""
+        if self._phien_youtube is not None:
+            yield self._phien_youtube
+            return
+        phien = truy_cap_youtube.PhienYouTube()
+        self._phien_youtube = phien
+        try:
+            yield phien
+        finally:
+            self._phien_youtube = None
+            self.phien_youtube_cuoi = phien
 
     def danh_tinh_kho(self) -> dict:
         """Định danh bền, tên và phiên bản hiệu lực của kho đang dùng/đang ghim. Chỉ đọc."""
@@ -2123,18 +2167,27 @@ class Engine:
         fetcher: Optional[Callable[[str], dict]] = None,
         max_retries: int = 3,
     ) -> dict:
-        """Vá field thiếu vào snapshot; chỉ caller rõ ràng mới kích hoạt I/O mạng."""
+        """Vá field thiếu vào snapshot; chỉ caller rõ ràng mới kích hoạt I/O mạng.
+
+        ``max_retries``: trần TỔNG số lần thử mỗi clip (1..5). Chỉ lỗi mạng tạm thời / HTTP 429
+        mới được thử lại, nghỉ theo bảng và huỷ được (`truy_cap_youtube.NGAN_SACH`); video bị
+        gỡ không thử lại, bị nghi là bot thì DỪNG cả lượt (cầu dao) thay vì hỏi tiếp từng clip.
+        """
         max_retries = max(1, min(int(max_retries), 5))
         prepared = self.khoi_phuc_metadata_offline(dry_run=False)
         if prepared.errors:
             raise RuntimeError("; ".join(prepared.errors))
+        phien = self.phien_youtube_hien_tai()
 
         if fetcher is None:
+            bo_ghi = ytdlp_chung.BoGhiYtdlp(phien)
+
             def fetcher(video_id: str) -> dict:
                 import yt_dlp
 
                 options = self.cau_hinh_mang().tuy_chon(
-                    skip_download=True, noplaylist=True, retries=2)
+                    "metadata", skip_download=True, noplaylist=True, logger=bo_ghi)
+                phien.dem_yeu_cau("metadata")
                 with yt_dlp.YoutubeDL(options) as ydl:
                     info = ydl.extract_info(
                         f"https://youtu.be/{video_id}",
@@ -2187,20 +2240,26 @@ class Engine:
             errors: list[str] = []
             for index, (name, current) in enumerate(candidates, start=1):
                 self._check_cancel()
+                if phien.mo:
+                    errors.append(f"{phien.thong_bao_dung()} Còn {total - index + 1} clip "
+                                  "chưa vá; chạy lại sau để vá tiếp.")
+                    break
                 fetched = None
                 last_error = None
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        fetched = fetcher(current.video_id)
-                        break
-                    except Exception as exc:  # noqa: BLE001 - retry có giới hạn
-                        last_error = exc
-                        if attempt < max_retries:
-                            time.sleep(min(2.0, 0.5 * (2 ** (attempt - 1))))
+                try:
+                    # Thử lại theo bảng chung (chỉ lỗi mạng tạm thời / 429, nghỉ huỷ được) —
+                    # không còn vòng `for` + `time.sleep` riêng thử lại cả video bị gỡ.
+                    fetched = phien.chay(
+                        "metadata", lambda vid=current.video_id: fetcher(vid),
+                        video_id=current.video_id, cancel_event=self.cancel_event,
+                        loi_huy=Cancelled, toi_da_lan=max_retries, bo_qua=(Cancelled,))
+                except truy_cap_youtube.LoiTruyCapYouTube as exc:
+                    last_error = exc
                 if fetched is None:
+                    loai = (last_error.that_bai.category if last_error is not None
+                            else "UnknownError")
                     errors.append(
-                        f"{basename_compatible(name)}: "
-                        f"{type(last_error).__name__ if last_error else 'UnknownError'}: "
+                        f"{basename_compatible(name)}: {loai}: "
                         f"{last_error or 'không có dữ liệu'}"
                     )
                     LOGGER_METADATA.warning(
@@ -2209,7 +2268,7 @@ class Engine:
                         self.kho_dang_dung,
                         basename_compatible(name),
                         current.video_id,
-                        type(last_error).__name__ if last_error else "UnknownError",
+                        loai,
                     )
                 elif not isinstance(fetched, dict):
                     errors.append(f"{basename_compatible(name)}: response không phải object.")
@@ -2299,6 +2358,8 @@ class Engine:
             "bo_qua": unchanged,
             "loi": errors,
             "snapshot_path": snapshot_path,
+            "chan_youtube": phien.thong_bao_dung(),
+            "youtube": phien.tom_tat(),
         }
 
     def _audfprint_cmd(
@@ -3089,16 +3150,41 @@ class Engine:
     def youtube_info(self, url: str) -> dict:
         import yt_dlp
 
+        phien = self.phien_youtube_hien_tai()
+        bo_ghi = ytdlp_chung.BoGhiYtdlp(phien)
+
         def lay(cau_hinh):
-            opts = cau_hinh.tuy_chon(noplaylist=True, skip_download=True)
+            # `extract_flat="in_playlist"`: link kênh/danh sách phát lọt vào ô quét video thì
+            # yt-dlp KHÔNG resolve từng video (N request) — chỉ một request rồi bị từ chối dưới.
+            # Video đơn không bị ảnh hưởng (cờ này chỉ áp cho mục bên trong danh sách).
+            opts = cau_hinh.tuy_chon("metadata", noplaylist=True, skip_download=True,
+                                     extract_flat="in_playlist", logger=bo_ghi)
+            phien.dem_yeu_cau("metadata")
             with yt_dlp.YoutubeDL(opts) as ydl:
                 return ydl.extract_info(url, download=False)
 
-        # Cookie chết làm YouTube chỉ trả storyboard, và yt-dlp báo "Requested format
-        # is not available" — câu chữ dẫn người dùng đi sai hướng hoàn toàn. Tự lùi về
-        # không-cookie thay vì để cả lượt quét chết.
-        info = ytdlp_chung.chay_kem_duong_lui_cookie(
-            self.cau_hinh_mang(), lay, khi_bo_cookie=self._canh_bao_cookie_chet)
+        def bo_cookie(loi: BaseException) -> None:
+            self._canh_bao_cookie_chet(loi)
+            phien.ghi_lui_cookie(loi)
+
+        def mot_luot() -> dict:
+            # Cookie chết làm YouTube chỉ trả storyboard, và yt-dlp báo "Requested format
+            # is not available" — câu chữ dẫn người dùng đi sai hướng hoàn toàn. Tự lùi về
+            # không-cookie thay vì để cả lượt quét chết.
+            ket = ytdlp_chung.chay_kem_duong_lui_cookie(
+                self.cau_hinh_mang(), lay, khi_bo_cookie=bo_cookie)
+            if not isinstance(ket, dict):
+                raise RuntimeError("yt-dlp không trả thông tin video.")
+            if ket.get("_type") in ("playlist", "multi_video") or "entries" in ket:
+                raise RuntimeError("Link này không phải một video (yt-dlp trả về danh sách "
+                                   f"«{ket.get('id') or ''}»).")
+            return ket
+
+        # Phiên: cầu dao mở thì không gửi request; lỗi được phân loại, mạng chập chờn/429 thử
+        # lại có giới hạn và nghỉ huỷ được (`truy_cap_youtube.NGAN_SACH["metadata"]`).
+        info = phien.chay("metadata", mot_luot, video_id=truy_cap_youtube.ma_tu_url(url),
+                          cancel_event=self.cancel_event, loi_huy=Cancelled,
+                          bo_qua=(Cancelled,))
         # Ngày đăng phải được chốt NGAY TẠI ĐÂY, ở tầng nạp metadata. Exporter chỉ
         # định dạng lại, không bao giờ hỏi YouTube lần nữa.
         ngay = resolve_publication_date(info)
@@ -3166,15 +3252,17 @@ class Engine:
             elif d.get("status") == "finished":
                 self._bao(progress, 0.40, "Tải xong, đang chuẩn bị xử lý...")
 
+        phien = self.phien_youtube_hien_tai()
         # Tách phần riêng ra dict để dựng lại được tuỳ chọn với cấu hình mạng khác
         # (đường lui khi cookie hết hạn dựng lại toàn bộ opts, không sửa tại chỗ).
+        # Số lần yt-dlp tự thử lại + nghỉ giữa chúng: bảng NGAN_SACH["download"] (một nơi).
         rieng_cua_tai = dict(
             format=self.config.ytdlp_format,
             outtmpl=os.path.join(self.dl_dir, ten + ".%(ext)s"),
             noplaylist=True,
             continuedl=True,          # đứt mạng thì lần sau tải tiếp
-            retries=10, fragment_retries=10,
             progress_hooks=[hook],
+            logger=ytdlp_chung.BoGhiYtdlp(phien),
         )
         if gioi_han_giay:
             # `download_ranges` là HÀM (info_dict, ydl) -> Iterable[Section], KHÔNG
@@ -3196,14 +3284,16 @@ class Engine:
 
         def ghi_that_bai(ten: str, loi: BaseException) -> None:
             da_thu.append(ten)
+            phien.ghi_doi_client()
             LOGGER_SCAN.warning(
                 "event=download.client_failed video=%s client=%s loi=%s",
-                video_id, ten, ytdlp_chung.go_ma_mau(loi)[:200],
+                video_id, ten, ytdlp_chung.che_bi_mat(ytdlp_chung.go_ma_mau(loi))[:200],
             )
             self._bao(progress, 0.05,
                       f"Cách tải «{ten}» không được, đang thử cách khác...")
 
         def chay(rieng: dict):
+            phien.dem_yeu_cau("download")
             with yt_dlp.YoutubeDL(rieng) as ydl:
                 ydl.download([url])
 
@@ -3230,22 +3320,32 @@ class Engine:
             return ytdlp_chung.thu_tung_client(
                 cau_hinh.player_clients(self.config.ytdlp_player_clients),
                 chay,
-                cau_hinh.tuy_chon(**rieng_cua_tai),
+                cau_hinh.tuy_chon("download", **rieng_cua_tai),
                 khi_that_bai=ghi_that_bai,
                 bo_qua=(Cancelled,),   # huỷ là ý người dùng, không thử tiếp
                 truoc_khi_thu_lai=don_file_do_dang,
                 khi_thanh_cong=ghi_thanh_cong,
                 bo_nho=self.nho_client,
+                # Bị nghi là bot/đòi đăng nhập/429/video gỡ: đổi client cũng vô ích (mục 6c)
+                # — trước đây mỗi video vẫn thử đủ 5 client vào đúng bức tường đó.
+                dung_ngay=phien.nen_dung_doi_client,
             )
 
+        def bo_cookie(loi: BaseException) -> None:
+            self._canh_bao_cookie_chet(loi)
+            phien.ghi_lui_cookie(loi)
+
         goc = self.cau_hinh_mang()
-        try:
-            # Đường lui cookie bọc NGOÀI đường lui client: cookie chết thì mọi client
-            # đều hỏng, nên thử hết client rồi mới bỏ cookie và thử lại từ đầu.
-            ytdlp_chung.chay_kem_duong_lui_cookie(
-                goc, tai_voi, khi_bo_cookie=self._canh_bao_cookie_chet)
-        except RuntimeError as e:
-            raise RuntimeError(ytdlp_chung.giai_thich_loi(e, goc.co_cookie)) from e
+        # Đường lui cookie bọc NGOÀI đường lui client: cookie chết thì mọi client
+        # đều hỏng, nên thử hết client rồi mới bỏ cookie và thử lại từ đầu. Ngoài cùng là
+        # phiên: cầu dao mở thì không gửi request; lỗi được phân loại thành câu tiếng Việt
+        # (`LoiTruyCapYouTube`) và ghi vào cầu dao. Khâu tải KHÔNG có vòng thử lại ngoài —
+        # chạy lại cả danh sách client sẽ đụng `.part` của client khác (xem `don_file_do_dang`).
+        phien.chay("download",
+                   lambda: ytdlp_chung.chay_kem_duong_lui_cookie(goc, tai_voi,
+                                                                 khi_bo_cookie=bo_cookie),
+                   video_id=video_id, cancel_event=self.cancel_event, loi_huy=Cancelled,
+                   bo_qua=(Cancelled,))
 
         san_co = [f for f in glob.glob(os.path.join(self.dl_dir, ten + ".*"))
                   if not f.endswith((".part", ".ytdl"))]
@@ -4705,6 +4805,9 @@ class Engine:
         except Exception as e:
             kq.status, kq.note = "error", ytdlp_chung.giai_thich_loi(
                 e, self.cau_hinh_mang().co_cookie)
+            # Lỗi YouTube đã phân loại (bị chặn, cần đăng nhập, gỡ, mạng...) — để Watch/UI phân
+            # biệt với lỗi xử lý, và để không bao giờ bị hiểu là "không tìm thấy".
+            kq.loi_truy_cap = truy_cap_youtube.tim_loi_truy_cap(e)
         # Cảnh báo mạng phải đi kèm kết quả, nếu không người dùng chỉ thấy "chạy được"
         # mà không biết cookie đã chết và tool đang âm thầm chạy không cookie.
         if self.canh_bao_mang:
@@ -4853,6 +4956,9 @@ class Engine:
         if xoa_co_huy and not getattr(self, "_la_ban_ghim", False):
             self.cancel_event.clear()
         job = self._ban_sao_cho_job()
+        # Cả batch dùng MỘT cầu dao: YouTube đòi xác minh bot / 429 / đăng nhập lặp lại thì các
+        # video còn lại KHÔNG được gửi request nào (trước đây chạy tiếp tới hết batch).
+        phien = job.phien_youtube_hien_tai() if source_type == "youtube" else None
         try:
             for i, x in enumerate(nguon, 1):
                 if self.cancel_event.is_set():
@@ -4864,10 +4970,16 @@ class Engine:
                     self._bao(progress, (i - 1 + pct) / max(1, tong),
                               f"[{i}/{tong}] {msg}")
 
-                ket_qua = (
-                    job.scan_youtube(x, p) if source_type == "youtube"
-                    else job.scan_media(x, progress=p)
-                )
+                if phien is not None and phien.mo:
+                    # Kết quả "chưa quét" tường minh: không tải, không ghi lịch sử (Watch sẽ
+                    # quét lại), không bao giờ là âm tính.
+                    ket_qua = job._ket_qua_bo_qua(x, phien)
+                    p(1.0, "Chưa quét — đã dừng yêu cầu mới tới YouTube.")
+                else:
+                    ket_qua = (
+                        job.scan_youtube(x, p) if source_type == "youtube"
+                        else job.scan_media(x, progress=p)
+                    )
                 if on_video:
                     try:
                         on_video(i, tong, ket_qua)
@@ -4878,6 +4990,15 @@ class Engine:
                 yield ket_qua
         finally:
             self._nhan_ket_qua_job(job)
+
+    def _ket_qua_bo_qua(self, url: str,
+                        phien: "truy_cap_youtube.PhienYouTube") -> ScanResult:
+        """Kết quả cho video KHÔNG được quét vì cầu dao YouTube đã mở — không gửi request nào."""
+        f = phien.bo_qua(truy_cap_youtube.ma_tu_url(url), "scan")
+        kq = ScanResult(source_name=url, source_ref=url, status="error",
+                        note=f.human_message_vi, loi_truy_cap=f)
+        self._gan_danh_tinh(kq)
+        return kq
 
     def scan_many(self, nguon: Iterable, source_type: str = "youtube",
                   progress: Optional[Callable] = None) -> list:

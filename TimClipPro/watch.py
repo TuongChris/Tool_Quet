@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Mô hình dữ liệu và lưu trữ danh sách nguồn YouTube cần theo dõi."""
 
+import contextlib
 from dataclasses import asdict, dataclass, field
 import os
 import re
@@ -12,6 +13,8 @@ from don_dep import don_job_quet, don_kho_dem
 from khoa import DangChayRoi, KhoaTienTrinh
 from luu_tru import doc_json_an_toan, ghi_json_an_toan
 from sheets import SheetsExporter
+from truy_cap_youtube import PhienYouTube
+from ytdlp_chung import giai_thich_loi
 
 
 @dataclass
@@ -54,6 +57,11 @@ class BaoCao:
     # Lượt không chạy vì một tác vụ khác đang giữ `tool.lock` — "bận", không phải lỗi
     # (CLI thoát mã 2 để lịch chạy phân biệt được; phản biện vòng 3).
     ban: bool = False
+    # YouTube chặn truy cập (bot-check, 429, đăng nhập/403 lặp lại…): cầu dao đã mở và lượt
+    # DỪNG gửi request. Video chưa quét KHÔNG được tính là đã quét (CLI thoát mã 3).
+    chan_youtube: str = ""
+    chua_quet_do_chan: int = 0
+    youtube: dict = field(default_factory=dict)      # số đo truy cập YouTube của lượt
 
     def tom_tat(self) -> str:
         """Trả về bản tóm tắt nhiều dòng, tiếng Việt, để in ra console hoặc gửi email."""
@@ -90,6 +98,16 @@ class BaoCao:
             f"File CSV: {trang_thai_csv}",
             f"Google Sheets: {trang_thai_sheets}",
         ]
+        if self.chan_youtube:
+            cac_dong.append(f"Chưa quét vì YouTube chặn truy cập: {self.chua_quet_do_chan}")
+            cac_dong.append(f"YouTube: {self.chan_youtube}")
+        if self.youtube.get("youtube_operations"):
+            so = self.youtube
+            cac_dong.append(
+                f"Truy cập YouTube: {so.get('youtube_operations', 0)} thao tác, "
+                f"{so.get('retries', 0)} lần thử lại, bot-check {so.get('bot_challenges', 0)}, "
+                f"429 {so.get('rate_limited', 0)}, 403 {so.get('http_403', 0)}, "
+                f"cần đăng nhập {so.get('auth_failures', 0)}")
         if self.loi:
             cac_dong.append("Lỗi:")
             cac_dong.extend(f"- {dong}" for dong in self.loi)
@@ -209,18 +227,23 @@ def lay_ung_vien(
     wl: WatchList,
     lister: Optional[Callable] = None,
     gioi_han_kenh: int = 50,
+    phien: Optional[PhienYouTube] = None,
 ) -> tuple:
     """
     Mở rộng watchlist thành danh sách ứng viên.
     lister: hàm (url, limit) -> list[VideoInfo]. None thì dùng ChannelSync.list_channel.
     Trả về (danh_sach_ung_vien, danh_sach_loi).
     danh_sach_loi: list[str], mỗi phần tử là một dòng mô tả lỗi.
+
+    ``phien``: phiên YouTube của lượt Watch — liệt kê một kênh bị chặn/429 thì không hỏi tiếp
+    các kênh còn lại.
     """
     if lister is None:
         lister = ChannelSync.list_channel
 
     ung_vien = []
     loi = []
+    bo_qua_kenh = 0
     for muc in wl.muc:
         if not muc.bat:
             continue
@@ -239,10 +262,15 @@ def lay_ung_vien(
             continue
 
         if muc.loai == "kenh":
+            if phien is not None and phien.mo:
+                bo_qua_kenh += 1
+                continue
             try:
                 video_trong_kenh = lister(muc.url, gioi_han_kenh)
             except Exception as e:  # noqa: BLE001
-                loi.append(f"Không lấy được video từ kênh {muc.url}: {e}")
+                if phien is not None:
+                    phien.ghi_loi(e, "listing")
+                loi.append(f"Không lấy được video từ kênh {muc.url}: {giai_thich_loi(e)}")
                 continue
             for video in video_trong_kenh:
                 ung_vien.append(UngVien(
@@ -252,7 +280,27 @@ def lay_ung_vien(
                     nguon=muc.url,
                 ))
 
+    if bo_qua_kenh:
+        loi.append(f"Chưa liệt kê {bo_qua_kenh} kênh: {phien.thong_bao_dung()}")
     return ung_vien, loi
+
+
+@contextlib.contextmanager
+def _mo_phien(engine: Any):
+    """Một phiên YouTube cho cả lượt Watch: mọi ``scan_youtube`` (mỗi video một job) dùng chung
+    một cầu dao. Engine giả trong test không có phiên thì dùng phiên cục bộ."""
+    mo = getattr(engine, "mo_phien_youtube", None)
+    if callable(mo):
+        with mo() as phien:
+            if isinstance(phien, PhienYouTube):
+                yield phien
+                return
+    yield PhienYouTube()
+
+
+def _la_loi_youtube(kq: Any) -> bool:
+    """Kết quả hỏng vì YouTube (bị chặn, cần đăng nhập, gỡ, mạng…): không phải kết quả quét."""
+    return getattr(kq, "loi_truy_cap", None) is not None
 
 
 def _lister_theo_cau_hinh(engine: Any) -> Callable:
@@ -295,7 +343,7 @@ def chay_giam_sat(
         with KhoaTienTrinh(
             os.path.join(engine.data_dir, "tool.lock"),
             "giám sát",
-        ):
+        ), _mo_phien(engine) as phien:
             return _chay_giam_sat_da_khoa(
                 engine,
                 wl,
@@ -305,6 +353,7 @@ def chay_giam_sat(
                 dang_ngang=dang_ngang,
                 dung_lai=dung_lai,
                 quet_lai=quet_lai,
+                phien=phien,
             )
     except DangChayRoi as e:
         return BaoCao(loi=[str(e)], ban=True)
@@ -319,9 +368,11 @@ def _chay_giam_sat_da_khoa(
     dang_ngang: bool = True,
     dung_lai: Any = None,
     quet_lai: bool = False,
+    phien: Optional[PhienYouTube] = None,
 ) -> BaoCao:
     """Thực hiện lượt giám sát sau khi caller đã giữ khóa liên tiến trình."""
     bao_cao = BaoCao()
+    phien = phien if phien is not None else PhienYouTube()
     try:
         return _thuc_hien_giam_sat(
             engine,
@@ -333,8 +384,10 @@ def _chay_giam_sat_da_khoa(
             dang_ngang=dang_ngang,
             dung_lai=dung_lai,
             quet_lai=quet_lai,
+            phien=phien,
         )
     finally:
+        bao_cao.youtube = phien.tom_tat()
         try:
             ket_qua_don = don_kho_dem(
                 engine.dl_dir,
@@ -448,8 +501,16 @@ def _thuc_hien_giam_sat(
     dang_ngang: bool = True,
     dung_lai: Any = None,
     quet_lai: bool = False,
+    phien: Optional[PhienYouTube] = None,
 ) -> BaoCao:
-    """Quét nguồn, xuất CSV và đẩy Sheets trong một lượt giám sát."""
+    """Quét nguồn, xuất CSV và đẩy Sheets trong một lượt giám sát.
+
+    Một phiên YouTube cho cả lượt: bị nghi là bot / 429 / đòi đăng nhập lặp lại thì DỪNG phần
+    mạng — video chưa quét không được tính là đã quét (không lịch sử, không CSV, không Sheets)
+    và lượt sau quét lại. Kết quả hỏng vì YouTube không bao giờ thành dòng trên Sheets.
+    """
+    if phien is None:
+        phien = PhienYouTube()
     # Kho không dùng được thì DỪNG cả lượt trước mọi thao tác (audit TCP-08). Trước đây
     # chỉ ghi một dòng lỗi rồi quét tiếp bằng kho đang chọn từ trước: đối chiếu sai kho,
     # xuất CSV và đẩy Sheets như thể đúng kho.
@@ -461,7 +522,7 @@ def _thuc_hien_giam_sat(
         )
         return bao_cao
 
-    ung_vien, loi = lay_ung_vien(wl, lister=lister)
+    ung_vien, loi = lay_ung_vien(wl, lister=lister, phien=phien)
     bao_cao.loi.extend(loi)
     # Lịch sử chỉ tính video đã kiểm XONG với đúng kho này (audit TCP-07).
     da_quet = set() if quet_lai else id_da_quet(engine)
@@ -535,6 +596,14 @@ def _thuc_hien_giam_sat(
     for i, ung_vien_moi in enumerate(can_quet):
         if dung_neu_duoc_yeu_cau(tong_can_quet - i):
             break
+        if phien.mo:
+            # Cầu dao mở: KHÔNG chạy tiếp hàng chục video vào đúng bức tường đó. Video còn lại
+            # không vào lịch sử/CSV/Sheets — lượt Watch sau quét lại chúng.
+            bao_cao.chua_quet_do_chan = tong_can_quet - i
+            bao_cao.chan_youtube = phien.thong_bao_dung()
+            bao_cao.loi.append(
+                f"{bao_cao.chan_youtube} Còn {tong_can_quet - i} video chưa quét.")
+            break
 
         def bao_tien_do(pct: float, msg: str, i: int = i) -> None:
             if progress is not None:
@@ -550,8 +619,9 @@ def _thuc_hien_giam_sat(
                 progress=bao_tien_do,
             )
         except Exception as e:  # noqa: BLE001
+            phien.ghi_loi(e, "scan")
             bao_cao.loi.append(
-                f"Không quét được {ung_vien_moi.url}: {e}"
+                f"Không quét được {ung_vien_moi.url}: {giai_thich_loi(e)}"
             )
             if dung_neu_duoc_yeu_cau(tong_can_quet - i - 1):
                 break
@@ -568,10 +638,16 @@ def _thuc_hien_giam_sat(
                 or ung_vien_moi.url
             )
             bao_cao.loi.append(f"{ten_nguon}: {ket_qua_quet.note}")
-        if sheet_link and ghi_tung_phan:
+        # Lỗi YouTube (bị chặn, cần đăng nhập, gỡ, mạng) không phải kết quả quét: không đẩy
+        # dòng "(LỖI…)" lên Sheets — giao diện cũng chỉ đẩy kết quả `ok` (app.py).
+        if sheet_link and ghi_tung_phan and not _la_loi_youtube(ket_qua_quet):
             day_tung_phan(ket_qua_quet)
         if dung_neu_duoc_yeu_cau(tong_can_quet - i - 1):
             break
+
+    if phien.mo and not bao_cao.chan_youtube:
+        # Cầu dao mở ở chính video cuối: vẫn phải nói rõ lượt này đã bị YouTube chặn.
+        bao_cao.chan_youtube = phien.thong_bao_dung()
 
     if ket_qua:
         try:
@@ -587,10 +663,11 @@ def _thuc_hien_giam_sat(
         try:
             ung_dung_sheets = khoi_tao_sheets()
             if ung_dung_sheets is not None:
+                hop_le = [kq for kq in ket_qua if not _la_loi_youtube(kq)]
                 chua_day = (
-                    [kq for kq in ket_qua if id(kq) not in da_day_sheets]
+                    [kq for kq in hop_le if id(kq) not in da_day_sheets]
                     if ghi_tung_phan
-                    else ket_qua
+                    else hop_le
                 )
                 if chua_day or not ghi_tung_phan:
                     header, rows = chuyen_dong_sheets(chua_day)

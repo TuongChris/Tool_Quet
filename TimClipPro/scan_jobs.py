@@ -272,12 +272,17 @@ class ScanJobController:
                 self._error = str(exc)
             LOGGER.exception("event=scan.batch.failed batch_id=%s", self._batch_id)
         finally:
+            # Batch YouTube bị dừng vì cầu dao (bot-check, 429, đăng nhập lặp lại…): nói rõ
+            # đó là YouTube chặn, không phải "Quét hoàn tất" — các video còn lại CHƯA quét.
+            phien = getattr(self.engine, "phien_youtube_cuoi", None)
+            bi_chan = phien.thong_bao_dung() if getattr(phien, "mo", False) is True else ""
             with self._lock:
                 self._running = False
                 self._finished_mono = time.monotonic()
                 if not self._error:
                     self._message = (
-                        "Đã dừng theo yêu cầu." if self._cancelled else "Quét hoàn tất."
+                        "Đã dừng theo yêu cầu." if self._cancelled
+                        else bi_chan or "Quét hoàn tất."
                     )
             LOGGER.info(
                 "event=scan.batch.finished batch_id=%s completed=%d failed=%d",

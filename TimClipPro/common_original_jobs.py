@@ -32,7 +32,16 @@ import common_original as co
 from clip_metadata import extract_youtube_id
 from engine import _mo_file_text_moi, chu_ky_chinh_sach
 from khoa import DangChayRoi, KhoaTienTrinh
+from truy_cap_youtube import PhienYouTube
 from ytdlp_chung import giai_thich_loi
+
+
+def _phien_cua(job) -> PhienYouTube:
+    """Phiên YouTube của job (engine thật: dùng chung với mọi lượt lấy thông tin/tải của lô).
+    Engine giả trong test không có phiên thì dùng phiên cục bộ cho riêng bộ điều phối."""
+    lay = getattr(job, "phien_youtube_hien_tai", None)
+    phien = lay() if callable(lay) else None
+    return phien if isinstance(phien, PhienYouTube) else PhienYouTube()
 
 LOGGER = logging.getLogger("scan.job")
 
@@ -107,6 +116,7 @@ class CommonOriginalJobController:
         self._mono_dau: Optional[float] = None
         self._mono_cuoi: Optional[float] = None
         self._ten_cache: dict = {}
+        self._phien: Optional[PhienYouTube] = None
 
     # ---------- điều khiển ----------
 
@@ -122,6 +132,7 @@ class CommonOriginalJobController:
             self._mono_dau = time.monotonic()
             self._mono_cuoi = None
             self._ten_cache = {}
+            self._phien = None
         # Cờ huỷ xoá ĐÚNG MỘT LẦN ở đây (TCP-13): cú bấm Dừng rơi vào khoảng giữa start()
         # và lúc thread chạy không bị nuốt.
         self.engine.cancel_event.clear()
@@ -224,16 +235,23 @@ class CommonOriginalJobController:
                 "Không đọc được danh sách clip của kho vân tay (kho rỗng hoặc file đang bị "
                 "khoá) nên không kiểm được tên clip trùng — chưa chạy lô. Hãy thử lại.")
         self._resolver = resolver
+        # MỘT cầu dao cho cả lô: lấy thông tin, tải, quét lại đều hỏi nó trước khi gửi request.
+        phien = _phien_cua(job)
+        self._phien = phien
 
-        videos, canh_bao, loi_info, so_info = self._chuan_bi(job, nguon, source_type)
+        videos, canh_bao, loi_info, so_info = self._chuan_bi(job, nguon, source_type, phien)
         tt = co.TrangThaiLo(kho_id=dinh_danh[0], videos=videos, cfg=job.config,
                             ten_trung={t: so for t, so in dem_ten.items() if so > 1})
         tt.thu_tu_xu_ly = co.chon_thu_tu_xu_ly(videos)
         self._sua(tong=len(videos), videos=self._hang_video(tt, None, None))
 
         def ket_thuc(kl: co.KetLuan):
+            if phien.mo and kl.trang_thai in (co.CHUA_KET_LUAN, co.DANG_TIM):
+                # YouTube chặn giữa lô: KHÔNG phải "không tìm thấy" — chưa có đủ bằng chứng.
+                kl = replace(kl, trang_thai=co.CHUA_KET_LUAN, ly_do=phien.thong_bao_dung())
             so_lieu = {**co.tom_tat_so_lieu(tt), "so_lan_lay_thong_tin": so_info,
-                       "thoi_gian_s": round(time.monotonic() - (self._mono_dau or 0), 3)}
+                       "thoi_gian_s": round(time.monotonic() - (self._mono_dau or 0), 3),
+                       "youtube": phien.tom_tat()}
             return co.dung_ket_qua_lo(
                 tt, kl, ma_lo=ma_lo, kho_ten=dt.get("kho_ten", ""),
                 thong_tin_goc=self._thong_tin_goc(kl.khoa_hien_thi), dem_ten=dem_ten,
@@ -242,6 +260,8 @@ class CommonOriginalJobController:
         n = len(videos)
         if self._da_huy():
             return ket_thuc(co.ket_luan(tt, da_huy=True))
+        if phien.mo:
+            return ket_thuc(co.KetLuan(co.CHUA_KET_LUAN, tong=n, ly_do=phien.thong_bao_dung()))
         if loi_info:
             return ket_thuc(co.KetLuan(
                 co.CHUA_KET_LUAN, tong=n,
@@ -265,7 +285,9 @@ class CommonOriginalJobController:
 
     # ---------- chuẩn bị: khử trùng + lấy thông tin ----------
 
-    def _chuan_bi(self, job, nguon: list, source_type: str) -> tuple:
+    def _chuan_bi(self, job, nguon: list, source_type: str,
+                  phien: Optional[PhienYouTube] = None) -> tuple:
+        phien = phien if phien is not None else PhienYouTube()
         canh_bao: list = []
         da_co: dict = {}
         duy_nhat = []
@@ -298,6 +320,10 @@ class CommonOriginalJobController:
                     thu_tu=len(videos) + 1, nguon=x, ma=_ma_offline(x, source_type),
                     tieu_de=os.path.basename(x), thoi_luong=dai or None))
                 continue
+            if phien.mo:
+                # Bị nghi là bot / 429 / cookie hỏng ở vài link đầu: KHÔNG hỏi tiếp cả lô như máy
+                # spam. Lô kết luận "chưa kết luận" (không phải "không tìm thấy").
+                break
             if i and float(job.config.ytdlp_sleep_requests_s or 0) > 0:
                 # Giãn nhịp giữa các lần hỏi YouTube (CLAUDE.md mục 6c); huỷ được.
                 if self.engine.cancel_event.wait(float(job.config.ytdlp_sleep_requests_s)):
@@ -306,6 +332,7 @@ class CommonOriginalJobController:
             try:
                 info = dict(job.youtube_info(x))
             except Exception as e:  # noqa: BLE001
+                phien.ghi_loi(e, "metadata")
                 loi_info.append(f"{x} ({giai_thich_loi(e).splitlines()[0][:160]})")
                 continue
             finally:
@@ -330,6 +357,11 @@ class CommonOriginalJobController:
 
     def _quet_mot_luot(self, job, tt: co.TrangThaiLo, b: co.BuocQuet, source_type: str,
                        dinh_danh: tuple) -> co.LuotQuet:
+        phien = getattr(self, "_phien", None)
+        if phien is not None and phien.mo:
+            # Cầu dao mở ở lượt trước: dừng lô TRƯỚC khi tải video mới. Bằng chứng các lượt
+            # trước đã được ghi (`dieu_phoi` giữ nguyên ma trận bằng chứng khi DungLo).
+            raise co.DungLo(phien.thong_bao_dung())
         v = tt.videos[b.video]
         dich = (b.nhom_can_du[0] if len(b.nhom_can_du) == 1 else None)
         self._sua(pha=b.pha, video_dang_quet=v.thu_tu, tien_do=0.0,
