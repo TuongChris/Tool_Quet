@@ -289,6 +289,71 @@ def test_khong_thay_gi_thi_tai_tron_va_khong_ghi_chu_nham(tmp_path, monkeypatch)
     assert "chỉ tải" not in (kq.note or "").lower()
 
 
+# Nhãn vùng Đầu/Giữa/Cuối phải theo VIDEO THẬT (CLAUDE.md mục 12). Tải một phần thì
+# `scan_media` chỉ thấy FILE 3 tiếng nên `_gan_chi_so` dán nhãn theo 3 tiếng; sửa
+# `duration_s` về 66 tiếng mà không dán lại thì cột «Vùng» của báo cáo nói sai vị trí.
+
+def _yt_66h_du_trong_3h_dau(tmp_path, monkeypatch, matches, matches_loai=()):
+    """Video 66 tiếng, `top_n=1`: tải 3 tiếng đầu, quét thấy đủ nên KHÔNG tải nốt.
+
+    `scan_media` giả trả đúng thứ bản thật trả cho FILE 3 tiếng đó: thời lượng 3 tiếng,
+    phạm vi 3 tiếng, và các đoạn mang nhãn vùng đã dán theo 3 tiếng."""
+    from engine import ScanResult
+
+    e = _eng(tmp_path, tai_mot_phan=True, quet_tang_dan_tu_gio=10.0,
+             quet_tang_dan_buoc_gio=3.0, top_n=1)
+    monkeypatch.setattr(e, "require", lambda **k: None)
+    monkeypatch.setattr(e, "youtube_info", lambda url: {
+        "id": "abc", "title": "video 66h", "duration": 66 * 3600, "channel": "",
+        "channel_id": "", "channel_url": "", "upload_date": ""})
+    lan_tai = []
+
+    def tai(url, vid, progress=None, gioi_han_giay=None):
+        lan_tai.append(gioi_han_giay)
+        return str(tmp_path / "part.mp4")
+
+    monkeypatch.setattr(e, "download_audio", tai)
+
+    def quet(path, **k):
+        r = ScanResult(source_name="video 66h", duration_s=3 * 3600,
+                       pham_vi_quet_s=3 * 3600, vung_da_khop=[(0.0, 3 * 3600.0)])
+        r.matches, r.matches_loai = list(matches), list(matches_loai)
+        return r
+
+    monkeypatch.setattr(e, "scan_media", quet)
+    kq = e.scan_youtube("https://youtu.be/abc", luu_lich_su=False)
+    assert lan_tai == [3 * 3600], "đủ bằng chứng trong 3 tiếng đầu thì không tải nốt"
+    return e, kq
+
+
+def test_tai_mot_phan_nhan_vung_theo_VIDEO_THAT_khong_theo_file(tmp_path, monkeypatch):
+    """Giờ thứ 1 của video 66 tiếng là «Đầu» (1/66), không phải «Giữa» (1/3 của file
+    3 tiếng) — kể cả trong cột «Vùng» của báo cáo 16 cột."""
+    # Nhãn `scan_media` dán theo file 3 tiếng: 3600/10800 = 1/3, không < 1/3 nên «Giữa».
+    m = Match(clip="x.opus", start_s=3600, end_s=3700, matched_s=100, clip_offset_s=0,
+              hashes=9999, confidence="chac", vung="Giữa")
+    e, kq = _yt_66h_du_trong_3h_dau(tmp_path, monkeypatch, matches=[m])
+
+    assert kq.duration_s == 66 * 3600
+    assert kq.matches[0].vung == "Đầu", "nhãn vùng phải theo video 66 tiếng, không theo file"
+    dong = e.to_rows([kq])[0]
+    assert dong[Engine.HEADER.index("Vùng")] == "Đầu"
+
+
+def test_tai_mot_phan_doan_bi_loai_cung_dan_nhan_theo_video_that(tmp_path, monkeypatch):
+    """`_gan_chi_so` dán nhãn cho MỌI ứng viên, kể cả đoạn bị loại: dán lại phải đủ cả hai
+    danh sách, không để một kết quả mang hai trục thời gian khác nhau."""
+    chon = Match(clip="x.opus", start_s=600, end_s=700, matched_s=100, clip_offset_s=0,
+                 hashes=9999, confidence="chac", vung="Đầu")
+    # File 3 tiếng: 9000/10800 ≈ 0,83 nên «Cuối»; video 66 tiếng: 9000/237600 ≈ 0,04.
+    loai = Match(clip="y.opus", start_s=9000, end_s=9010, matched_s=10, clip_offset_s=0,
+                 hashes=50, confidence="yeu", vung="Cuối")
+    _, kq = _yt_66h_du_trong_3h_dau(tmp_path, monkeypatch, matches=[chon],
+                                   matches_loai=[loai])
+
+    assert kq.matches_loai[0].vung == "Đầu"
+
+
 # =====================================================================
 #  top_n > 1: dừng sớm phải xét CHÍNH SÁCH CHỌN LỌC, không phải "có một cái nào chưa"
 #

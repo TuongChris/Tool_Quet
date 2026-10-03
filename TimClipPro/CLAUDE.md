@@ -588,6 +588,16 @@ hàm thuần lẫn tầng engine — chốt chặn là **glob phải TÌM RA**, 
 Kiểm chứng cả mục 15: 952 passed, ruff sạch, đã kiểm đột biến từng nhánh (8 đột biến,
 mỗi cái bị đúng test bắt), và chạy quét thật để xác nhận bản ghi nay lưu được.
 
+**16. Nhãn Đầu/Giữa/Cuối tính theo FILE thay vì theo VIDEO (02/10/2026).**
+Đúng bài học cuối mục 13 lại tái diễn. Có ba chỗ đổi `duration_s` từ độ dài FILE đang xử lý
+sang độ dài VIDEO thật: tải một phần, âm thanh YouTube ngắn hơn video, file tải thiếu đuôi.
+Cả ba đều quên dán lại nhãn vùng mà `_gan_chi_so` đã tính theo file — đoạn ở giờ thứ 1 của
+video 66 tiếng mang nhãn «Giữa» (1/3 của file 3 tiếng) trong cột «Vùng» của báo cáo.
+Đã sửa: `Engine._nhan_vung` là luật 1/3–2/3 DUY NHẤT, và `_dan_lai_nhan_vung(r)` được gọi ngay
+sau cả ba chỗ đổi. → **Đổi `duration_s` ở đâu thì gọi `_dan_lai_nhan_vung` ngay sau đó.**
+Ranh giới 1/3–2/3 nay có test riêng (`tests/test_nhan_vung.py`); trước đó đổi 2/3 thành 3/4
+mà cả bộ test vẫn xanh.
+
 ## Quy trình Spec-Driven (Claude lập kế hoạch → Codex viết code)
 
 Khi tôi yêu cầu một tính năng mới, ĐỪNG viết code ngay. Hãy:
