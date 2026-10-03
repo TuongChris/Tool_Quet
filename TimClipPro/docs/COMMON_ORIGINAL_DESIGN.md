@@ -176,6 +176,10 @@ chính sách nhận diện, ngoài phạm vi. Chọn phương án «cảnh báo 
 * giới hạn hiện ở giao diện (hộp thông tin, không chìm trong chú thích) và ở cột «Ghi chú» của
   MỌI dòng CSV, cùng các cảnh báo của lô.
 
+Kiểm chứng trên lô thật (04/10/2026, `docs/COMMON_ORIGINAL_SATURATION_ANALYSIS.md`): khúc chạm trần
+của video mốc có 293 dòng, trần cắt 93 dòng nhạc hiệu. Nâng trần, kể cả bỏ `--search-depth`, vẫn
+0 ứng viên đạt chuẩn, nên chưa có căn cứ để thêm lượt «quét lại khúc chạm trần».
+
 **Bằng chứng thêm từ lượt bù tốc độ.** `_merge` không bao giờ gộp mảnh của hai hệ số tốc độ khác
 nhau (điều kiện `g["he_so"] == he_so(x)`, audit TCP-05), nên bằng chứng bù chỉ THÊM ứng viên. Test
 `test_bang_chung_them_tu_luot_bu_toc_do_khong_lam_mat_A_da_dat` khoá điều đó qua parser, `_merge`

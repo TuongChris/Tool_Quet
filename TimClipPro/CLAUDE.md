@@ -125,7 +125,10 @@ Thiết kế đầy đủ: `docs/COMMON_ORIGINAL_DESIGN.md`. Những điều KH�
 - «Không tìm thấy» không phải chứng minh tuyệt đối: kết luận mang `gioi_han` (khúc chạm trần
   `max_matches`, lượt quét trọn không thử bù tốc độ) tới tận giao diện và CSV. Đừng hạ thành
   «chưa kết luận» chỉ vì chạm trần — gần như mọi lượt quét thật đều chạm
-  (`docs/ZERO_MATCH_ROOT_CAUSE.md` mục 9).
+  (`docs/ZERO_MATCH_ROOT_CAUSE.md` mục 9). Đo thật trên lô Joe ngày 04/10/2026
+  (`docs/COMMON_ORIGINAL_SATURATION_ANALYSIS.md`): trần 200 chỉ cắt 93 dòng nhạc hiệu dùng chung;
+  nâng trần, kể cả bỏ `--search-depth`, không lộ ứng viên đạt chuẩn nào và chi phí khớp không đổi.
+  Đừng thêm «quét lại khúc chạm trần» hay nâng trần khi chưa có một ca dương thật.
 - Lô giữ `data/tool.lock` suốt thời gian chạy và so định danh kho/chính sách ở MỖI lượt quét;
   lệch là dừng, không trộn hai phiên bản kho.
 - Lô KHÔNG ghi `lichsu.db` (lượt dừng sớm sẽ làm Watch bỏ qua video mãi mãi) và chưa đẩy Sheets.
